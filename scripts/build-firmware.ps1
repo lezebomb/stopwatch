@@ -19,7 +19,22 @@ if ($Realtime) {
 }
 Push-Location $sdkRoot
 try {
-    python "$env:IDF_PATH/tools/idf.py" -B $buildRoot -D IDF_TARGET=esp32s3 -D "PROJECT_VER=$version" -D "SW_FACTORY_ASSETS=$factory" -D "SDKCONFIG_DEFAULTS=$defaults" build
+    $buildArguments = @('-B', $buildRoot)
+    $cacheFile = Join-Path $buildRoot 'CMakeCache.txt'
+    $reuseConfiguration = (Test-Path -LiteralPath $cacheFile) -and (Test-Path -LiteralPath (Join-Path $buildRoot 'build.ninja')) -and -not $Release
+    if ($reuseConfiguration) {
+        $cacheText = [IO.File]::ReadAllText($cacheFile)
+        foreach ($entry in @{IDF_TARGET='esp32s3';PROJECT_VER=$version;SW_FACTORY_ASSETS=$factory;SDKCONFIG_DEFAULTS=$defaults}.GetEnumerator()) {
+            $pattern = '(?m)^' + [regex]::Escape($entry.Key) + ':[^=]+=' + [regex]::Escape($entry.Value) + '\r?$'
+            if ($cacheText -notmatch $pattern) { $reuseConfiguration = $false; break }
+        }
+    }
+    if ($reuseConfiguration) {
+        Write-Output 'Using matching CMake configuration; incremental build without forced dependency resolution.'
+    } else {
+        $buildArguments += @('-D', 'IDF_TARGET=esp32s3', '-D', "PROJECT_VER=$version", '-D', "SW_FACTORY_ASSETS=$factory", '-D', "SDKCONFIG_DEFAULTS=$defaults")
+    }
+    python "$env:IDF_PATH/tools/idf.py" @buildArguments build
     if ($LASTEXITCODE -ne 0) { throw 'ESP-IDF firmware build failed' }
 } finally { Pop-Location }
 Copy-Item -LiteralPath (Join-Path $buildRoot 'muse-gadget.bin') -Destination 'artifacts/stopwatch.bin'
