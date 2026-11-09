@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { assets } from "./assets.mjs";
 import releaseConfig from "../release/config.json" with { type: "json" };
-import { createPublicKey } from "node:crypto";
+import { createPublicKey, X509Certificate } from "node:crypto";
 import { setupQrHeader } from "./setup-qr.mjs";
 const lock = JSON.parse(await readFile("upstream.lock.json", "utf8"));
 const sdk = path.resolve(".deps/muse/esp32"),
@@ -25,7 +25,6 @@ if (git(["rev-parse", "HEAD"]).trim() !== lock.muse.commit)
   throw new Error("Muse commit differs from upstream.lock.json");
 await assets();
 const component = `${sdk}/components/muse`;
-await writeChanged(`${component}/sw_setup_qr.h`, setupQrHeader());
 for (const file of [
   "sw_companion.c",
   "sw_companion.h",
@@ -36,6 +35,8 @@ for (const file of [
   "sw_updater.c",
   "sw_updater.h",
   "sw_updater_ui.c",
+  "sw_sync.c",
+  "sw_sync.h",
 ])
   await writeChanged(
     `${component}/${file}`,
@@ -45,13 +46,29 @@ for (const file of [
 let cmake = git(["show", "HEAD:esp32/components/muse/CMakeLists.txt"]);
 cmake = cmake.replace(
   '"muse_app.c"',
-  '"muse_app.c"\n        "sw_companion.c"\n        "sw_model.c"\n        "sw_update_core.c"\n        "sw_updater.c"\n        "sw_updater_ui.c"',
+  '"muse_app.c"\n        "sw_companion.c"\n        "sw_model.c"\n        "sw_update_core.c"\n        "sw_updater.c"\n        "sw_updater_ui.c"\n        "sw_sync.c"',
 );
 cmake = cmake.replace(
   "idf_component_register(",
   'list(APPEND muse_priv_requires spiffs app_update)\nlist(APPEND embed "update_public.pem")\nidf_component_register(',
 );
 const production = process.env.SW_PRODUCTION === "1";
+const relayOrigin = production ? releaseConfig.productionOrigin || "" : process.env.SW_DEVICE_RELAY_ORIGIN || "";
+if (relayOrigin) {
+  const url = new URL(relayOrigin);
+  if (url.protocol !== "https:" || url.origin !== relayOrigin || relayOrigin.length > 160)
+    throw new Error("Device relay must be a fixed HTTPS origin with no path or credentials");
+}
+let relayCa = "";
+if (!production && process.env.SW_DEVICE_RELAY_CA) {
+  if (!relayOrigin) throw new Error("A development relay CA requires SW_DEVICE_RELAY_ORIGIN");
+  const ca = new X509Certificate(await readFile(process.env.SW_DEVICE_RELAY_CA));
+  if (!ca.ca) throw new Error("SW_DEVICE_RELAY_CA must be a public CA certificate");
+  relayCa = ca.toString();
+}
+await writeChanged(`${component}/sw_setup_qr.h`, setupQrHeader(production && relayOrigin ? `${relayOrigin}/setup/` : undefined));
+await writeChanged(`${component}/sw_sync_build.h`,
+  `#pragma once\n#define SW_RELAY_ORIGIN ${JSON.stringify(relayOrigin)}\n#define SW_RELAY_HARDWARE ${JSON.stringify(releaseConfig.hardware)}\n#define SW_RELAY_CA ${JSON.stringify(relayCa)}\n`);
 if (!production) await import("./update-dev-key.mjs");
 const publicPath = production
   ? releaseConfig.productionPublicKey
@@ -173,11 +190,22 @@ const bleSave = "            muse_settings_set_wifi(s_pending_ssid, s_pending_pa
 if (!ble.includes(bleCommand) || !ble.includes(bleSave) ||
     !ble.includes("            run_command(cmd);"))
   throw new Error("Upstream phone Wi-Fi command hook changed");
-ble = '#include "sw_companion.h"\n' + ble
+const bleSecret = 'bool secret = !strcmp(cmd, "wifi.pass") || !strncmp(cmd, "hatch.token", 11);';
+const bleCommands = '    } else if (!strcmp(cmd, "wifi.forget")) {';
+if (!ble.includes(bleSecret) || !ble.includes(bleCommands))
+  throw new Error("Upstream encrypted phone command hook changed");
+ble = '#include "sw_companion.h"\n#include "sw_sync.h"\n' + ble
   .replace(bleCommand, "static void run_command(char *cmd, bool phone)")
   .replace(bleSave, bleSave + "\n            if (phone) sw_companion_phone_network(s_pending_ssid);")
   .replace("    run_command(cmd);\n}", "    run_command(cmd, false);\n}")
-  .replace("            run_command(cmd);", "            run_command(cmd, true);");
+  .replace("            run_command(cmd);", "            run_command(cmd, true);")
+  .replace(bleSecret, bleSecret.replace('!strcmp(cmd, "wifi.pass")', '!strcmp(cmd, "sync.enroll") || !strcmp(cmd, "wifi.pass")'))
+  .replace(bleCommands, `    } else if (!strcmp(cmd, "sync.enroll")) {
+        if (!phone || !sw_sync_enroll(v)) res = "error: setup unavailable";
+        memset(v, 0, strlen(v));
+    } else if (!strcmp(cmd, "sync.status")) {
+        res = sw_sync_pair_state();
+${bleCommands}`);
 await writeChanged(`${component}/muse_ble.c`, ble);
 let board = git([
   "show",

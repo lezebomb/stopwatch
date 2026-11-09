@@ -15,11 +15,13 @@ import {
 } from "../shared/model.mjs";
 const allowedCommands = ["start", "continue", "steer", "interrupt", "approve"];
 const json = (res, code, body) => {
+  const content = Buffer.from(JSON.stringify(body));
   res.writeHead(code, {
     "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": content.length,
     "Cache-Control": "no-store",
   });
-  res.end(JSON.stringify(body));
+  res.end(content);
 };
 function cookie(req) {
   return (
@@ -411,12 +413,11 @@ export async function createRelay({
             ).slice(0, 100),
             bytes: jpg.length + rgb565.length,
           };
-          store.addPhoto(photo);
           try {
             await writeFile(path.join(directory, `${id}.jpg`), jpg);
             await writeFile(path.join(directory, `${id}.rgb565`), rgb565);
+            store.addPhoto(photo);
           } catch (error) {
-            store.db.prepare("DELETE FROM photos WHERE id=?").run(id);
             await Promise.allSettled(
               ["jpg", "rgb565"].map((ext) =>
                 unlink(path.join(directory, `${id}.${ext}`)),
@@ -442,14 +443,21 @@ export async function createRelay({
           if (!store.photos().some((p) => p.id === id))
             return json(res, 404, { error: "照片不存在" });
           if (req.method === "DELETE") {
+            store.db.exec("BEGIN IMMEDIATE");
+            try {
+              store.db.prepare("DELETE FROM photos WHERE id=?").run(id);
+              if (store.settings().defaultPhoto === id)
+                store.settings({ defaultPhoto: "builtin-0" });
+              store.db.exec("COMMIT");
+            } catch (error) {
+              store.db.exec("ROLLBACK");
+              throw error;
+            }
             await Promise.allSettled(
               ["jpg", "rgb565"].map((ext) =>
                 unlink(path.join(directory, `${id}.${ext}`)),
               ),
             );
-            store.db.prepare("DELETE FROM photos WHERE id=?").run(id);
-            if (store.settings().defaultPhoto === id)
-              store.settings({ defaultPhoto: "builtin-0" });
             publish({
               v: 1,
               id: randomUUID(),
@@ -474,7 +482,9 @@ export async function createRelay({
         return json(res, 405, { error: "方法不支持" });
       const filename = ["/", "/simulator"].includes(url.pathname)
         ? "index.html"
-        : url.pathname.slice(1);
+        : ["/setup", "/setup/"].includes(url.pathname)
+          ? "setup/index.html"
+          : url.pathname.slice(1);
       const root = path.resolve(webRoot),
         file = path.resolve(root, filename);
       if (!file.startsWith(root + path.sep))
@@ -613,7 +623,7 @@ export async function createRelay({
           .get(ws.sessionId, Date.now())
       )
         ws.close(4001, "expired");
-      else send(ws, { type: "bridge", online: online() });
+      else send(ws, { type: "bridge", online: online(), deviceOnline: deviceSync.present() });
     }
     if (bridge && !online()) bridge.terminate();
   }, 15000);

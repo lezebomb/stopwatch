@@ -31,7 +31,7 @@ main push → Windows 测试 + ESP-IDF v6.0.3 构建 → 成功后部署 Pages �
 
 真实配置已核验 rollback 和软件签名。没有启用硬件 Secure Boot、Flash/NVS eFuse 密钥生成或 eFuse anti-rollback。分区布局保持双4MiB应用与 `0x822000 / 7MiB` 照片分区。**默认 flash_args 不含 photos.bin，OTA不写照片、NVS、授权、Bootloader或分区表。**
 
-独立系统资源有签名清单、逐文件校验、写时复制、原子指针和恢复实现。空间不足推迟而不擦旧数据。设备私人相册/资源无线传输尚未接线；目前资源事务实现及测试在电脑端运行。
+独立系统资源有签名清单、逐文件校验、写时复制、原子指针和恢复实现。空间不足推迟而不擦旧数据。系统资源事务在中转侧单独管理。私人相册使用下方的挂件同步通道。
 
 ## 开发者本地调试
 
@@ -88,3 +88,9 @@ npm.cmd audit
 挂件照片页左上角「手机配网」显示二维码，用 Android Chrome 打开 [蓝牙配网页](https://lezebomb.github.io/stopwatch/setup/)，选择 MuseGadget 并输入挂件显示的六位配对码，然后在手机输入已有 Wi-Fi 或手机热点的名称、密码。无需电脑或 APK；网络由官方 Muse SDK 保存（最多8个）并按范围自动重连。手机热点可以保持开启，必须兼容2.4GHz。手机网页不能替设备连接5GHz热点。
 
 本页仅做本地加密蓝牙配网，与 Pages Mock 控制台分离；不上传/持久保存密码，没有任务执行或账号授权入口。需要支持 Web Bluetooth 的浏览器；优先 Android Chrome，Edge按功能检测提示。进入配网页临时开启挂件端手机配网蓝牙并保持唤醒，返回、5分钟到期或重启即结束。照片页尊重用户的 Wi-Fi 开关，休眠和唤醒后的重连由 Muse SDK 管理；首次 Muse 账号授权仍单独进行。真实手机 BLE 配对与联网以 HARDWARE_TEST 现场结果为准。
+
+## 挂件无线同步
+
+挂件先扫码连上 Wi-Fi。正式控制台的操作者进入「设置 → 绑定 StopWatch」，再打开挂件的「手机配网」，用手机在蓝牙授权页选择设备并确认。两分钟授权码只用一次，之后通过 HTTPS 自动获取相册、默认封面、轮播、边框和 Codex 摘要。设备使用独立只读授权，可在控制台撤销。离线时继续显示已存照片。
+
+固件默认不启用中转。正式构建使用 `release/config.json` 的固定 HTTPS 来源。本地开发可在构建前设置 `SW_DEVICE_RELAY_ORIGIN`，内网自建 CA 时可另用 `SW_DEVICE_RELAY_CA` 指向公开 CA 证书。中转用 `STOPWATCH_MODE=production` 和同一 HTTPS `STOPWATCH_PUBLIC_ORIGIN`，通过受信反代访问。手机浏览器也需要信任该证书。功能代码已编译，实际无线链路待集中实机验收。

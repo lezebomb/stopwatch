@@ -3,6 +3,7 @@ import {
   labels,
   nextScreen,
   powerPolicy,
+  PHOTO_LIMIT,
 } from "../shared/model.mjs";
 import { guide } from "../shared/guide.mjs";
 import releaseConfig from "../release/config.json" with { type: "json" };
@@ -18,6 +19,7 @@ const asset = (p) => new URL(p.replace(/^\//, ""), import.meta.url).href;
 const photoUrl = (id) =>
   PREVIEW ? demo.photoUrl(id) : `/api/photos/${id}.jpg`;
 const root = document.querySelector("#app");
+let photoUploadActive = false;
 const state = {
   paired: false,
   mode: "mock",
@@ -27,6 +29,7 @@ const state = {
   events: [],
   settings: { ...defaultSettings },
   bridgeOnline: false,
+  deviceOnline: false,
   connected: false,
   cursor: 0,
   quota: null,
@@ -116,6 +119,7 @@ function merge(snapshot) {
     "photos",
     "settings",
     "bridgeOnline",
+    "deviceOnline",
     "sessions",
     "quota",
     "mode",
@@ -201,8 +205,11 @@ function connect() {
         merge(data.state);
         render();
       } else if (data.type === "event") receive(data.event);
-      else if (data.type === "bridge" && state.bridgeOnline !== data.online) {
+      else if (data.type === "bridge") {
+        const deviceOnline = typeof data.deviceOnline === "boolean" ? data.deviceOnline : state.deviceOnline;
+        if (state.bridgeOnline === data.online && state.deviceOnline === deviceOnline) return;
         state.bridgeOnline = data.online;
+        state.deviceOnline = deviceOnline;
         render();
       }
     } catch {}
@@ -354,7 +361,8 @@ function tasks() {
 }
 function photos() {
   const bytes = state.photos.reduce((sum, p) => sum + p.bytes, 0);
-  return `<div class="notice">照片已保存到电脑本地资源库。ESP32 的网络传输与断电恢复还需实机联调；当前不会声称已同步到设备。</div><div class="stat-line"><span>${state.photos.length} / 12 张</span><span>${(bytes / 1024 / 1024).toFixed(2)} / 6 MiB</span><span>设备格式 RGB565</span></div><div class="upload"><h2>为小小屏幕，留住大大的喜欢。</h2><p class="muted small">自动居中裁切与缩放 · JPG / PNG / WebP · 单张上传最多 8 MiB</p><label for="upload">选择照片</label><input type="file" id="upload" accept="image/jpeg,image/png,image/webp"></div><div class="photo-grid">${[
+  const production = state.mode === "production";
+  return `<div class="notice">${production ? "绑定后的挂件联网时自动同步。离线时继续显示已有照片。" : "本地演示相册。"}</div><div class="stat-line"><span>${state.photos.length} / 12 张</span><span>${(bytes / 1024 / 1024).toFixed(2)} / 6 MiB</span></div><div class="upload"><h2>为小小屏幕，留住大大的喜欢。</h2><p class="muted small">${production ? "可预览圆屏并调整裁切" : "自动居中裁切与缩放"} · JPG / PNG / WebP · 单张最多 8 MiB</p><label for="upload">选择照片</label><input type="file" id="upload" accept="image/jpeg,image/png,image/webp" ${production ? "multiple" : ""}></div><div class="photo-grid">${[
     0, 1, 2,
   ]
     .map((i) => ({
@@ -370,15 +378,18 @@ function photos() {
     .join("")}</div>`;
 }
 function settings() {
-  return `<div class="panel-grid"><section class="card"><h2>让陪伴，刚刚好。</h2><div class="setting-row"><span>模拟屏幕亮度 <strong id="brightness-value">${state.settings.brightness}%</strong></span><input id="brightness" type="range" min="10" max="80" step="5" value="${state.settings.brightness}" aria-label="亮度"></div><div class="setting-row"><span>照片自动轮播</span><input id="slideshow" type="checkbox" ${state.settings.slideshow ? "checked" : ""}></div><label for="slide-seconds">轮播间隔（秒）</label><input id="slide-seconds" type="number" min="5" max="300" value="${state.settings.slideSeconds}"><label for="border">封面装饰边框</label><select id="border"><option value="mint" ${state.settings.border === "mint" ? "selected" : ""}>薄荷绿</option><option value="gold" ${state.settings.border === "gold" ? "selected" : ""}>暖金色</option><option value="none" ${state.settings.border === "none" ? "selected" : ""}>无边框</option></select><label for="egg-message">留给 TA 的彩蛋留言</label><textarea id="egg-message" maxlength="150">${escape(state.settings.eggMessage)}</textarea><label for="egg-date">纪念日（MM-DD）</label><input id="egg-date" value="${escape(state.settings.eggDate)}" maxlength="5"><button id="save-settings">保存设置</button><p class="small muted">Muse 实时语音为固件实验性构建开关，默认关闭。真实 Token 不通过此 Mock 控制台配置。</p></section><div class="right-stack"><section class="card"><h2>配对与设备授权</h2><p class="small muted">生成一个两分钟有效、仅能使用一次的链接。当前本地地址只在这台电脑有效。</p><div class="actions"><button id="ticket">新建控制端二维码</button><button class="secondary" id="viewer-ticket">新建只读端</button></div><div id="ticket-result"></div><h3 class="list-heading">已授权浏览器</h3>${state.sessions
+  const production = state.mode === "production";
+  const canPair = production && state.session?.role === "operator";
+  const roleName = { operator: "可控制", viewer: "只读", bridge: "Windows 桥接", device: "StopWatch 挂件" };
+  return `<div class="panel-grid"><section class="card"><h2>让陪伴，刚刚好。</h2><div class="setting-row"><span>${production ? "挂件亮度" : "模拟屏幕亮度"} <strong id="brightness-value">${state.settings.brightness}%</strong></span><input id="brightness" type="range" min="10" max="80" step="5" value="${state.settings.brightness}" aria-label="亮度"></div><div class="setting-row"><span>照片自动轮播</span><input id="slideshow" type="checkbox" ${state.settings.slideshow ? "checked" : ""}></div><label for="slide-seconds">轮播间隔（秒）</label><input id="slide-seconds" type="number" min="5" max="300" value="${state.settings.slideSeconds}"><label for="border">封面装饰边框</label><select id="border"><option value="mint" ${state.settings.border === "mint" ? "selected" : ""}>薄荷绿</option><option value="gold" ${state.settings.border === "gold" ? "selected" : ""}>暖金色</option><option value="none" ${state.settings.border === "none" ? "selected" : ""}>无边框</option></select><label for="egg-message">留给 TA 的彩蛋留言</label><textarea id="egg-message" maxlength="150">${escape(state.settings.eggMessage)}</textarea><label for="egg-date">纪念日（MM-DD）</label><input id="egg-date" value="${escape(state.settings.eggDate)}" maxlength="5"><button id="save-settings">保存设置</button></section><div class="right-stack"><section class="card"><h2>配对与设备授权</h2><p class="small muted">授权链接两分钟有效，使用一次后失效。</p><div class="actions"><button id="ticket">新建控制端二维码</button><button class="secondary" id="viewer-ticket">新建只读端</button>${canPair ? '<button class="secondary" id="device-ticket">绑定 StopWatch</button>' : ""}</div><div id="ticket-result"></div><h3 class="list-heading">已授权设备与浏览器</h3>${state.sessions
     .filter((s) => !s.revoked)
     .map(
       (s) =>
-        `<div class="setting-row"><span>${escape(s.id.slice(0, 8))} · ${s.role === "operator" ? "可控制" : "只读"} ${s.id === state.session?.id ? "（当前）" : ""}</span><button class="danger" data-revoke="${s.id}">撤销</button></div>`,
+        `<div class="setting-row"><span>${escape(s.id.slice(0, 8))} · ${roleName[s.role] || "其他"} ${s.id === state.session?.id ? "（当前）" : ""}</span><button class="danger" data-revoke="${s.id}">撤销</button></div>`,
     )
     .join(
       "",
-    )}</section><section class="card"><h2>连接情况</h2><p class="small muted">中转服务：${state.connected ? "在线" : "重连中"}<br>Windows ${state.mode === "production" ? "" : "Mock "}桥接：${state.bridgeOnline ? "在线" : "离线"}<br>StopWatch 实物：未连接<br>浏览器后台推送：未启用<br>电流与续航：尚未实测</p><button class="quiet" id="disconnect">模拟事件连接断开 / 重连</button></section></div></div>`;
+    )}</section><section class="card"><h2>连接情况</h2><p class="small muted">中转服务：${state.connected ? "在线" : "重连中"}<br>Windows ${production ? "" : "Mock "}桥接：${state.bridgeOnline ? "在线" : "离线"}<br>StopWatch 实物：${state.connected && state.deviceOnline ? "最近已同步" : "暂无在线挂件"}</p><button class="quiet" id="disconnect">重新连接</button></section></div></div>`;
 }
 function guidePage() {
   return `<div class="guide-grid">${guide.map(([title, text], i) => `<article class="guide-card"><div class="number">GUIDE / ${String(i + 1).padStart(2, "0")}</div><h2>${title}</h2><p>${text}</p></article>`).join("")}</div>`;
@@ -525,26 +536,45 @@ function bind() {
     toast("已标为已读");
   });
   on("upload", "change", async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    if (file.size > 8 * 1024 * 1024) return toast("图片超过 8 MiB");
+    const files = Array.from(e.target.files);
+    e.target.value = "";
+    if (!files.length || photoUploadActive) return;
+    const production = state.mode === "production";
+    const available = Math.max(0, PHOTO_LIMIT - state.photos.length);
+    if (!available) return toast("相册已满，请先删除照片");
+    let uploaded = 0;
+    let failure = files.length > available ? `相册只剩 ${available} 个位置` : "";
+    photoUploadActive = true;
     try {
-      const response = await fetch("/api/photos", {
-        method: "POST",
-        headers: {
-          "Content-Type": file.type,
-          "X-Photo-Name": encodeURIComponent(file.name),
-        },
-        body: file,
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error);
-      merge(await api("state"));
-      render();
-      toast("照片已压缩并保存到本地资源库");
+      const { cropPhoto } = production ? await import("./photo-crop.mjs") : {};
+      for (const file of files.slice(0, available)) {
+        if (file.size > 8 * 1024 * 1024) {
+          failure = "已跳过超过 8 MiB 的照片";
+          continue;
+        }
+        const image = production ? await cropPhoto(file) : file;
+        if (!image) continue;
+        const response = await fetch("/api/photos", {
+          method: "POST",
+          headers: {
+            "Content-Type": image.type,
+            "X-Photo-Name": encodeURIComponent(file.name),
+          },
+          body: image,
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error);
+        uploaded++;
+      }
     } catch (error) {
-      toast(error.message);
+      failure = error.message;
+    } finally {
+      photoUploadActive = false;
     }
+    if (uploaded) {
+      try { merge(await api("state")); render(); } catch { failure ||= "相册已保存，暂时无法刷新"; }
+    }
+    if (failure || uploaded) toast(failure || `已保存 ${uploaded} 张照片`);
   });
   document.querySelectorAll("[data-cover]").forEach(
     (el) =>
@@ -616,6 +646,20 @@ function bind() {
   };
   on("ticket", "click", () => ticket("operator"));
   on("viewer-ticket", "click", () => ticket("viewer"));
+  on("device-ticket", "click", async () => {
+    try {
+      const { code } = await api("device/tickets", {});
+      const link = document.createElement("a");
+      const url = new URL("/setup/", location.origin);
+      url.hash = `device=${code}`;
+      link.href = url;
+      link.textContent = "打开手机蓝牙授权";
+      const note = document.createElement("p");
+      note.className = "small muted";
+      note.textContent = "先让挂件连上 Wi-Fi，然后打开挂件的「手机配网」。请在两分钟内打开此链接授权。";
+      document.querySelector("#ticket-result")?.replaceChildren(link, note);
+    } catch (error) { toast(error.message); }
+  });
   document.querySelectorAll("[data-revoke]").forEach(
     (el) =>
       (el.onclick = async () => {

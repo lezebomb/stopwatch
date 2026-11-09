@@ -26,9 +26,9 @@ try {
       const split = text.indexOf("="), key = text.slice(0, split), value = text.slice(split + 1);
       if (key === "wifi.ssid") ssid = value;
       if (key === "wifi.connect") connected = true;
-      last = `${key}: ok`;
+      last = key === "sync.status" ? "sync.status: paired" : `${key}: ok`;
     } };
-    const status = { async readValue() { return new TextEncoder().encode(JSON.stringify({ name: "MuseGadget-TEST", fw: "test", wifi: { state: connected ? "connected" : "no_network", ssid }, last })); } };
+    const status = { async readValue() { return new TextEncoder().encode(JSON.stringify({ name: "MuseGadget-TEST", fw: "test", wifi: { state: connected || window.alreadyOnline ? "connected" : "no_network", ssid }, last })); } };
     const device = { addEventListener() {}, gatt: { connected: false, async connect() { this.connected = true; return { async getPrimaryService() { return { async getCharacteristic(id) { return id.includes("0002") ? command : status; } }; } }; }, disconnect() { this.connected = false; } } };
     Object.defineProperty(navigator, "bluetooth", { value: { async requestDevice() { return device; } } });
   });
@@ -45,6 +45,15 @@ try {
   assert.deepEqual(await page.evaluate(() => window.setupWrites), ["wifi.ssid=出门热点", "wifi.pass=test-only-pass", "wifi.connect="]);
   assert.deepEqual(await page.evaluate(() => [localStorage.length, sessionStorage.length]), [0, 0]);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.addInitScript(() => { window.alreadyOnline = true; });
+  const code = "P".repeat(32);
+  await page.goto(`http://127.0.0.1:${server.address().port}/setup/?authorization=1#device=${code}`);
+  await page.getByRole("button", { name: "连接挂件", exact: true }).click();
+  await page.getByRole("button", { name: "授权这台挂件", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: "挂件已获授权" }).waitFor();
+  assert.equal(new URL(page.url()).hash, "");
+  assert.deepEqual(await page.evaluate(() => window.setupWrites), [`sync.enroll=${code}`, "sync.status="]);
+  assert.deepEqual(await page.evaluate(() => [localStorage.length, sessionStorage.length]), [0, 0]);
   assert.deepEqual(extraNetwork, []);
   assert.deepEqual(errors, []);
   console.log("Phone setup browser passed: BLE command sequence, cleared password, no API/WS/storage, mobile layout. Physical Android BLE still requires user verification.");

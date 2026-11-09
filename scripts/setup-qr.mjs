@@ -1,9 +1,10 @@
 import QRCode from "qrcode";
 export const SETUP_URL = "https://lezebomb.github.io/stopwatch/setup/";
 // LVGL indexed one-bit image, including a four-module white quiet zone.
-export function setupQrHeader() {
-  const qr = QRCode.create(SETUP_URL, { errorCorrectionLevel: "M" });
-  const scale = 6, size = (qr.modules.size + 8) * scale;
+export function setupQrHeader(url = SETUP_URL) {
+  const qr = QRCode.create(url, { errorCorrectionLevel: "M" });
+  const modules = qr.modules.size + 8;
+  const scale = Math.floor(234 / modules), size = modules * scale;
   const stride = Math.ceil(size / 8);
   const pixels = Buffer.alloc(8 + stride * size);
   pixels.set([255, 255, 255, 255, 0, 0, 0, 255]); // BGRA palette: white, black.
@@ -14,5 +15,5 @@ export function setupQrHeader() {
   }
   const rows = [];
   for (let i = 0; i < pixels.length; i += 24) rows.push("  " + [...pixels.subarray(i, i + 24)].join(","));
-  return `/* Generated public URL only; no identity, credential or pairing code. */\n#pragma once\n#define SW_SETUP_URL "${SETUP_URL}"\nstatic const uint8_t setup_qr_pixels[] = {\n${rows.join(",\n")}\n};\nstatic const lv_image_dsc_t setup_qr_image = {\n .header = {.magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_I1, .w = ${size}, .h = ${size}, .stride = ${stride}},\n .data_size = sizeof(setup_qr_pixels), .data = setup_qr_pixels\n};\n`;
+  return `/* Generated public URL only; no identity, credential or pairing code. */\n#pragma once\n#define SW_SETUP_URL ${JSON.stringify(url)}\nstatic const uint8_t setup_qr_pixels[] = {\n${rows.join(",\n")}\n};\nstatic const lv_image_dsc_t setup_qr_image = {\n .header = {.magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_I1, .w = ${size}, .h = ${size}, .stride = ${stride}},\n .data_size = sizeof(setup_qr_pixels), .data = setup_qr_pixels\n};\n`;
 }

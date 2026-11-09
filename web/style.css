@@ -664,6 +664,25 @@ p {
   margin-top: 12px;
   font-size: 12px;
 }
+.photo-crop {
+  width: min(420px, calc(100% - 28px));
+  max-height: calc(100dvh - 28px);
+  border: 1px solid #a5b697;
+  border-radius: 18px;
+  padding: 18px;
+  background: #f5f4ee;
+  color: #233322;
+}
+.photo-crop::backdrop { background: #14251d99; }
+.photo-crop canvas {
+  display: block;
+  width: min(240px, 100%);
+  height: auto;
+  margin: 8px auto 16px;
+  border-radius: 50%;
+}
+.photo-crop label { display: block; margin: 10px 0; }
+.photo-crop input[type=range] { display: block; width: 100%; }
 .stat-line {
   display: flex;
   gap: 20px;

@@ -16,7 +16,7 @@
   <ol>
     <li>在挂件打开「手机配网」，手机开启蓝牙。</li>
     <li>点击下方连接，选择你的 MuseGadget，按提示输入挂件显示的六位码。</li>
-    <li>填写 <strong>2.4GHz</strong> 网络名称与密码，保存即可。</li>
+    <li id="setup-step">填写 <strong>2.4GHz</strong> 网络名称与密码，保存即可。</li>
   </ol>
   <section aria-label="蓝牙连接">
     <h2 id="device">连接你的挂件</h2>
@@ -24,6 +24,11 @@
     <button id="disconnect" type="button" class="secondary" disabled>断开蓝牙</button>
     <p id="message" role="status" aria-live="polite">无需电脑，无需安装 APK。建议使用 Android Chrome。</p>
     <p id="wifi-status"></p>
+  </section>
+  <section id="enrollment" hidden>
+    <h2>授权无线同步</h2>
+    <p>先让挂件连上 Wi-Fi，再重新打开挂件的「手机配网」。这次授权用于同步相册和查看任务状态。</p>
+    <button id="enroll" type="button" disabled>授权这台挂件</button>
   </section>
   <form id="form" autocomplete="off">
     <fieldset id="network" disabled>

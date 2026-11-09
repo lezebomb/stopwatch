@@ -74,6 +74,20 @@ export class PhoneSetup {
     return status;
   }
   status() { return this.exclusive(generation => this.readStatus(generation)); }
+  commandStatus(key, value = "") {
+    return this.exclusive(async generation => {
+      await this.command.writeValueWithResponse(encoder.encode(`${key}=${value}`));
+      const status = await this.readStatus(generation);
+      const prefix = `${key}: `;
+      if (!status.last?.startsWith(prefix)) throw new Error("挂件未确认命令。");
+      return status.last.slice(prefix.length);
+    });
+  }
+  async enroll(code) {
+    if (!/^[A-Za-z0-9_-]{32}$/.test(code) || (await this.commandStatus("sync.enroll", code)) !== "ok")
+      throw new Error("挂件未接受授权。请确认已联网、已打开手机配网，并使用支持无线同步的固件。");
+  }
+  enrollmentStatus() { return this.commandStatus("sync.status"); }
   provision(ssid, password, open = false) {
     const network = validateNetwork(ssid, password, open);
     return this.exclusive(async generation => {

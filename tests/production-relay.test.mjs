@@ -157,7 +157,9 @@ test("device sync delivers uploaded RGB565 and prevents device credentials from 
     const upload = await call("photos", { method: "POST", headers: { Origin: origin, ...operator }, body: await readFile("assets/photos/0.jpg") });
     assert.equal(upload.status, 201);
     const { id } = await upload.json();
+    assert.equal((await post("settings", { defaultPhoto: id }, operator)).status, 200);
     const snapshot = await (await call("device/sync", { headers: device })).json();
+    assert.equal(snapshot.cover.defaultPhoto, id);
     const image = await call(`device/photos/${id}`, { headers: device });
     assert.equal(image.status, 200);
     const bytes = Buffer.from(await image.arrayBuffer());
@@ -165,7 +167,9 @@ test("device sync delivers uploaded RGB565 and prevents device credentials from 
     assert.deepEqual(snapshot.codex, { online: false, task: null, quota: null });
     assert.equal((await (await call("state", { headers: operator })).json()).deviceOnline, true);
     assert.equal((await call(`photos/${id}`, { method: "DELETE", headers: { Origin: origin, ...operator } })).status, 200);
-    assert.deepEqual((await (await call("device/sync", { headers: device })).json()).photos, []);
+    const deleted = await (await call("device/sync", { headers: device })).json();
+    assert.deepEqual(deleted.photos, []);
+    assert.equal(deleted.cover.defaultPhoto, "builtin-0");
     assert.equal((await call(`device/photos/${id}`, { headers: device })).status, 404);
     assert.equal((await post("revoke", { id: deviceId }, operator)).status, 200);
     assert.equal((await call("device/sync", { headers: device })).status, 401);

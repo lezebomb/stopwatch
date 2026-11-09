@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_spiffs.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -23,6 +24,7 @@
 #include "src/misc/cache/instance/lv_image_cache.h"
 #include "sw_model.h"
 #include "sw_setup_qr.h"
+#include "sw_sync.h"
 #include "sw_updater.h"
 #include <dirent.h>
 #include <stdatomic.h>
@@ -36,6 +38,7 @@ LV_FONT_DECLARE(muse_font_cjk_noto_16);
 static lv_font_t companion_font;
 static lv_obj_t *root, *photo_obj, *caption, *status_label, *pet_face, *menu;
 static lv_obj_t *setup_panel, *setup_status;
+static lv_obj_t *cover_frame;
 static atomic_bool setup_active;
 static atomic_int setup_requested;
 static uint32_t setup_started, setup_joined;
@@ -49,16 +52,30 @@ typedef struct {
   char hash[65];
 } photo_result_t;
 static QueueHandle_t photo_requests, photo_results;
+static QueueHandle_t sync_results;
 static sw_screen_t screen;
 static unsigned photo, taps, phase;
 static uint32_t last_tap, last_slide, last_power;
 static bool egg, slideshow;
+static unsigned slide_seconds = 20;
+typedef struct {
+  char id[37];
+  uint8_t brightness, border, slideshow;
+  uint16_t seconds;
+} cover_settings_t;
+typedef struct {
+  cover_settings_t settings;
+  unsigned index;
+  bool changed_album;
+} cover_sync_t;
+static cover_settings_t last_cover;
+static bool last_cover_valid;
 static char message[192] = "今天也要记得给自己放个小假。";
 static nvs_handle_t config;
 static bool nvs_ok;
 static atomic_bool external_power_seen, previous_external_power;
-#define PHOTO_BYTES (466u * 466u * 2u)
-#define USER_SLOTS 12
+#define PHOTO_BYTES SW_SYNC_PHOTO_BYTES
+#define USER_SLOTS SW_SYNC_PHOTO_LIMIT
 typedef struct {
   char file[32];
   uint8_t hash[32];
@@ -80,14 +97,18 @@ static size_t upload_bytes;
 static unsigned upload_slot;
 static uint8_t upload_hash[32];
 static psa_hash_operation_t upload_digest = PSA_HASH_OPERATION_INIT;
-static char displayed_hash[65], task_title[152];
+static char displayed_hash[65], task_title[152], task_project[80];
+static int task_quota = -1;
+static uint64_t task_synced_ms;
+static atomic_bool task_wireless;
 static atomic_bool codex_online;
 static atomic_uint task_seen;
 static const char *TEMP_PHOTO = "/photos/upload.partial";
 static const char *names[] = {"照片", "Muse", "Codex", "指南"};
 static const char *phases[] = {"休息一下", "正在思考", "认真工作", "运行测试",
-                               "等待确认", "任务完成", "任务失败"};
+                               "等待确认", "任务完成", "任务失败", "已中断"};
 static void show(void);
+static void load_photo(void);
 int sw_companion_brightness(int requested) {
   if (!root || screen == SW_MUSE)
     return requested;
@@ -171,15 +192,8 @@ static unsigned next_photo(unsigned current) {
   }
   return 0;
 }
-static bool file_valid(const photo_entry_t *entry) {
-  if (!entry->file[0])
-    return true;
-  if (!memchr(entry->file, 0, sizeof(entry->file)) ||
-      !managed_name(entry->file))
-    return false;
-  char name[48];
-  snprintf(name, sizeof(name), "/photos/%s", entry->file);
-  FILE *file = fopen(name, "rb");
+static bool photo_file_valid(const char *path, const uint8_t expected[32]) {
+  FILE *file = fopen(path, "rb");
   if (!file)
     return false;
   uint8_t *buffer = heap_caps_malloc(2048, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -193,11 +207,21 @@ static bool file_valid(const photo_entry_t *entry) {
   }
   ok = ok && !ferror(file) && total == PHOTO_BYTES &&
        psa_hash_finish(&op, hash, 32, &hash_size) == PSA_SUCCESS &&
-       hash_size == 32 && !memcmp(hash, entry->hash, 32);
+       hash_size == 32 && !memcmp(hash, expected, 32);
   psa_hash_abort(&op);
   free(buffer);
   fclose(file);
   return ok;
+}
+static bool file_valid(const photo_entry_t *entry) {
+  if (!entry->file[0])
+    return true;
+  if (!memchr(entry->file, 0, sizeof(entry->file)) ||
+      !managed_name(entry->file))
+    return false;
+  char path[48];
+  snprintf(path, sizeof(path), "/photos/%s", entry->file);
+  return photo_file_valid(path, entry->hash);
 }
 static bool album_valid(const album_t *value) {
   if (value->magic != 0x53574131)
@@ -285,6 +309,178 @@ static void collect_photos(void) {
   }
   closedir(dir);
 }
+static bool install_photo(photo_entry_t *entry, const uint8_t sha[32],
+                          unsigned tag) {
+  char hex[65], path[48];
+  hash_hex(sha, hex);
+  for (unsigned i = 0; i < 8; i++) {
+    snprintf(entry->file, sizeof(entry->file), "u%02u-%.16s-%04x.rgb", tag, hex,
+             (unsigned)(esp_random() & 65535));
+    snprintf(path, sizeof(path), "/photos/%s", entry->file);
+    if (access(path, F_OK) == 0)
+      continue;
+    if (rename(TEMP_PHOTO, path))
+      return false;
+    memcpy(entry->hash, sha, sizeof(entry->hash));
+    return true;
+  }
+  return false;
+}
+
+/* Caller owns transfer_lock. Both transports use the same recovery index. */
+static bool commit_album(const album_t *next) {
+  if (nvs_set_blob(config, "album_prev", &album, sizeof(album)) != ESP_OK ||
+      nvs_commit(config) != ESP_OK ||
+      nvs_set_blob(config, "album", next, sizeof(*next)) != ESP_OK ||
+      nvs_commit(config) != ESP_OK) {
+    /* A failed commit may have reached flash. Preserve all files until boot
+     * can determine which generation is authoritative. */
+    album_writable = false;
+    return false;
+  }
+  portENTER_CRITICAL(&device_lock);
+  previous_album = album;
+  album = *next;
+  portEXIT_CRITICAL(&device_lock);
+  return true;
+}
+
+bool sw_companion_sync_allowed(void) {
+  muse_mode_t mode = muse_state_mode(NULL);
+  if (muse_voice_in_call() || muse_voice_notes_waiting() ||
+      mode == MUSE_MODE_LISTENING || mode == MUSE_MODE_THINKING ||
+      mode == MUSE_MODE_SPEAKING)
+    return false;
+  sw_update_status_t update;
+  sw_update_status(&update);
+  return strcmp(update.state, "health-check") &&
+         strcmp(update.state, "health-failed") &&
+         strcmp(update.state, "checking") &&
+         strcmp(update.state, "downloading") &&
+         strcmp(update.state, "verifying") &&
+         strcmp(update.state, "restarting");
+}
+
+bool sw_companion_pairing_open(void) { return atomic_load(&setup_active); }
+
+static bool photo_wanted(const sw_sync_album_t *desired,
+                         const uint8_t sha[32]) {
+  for (unsigned i = 0; i < desired->count; i++) {
+    if (!memcmp(desired->photos[i].sha256, sha, 32))
+      return true;
+  }
+  return false;
+}
+
+/* Tag 99 is outside the USB slots (00..11) but valid in older firmware. It
+ * marks only files this relay manages, keeping USB uploads and rollback safe.
+ */
+#define RELAY_PHOTO_TAG 99
+sw_sync_album_result_t sw_companion_sync_album(const sw_sync_album_t *desired,
+                                               sw_sync_fetch_photo fetch,
+                                               void *ctx) {
+  if (!transfer_lock || !sync_results ||
+      xSemaphoreTake(transfer_lock, 0) != pdTRUE)
+    return SW_SYNC_ALBUM_BUSY;
+  sw_sync_album_result_t result = SW_SYNC_ALBUM_ERROR;
+  if (upload_file) {
+    result = SW_SYNC_ALBUM_BUSY;
+    goto done;
+  }
+  if (!album_writable)
+    goto done;
+
+  album_t next = album;
+  bool occupied[USER_SLOTS];
+  const sw_sync_photo_t *download[USER_SLOTS] = {0};
+  unsigned missing = 0;
+  for (unsigned i = 0; i < USER_SLOTS; i++) {
+    photo_entry_t *entry = &next.entries[i];
+    if (!strncmp(entry->file, "u99-", 4) && !photo_wanted(desired, entry->hash))
+      memset(entry, 0, sizeof(*entry));
+    occupied[i] = entry->file[0] != 0;
+  }
+  cover_sync_t cover = {0};
+  strlcpy(cover.settings.id, desired->cover, sizeof(cover.settings.id));
+  cover.settings.brightness = desired->brightness;
+  cover.settings.border = desired->border;
+  cover.settings.seconds = desired->slide_seconds;
+  cover.settings.slideshow = desired->slideshow;
+  if (!strncmp(desired->cover, "builtin-", 8))
+    cover.index = desired->cover[8] - '0';
+  for (unsigned i = 0; i < desired->count; i++) {
+    const sw_sync_photo_t *item = &desired->photos[i];
+    unsigned slot = USER_SLOTS, free_slot = USER_SLOTS;
+    for (unsigned j = 0; j < USER_SLOTS; j++) {
+      if (occupied[j] && !memcmp(next.entries[j].hash, item->sha256, 32)) {
+        slot = j;
+        break;
+      }
+      if (!occupied[j] && free_slot == USER_SLOTS)
+        free_slot = j;
+    }
+    if (slot == USER_SLOTS) {
+      if (free_slot == USER_SLOTS) {
+        result = SW_SYNC_ALBUM_FULL;
+        goto done;
+      }
+      slot = free_slot;
+      occupied[slot] = true;
+      download[slot] = item;
+      memcpy(next.entries[slot].hash, item->sha256, 32);
+      missing++;
+    }
+    if (!strcmp(desired->cover, item->id))
+      cover.index = slot + 3;
+  }
+
+  if (missing) {
+    collect_photos();
+    size_t total = 0, used = 0;
+    if (esp_spiffs_info("photos", &total, &used) != ESP_OK ||
+        used + missing * PHOTO_BYTES + 65536 > total * 85 / 100) {
+      result = SW_SYNC_ALBUM_FULL;
+      goto done;
+    }
+  }
+  atomic_store(&upload_busy, true);
+  const int64_t deadline = esp_timer_get_time() + 90000000;
+  for (unsigned slot = 0; slot < USER_SLOTS; slot++) {
+    if (!download[slot])
+      continue;
+    if (esp_timer_get_time() >= deadline || !sw_companion_sync_allowed())
+      goto rollback;
+    FILE *file = fopen(TEMP_PHOTO, "wb");
+    if (!file)
+      goto rollback;
+    sw_sync_album_result_t received = fetch(download[slot], file, ctx);
+    int closed = fclose(file);
+    if (received != SW_SYNC_ALBUM_OK) {
+      result = received;
+      goto rollback;
+    }
+    if (closed || !photo_file_valid(TEMP_PHOTO, download[slot]->sha256) ||
+        !install_photo(&next.entries[slot], download[slot]->sha256,
+                       RELAY_PHOTO_TAG))
+      goto rollback;
+  }
+  cover.changed_album = memcmp(&album, &next, sizeof(album)) != 0;
+  if (cover.changed_album && !commit_album(&next))
+    goto rollback;
+  xQueueOverwrite(sync_results, &cover);
+  result = SW_SYNC_ALBUM_OK;
+  goto release;
+
+rollback:
+  unlink(TEMP_PHOTO);
+  if (album_writable)
+    collect_photos();
+release:
+  atomic_store(&upload_busy, false);
+done:
+  xSemaphoreGive(transfer_lock);
+  return result;
+}
 static void upload_abort(void) {
   if (upload_file)
     fclose(upload_file);
@@ -293,6 +489,50 @@ static void upload_abort(void) {
   unlink(TEMP_PHOTO);
   upload_bytes = 0;
   atomic_store(&upload_busy, false);
+}
+static unsigned task_phase(const char *state) {
+  static const char *const states[] = {"idle",    "thinking",   "working",
+                                       "testing", "approval",   "completed",
+                                       "failed",  "interrupted"};
+  for (unsigned i = 0; state && i < sizeof(states) / sizeof(states[0]); i++)
+    if (!strcmp(states[i], state))
+      return i;
+  return UINT32_MAX;
+}
+
+static void copy_caption(char *out, size_t size, const char *text) {
+  if (!text)
+    text = "";
+  size_t n = strnlen(text, size - 1);
+  while (n && ((uint8_t)text[n] & 0xc0) == 0x80)
+    n--;
+  memcpy(out, text, n);
+  out[n] = 0;
+}
+
+static void update_task(bool wireless, bool online, const char *state,
+                        const char *title, const char *project, int quota,
+                        uint64_t synced_ms) {
+  unsigned next = task_phase(state);
+  portENTER_CRITICAL(&device_lock);
+  if (!wireless || synced_ms) {
+    phase = next == UINT32_MAX ? 0 : next;
+    copy_caption(task_title, sizeof(task_title), title);
+    copy_caption(task_project, sizeof(task_project), project);
+    task_seen = lv_tick_get();
+    task_synced_ms = synced_ms;
+  }
+  task_wireless = wireless;
+  task_quota = quota;
+  codex_online = online;
+  portEXIT_CRITICAL(&device_lock);
+  atomic_fetch_add(&task_generation, 1);
+}
+
+void sw_companion_sync_task(bool online, const char *state, const char *title,
+                            const char *project, int quota,
+                            uint64_t synced_ms) {
+  update_task(true, online, state, title, project, quota, synced_ms);
 }
 static void device_reply(int id, const char *error) {
   printf("@sw {\"id\":%d,\"ok\":%s,\"error\":\"%s\",\"received\":%u}\n", id,
@@ -367,27 +607,14 @@ static bool device_console_locked(const char *line) {
           *state = cJSON_GetObjectItemCaseSensitive(request, "state"),
           *title = cJSON_GetObjectItemCaseSensitive(request, "title"),
           *online = cJSON_GetObjectItemCaseSensitive(request, "online");
-    static const char *states[] = {"idle",    "thinking",   "working",
-                                   "testing", "approval",   "completed",
-                                   "failed",  "interrupted"};
     if (!cJSON_IsString(source) || strcmp(source->valuestring, "app-server") ||
         !cJSON_IsString(state) || !cJSON_IsBool(online) ||
         !cJSON_IsString(title) ||
-        strlen(title->valuestring) >= sizeof(task_title))
+        strlen(title->valuestring) >= sizeof(task_title) ||
+        task_phase(state->valuestring) == UINT32_MAX)
       goto done;
-    unsigned p = 0;
-    for (; p < 8; p++)
-      if (!strcmp(state->valuestring, states[p]))
-        break;
-    if (p == 8)
-      goto done;
-    portENTER_CRITICAL(&device_lock);
-    phase = p > 6 ? 6 : p;
-    codex_online = cJSON_IsTrue(online);
-    snprintf(task_title, sizeof(task_title), "%s", title->valuestring);
-    task_seen = lv_tick_get();
-    portEXIT_CRITICAL(&device_lock);
-    atomic_fetch_add(&task_generation, 1);
+    update_task(false, cJSON_IsTrue(online), state->valuestring,
+                title->valuestring, NULL, -1, 0);
     error = NULL;
     goto done;
   }
@@ -505,34 +732,13 @@ static bool device_console_locked(const char *line) {
       goto done;
     }
     *next = album;
-    char hex[65], name[48];
-    hash_hex(actual, hex);
-    bool available = false;
-    for (unsigned i = 0; i < 8; i++) {
-      snprintf(next->entries[upload_slot].file, 32, "u%02u-%.16s-%04x.rgb",
-               upload_slot, hex, (unsigned)(esp_random() & 65535));
-      snprintf(name, sizeof(name), "/photos/%s",
-               next->entries[upload_slot].file);
-      if (access(name, F_OK) != 0) {
-        available = true;
-        break;
-      }
-    }
-    memcpy(next->entries[upload_slot].hash, actual, 32);
-    if (!available || rename(TEMP_PHOTO, name) ||
-        nvs_set_blob(config, "album_prev", &album, sizeof(album)) != ESP_OK ||
-        nvs_commit(config) != ESP_OK ||
-        nvs_set_blob(config, "album", next, sizeof(*next)) != ESP_OK ||
-        nvs_commit(config) != ESP_OK) {
+    if (!install_photo(&next->entries[upload_slot], actual, upload_slot) ||
+        !commit_album(next)) {
       free(next);
       upload_abort();
       error = "commit-failed";
       goto done;
     }
-    portENTER_CRITICAL(&device_lock);
-    previous_album = album;
-    album = *next;
-    portEXIT_CRITICAL(&device_lock);
     free(next);
     atomic_store(&upload_busy, false);
     error = NULL;
@@ -559,6 +765,44 @@ static void save(void) {
     nvs_set_u8(config, "slide", slideshow);
     nvs_commit(config);
   }
+}
+static void set_frame(unsigned border) {
+  lv_obj_set_style_border_width(cover_frame, border ? 3 : 0, 0);
+  lv_obj_set_style_border_color(
+      cover_frame, lv_color_hex(border == 2 ? 0xd7bb78 : 0xb5d9bd), 0);
+}
+
+static void apply_synced_cover(const cover_sync_t *sync) {
+  const cover_settings_t *prefs = &sync->settings;
+  bool first = !last_cover_valid;
+  bool select = first || strcmp(last_cover.id, prefs->id);
+  bool changed = select || last_cover.slideshow != prefs->slideshow ||
+                 last_cover.seconds != prefs->seconds ||
+                 last_cover.brightness != prefs->brightness ||
+                 last_cover.border != prefs->border;
+  char path[48];
+  photo_entry_t entry;
+  bool reselect = select || !photo_path(photo, path, &entry);
+  if (reselect)
+    photo = sync->index;
+  if (first || last_cover.slideshow != prefs->slideshow)
+    slideshow = prefs->slideshow;
+  if (first || last_cover.seconds != prefs->seconds)
+    slide_seconds = prefs->seconds;
+  if (first || last_cover.brightness != prefs->brightness)
+    muse_settings_set_brightness(prefs->brightness);
+  if (first || last_cover.border != prefs->border)
+    set_frame(prefs->border);
+  if (changed && nvs_ok)
+    nvs_set_blob(config, "relay_cover", prefs, sizeof(*prefs));
+  if (changed || reselect)
+    save();
+  if (changed || reselect)
+    last_slide = lv_tick_get();
+  last_cover = *prefs;
+  last_cover_valid = true;
+  if (reselect || sync->changed_album)
+    load_photo();
 }
 static void photo_worker(void *arg) {
   (void)arg;
@@ -763,11 +1007,13 @@ static void tick_phone_setup(uint32_t now, bool critical_battery) {
     lv_label_set_text(setup_status, hint);
 }
 static void show(void) {
+  sw_sync_focus(screen == SW_CODEX);
   lv_obj_set_flag(root, LV_OBJ_FLAG_HIDDEN, screen == SW_MUSE);
   lv_obj_set_flag(menu, LV_OBJ_FLAG_HIDDEN, screen != SW_MUSE);
   if (screen == SW_MUSE)
     return;
   lv_obj_set_flag(photo_obj, LV_OBJ_FLAG_HIDDEN, screen != SW_PHOTOS || egg);
+  lv_obj_set_flag(cover_frame, LV_OBJ_FLAG_HIDDEN, screen != SW_PHOTOS || egg);
   lv_obj_set_flag(pet_face, LV_OBJ_FLAG_HIDDEN, screen != SW_CODEX && !egg);
   if (egg) {
     lv_label_set_text(pet_face, "^ . ^");
@@ -776,27 +1022,54 @@ static void show(void) {
     lv_label_set_text(caption, "轻点换照片 · 左右滑动切换");
     load_photo();
   } else if (screen == SW_CODEX) {
-    lv_label_set_text(pet_face, phase == 5   ? "^ . ^"
-                                : phase == 4 ? "o ! o"
-                                             : "= . =");
-    char title[sizeof(task_title)];
-    bool online;
+    static const char *const faces[] = {"^ . ^", "o . o", "= . =", "^ ? ^",
+                                        "o ! o", "^ v ^", "T . T", "- . -"};
+    char title[sizeof(task_title)], project[sizeof(task_project)];
+    char connection[88], quota_text[32];
+    bool online, synced;
+    int quota;
     unsigned p;
+    uint32_t seen;
     portENTER_CRITICAL(&device_lock);
-    snprintf(title, sizeof(title), "%s", task_title);
+    memcpy(title, task_title, sizeof(title));
+    memcpy(project, task_project, sizeof(project));
     online = codex_online;
     p = phase;
+    seen = task_seen;
+    synced = task_synced_ms != 0;
+    quota = task_quota;
     portEXIT_CRITICAL(&device_lock);
-    lv_label_set_text_fmt(caption, "%s\n%s",
-                          online ? phases[p] : "Codex 离线 · 等待电脑连接",
-                          title);
+    lv_label_set_text(pet_face, faces[p]);
+    if (online && quota >= 0)
+      snprintf(quota_text, sizeof(quota_text), "额度剩余 %d%%", quota);
+    else
+      strlcpy(quota_text, "额度不可用", sizeof(quota_text));
+    const char *sync = sw_sync_state();
+    if (!strcmp(sync, "reauthorize"))
+      strlcpy(connection, "请在手机控制台重新授权", sizeof(connection));
+    else if (!strcmp(sync, "unpaired"))
+      strlcpy(connection, "请在手机控制台绑定挂件", sizeof(connection));
+    else if (!strcmp(sync, "photo-full"))
+      strlcpy(connection, "相册空间不足", sizeof(connection));
+    else if (!online && synced)
+      snprintf(connection, sizeof(connection), "上次同步 %lu 秒前",
+               (unsigned long)((lv_tick_get() - seen) / 1000));
+    else
+      strlcpy(connection, online ? quota_text : "尚未同步 · 额度不可用",
+              sizeof(connection));
+    lv_label_set_text_fmt(caption, "%s\n%s%s%s\n%s",
+                          online ? phases[p] : "Codex 离线", project,
+                          *project ? " · " : "", title, connection);
   } else
     lv_label_set_text(
         caption,
         "左右滑动切换界面\n轻点照片切换封面\n黄键按住说话，松开发送\n五次轻点打"
-        "开彩蛋\nMuse 设置中连接 "
-        "Wi-Fi\n扫码控制台管理照片与任务\n低电量休眠后连接充电\n轻点返回照片");
-  lv_obj_align(caption, LV_ALIGN_CENTER, 0, screen == SW_GUIDE ? 0 : 130);
+        "开彩蛋\n照片页左上角手机配网\n在手机控制台绑定、上传照片\n低电量请连接"
+        "充电\n轻点返回照片");
+  lv_obj_align(caption, LV_ALIGN_CENTER, 0,
+               screen == SW_GUIDE   ? 0
+               : screen == SW_CODEX ? 82
+                                    : 130);
   if (!atomic_load(&setup_active))
     lv_obj_move_foreground(root);
 }
@@ -827,13 +1100,22 @@ static void tick(lv_timer_t *timer) {
     load_photo();
     save();
   }
+  cover_sync_t cover;
+  if (sync_results && xQueueReceive(sync_results, &cover, 0) == pdTRUE)
+    apply_synced_cover(&cover);
   static unsigned observed_generation;
   unsigned generation = atomic_load(&task_generation);
-  if (codex_online && now - task_seen > 30000) {
+  if (codex_online) {
+    bool network_lost = atomic_load(&task_wireless) && !muse_wifi_connected();
     portENTER_CRITICAL(&device_lock);
-    codex_online = false;
+    bool stale =
+        codex_online && (lv_tick_elaps(task_seen) > 30000 ||
+                         (atomic_load(&task_wireless) && network_lost));
+    if (stale)
+      codex_online = false;
     portEXIT_CRITICAL(&device_lock);
-    atomic_fetch_add(&task_generation, 1);
+    if (stale)
+      atomic_fetch_add(&task_generation, 1);
   }
   if (generation != observed_generation) {
     observed_generation = generation;
@@ -857,7 +1139,17 @@ static void tick(lv_timer_t *timer) {
                         atomic_load(&setup_active));
   photo_result_t result;
   if (photo_results && xQueueReceive(photo_results, &result, 0) == pdTRUE) {
-    if (result.index == photo) {
+    bool matches = result.index == photo;
+    if (matches && photo >= 3) {
+      char path[48], expected[65];
+      photo_entry_t entry;
+      matches = photo_path(photo, path, &entry);
+      if (matches) {
+        hash_hex(entry.hash, expected);
+        matches = !strcmp(expected, result.hash);
+      }
+    }
+    if (matches) {
       uint8_t *old = pixels;
       lv_image_cache_drop(&image);
       pixels = result.data;
@@ -872,7 +1164,8 @@ static void tick(lv_timer_t *timer) {
       free(result.data);
   }
   if (screen == SW_CODEX || egg)
-    lv_obj_align(pet_face, LV_ALIGN_CENTER, 0, (now / 750) % 2 ? -3 : 3);
+    lv_obj_align(pet_face, LV_ALIGN_CENTER, 0,
+                 (screen == SW_CODEX ? -65 : 0) + ((now / 750) % 2 ? -3 : 3));
   sw_power_policy_t policy = sw_power_policy((sw_power_input_t){
       .charging = power.usb || power.charging,
       .battery = power.battery_pct,
@@ -882,15 +1175,20 @@ static void tick(lv_timer_t *timer) {
       .brightness = muse_settings_brightness()});
   if (now - last_power >= 1000) {
     last_power = now;
+    if (screen == SW_CODEX && !egg && !codex_online)
+      show();
     if (screen != SW_MUSE) {
       if (!policy.display)
         muse_state_set_asleep(true);
     }
     /* Muse owns the saved Wi-Fi switch, reconnect backoff and screen-off nap.
      * Never turn off the user's network preference when showing the cover. */
-    lv_label_set_text_fmt(status_label, "%s  %s  %d%%", names[screen],
-                          screen == SW_CODEX ? (codex_online ? "在线" : "离线")
-                                             : "",
+    const char *status = "";
+    if (screen == SW_CODEX)
+      status = codex_online ? "在线" : "离线";
+    else if (screen == SW_PHOTOS && !muse_wifi_connected())
+      status = "未联网";
+    lv_label_set_text_fmt(status_label, "%s  %s  %d%%", names[screen], status,
                           power.battery_pct);
     if (policy.pixel_shift) {
       int shift_x = (int)((now / 60000) % 3) - 1;
@@ -907,7 +1205,8 @@ static void tick(lv_timer_t *timer) {
       show();
     }
   }
-  if (slideshow && screen == SW_PHOTOS && now - last_slide >= 20000) {
+  if (slideshow && screen == SW_PHOTOS &&
+      now - last_slide >= slide_seconds * 1000) {
     last_slide = now;
     photo = next_photo(photo);
     load_photo();
@@ -916,6 +1215,7 @@ static void tick(lv_timer_t *timer) {
 static void toggle_slide(lv_event_t *event) {
   (void)event;
   slideshow = !slideshow;
+  last_slide = lv_tick_get();
   save();
 }
 void sw_companion_init(void) {
@@ -940,6 +1240,13 @@ void sw_companion_init(void) {
     nvs_get_u8(config, "slide", &slide);
     photo = selected < 3 + USER_SLOTS ? selected : 0;
     slideshow = slide;
+    size_t bytes = sizeof(last_cover);
+    last_cover_valid =
+        nvs_get_blob(config, "relay_cover", &last_cover, &bytes) == ESP_OK &&
+        bytes == sizeof(last_cover) && last_cover.id[36] == 0 &&
+        last_cover.seconds >= 5 && last_cover.seconds <= 300;
+    if (last_cover_valid)
+      slide_seconds = last_cover.seconds;
   }
   album_init();
   transfer_lock = xSemaphoreCreateMutex();
@@ -951,6 +1258,7 @@ void sw_companion_init(void) {
     unlink(TEMP_PHOTO);
   photo_requests = xQueueCreate(1, sizeof(unsigned));
   photo_results = xQueueCreate(1, sizeof(photo_result_t));
+  sync_results = xQueueCreate(1, sizeof(cover_sync_t));
   if (!transfer_lock || !photo_requests || !photo_results ||
       xTaskCreate(photo_worker, "sw_photo", 4096, NULL, 2, NULL) != pdPASS) {
     if (photo_requests)
@@ -982,6 +1290,14 @@ void sw_companion_init(void) {
   lv_obj_add_event_cb(root, touch, LV_EVENT_CLICKED, NULL);
   lv_obj_add_event_cb(root, touch, LV_EVENT_GESTURE, NULL);
   photo_obj = lv_image_create(root);
+  cover_frame = lv_obj_create(root);
+  lv_obj_remove_style_all(cover_frame);
+  lv_obj_remove_flag(cover_frame,
+                     LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_size(cover_frame, 464, 464);
+  lv_obj_center(cover_frame);
+  lv_obj_set_style_radius(cover_frame, LV_RADIUS_CIRCLE, 0);
+  set_frame(last_cover_valid ? last_cover.border : 0);
   lv_obj_center(photo_obj);
   lv_obj_remove_flag(photo_obj, LV_OBJ_FLAG_CLICKABLE);
   status_label = lv_label_create(root);
@@ -1075,6 +1391,7 @@ void sw_companion_init(void) {
     nvs_commit(config);
   }
   sw_update_start(mounted == ESP_OK && nvs_ok);
+  sw_sync_start();
   lv_timer_create(tick, 250, NULL);
   screen = SW_PHOTOS;
   show();
