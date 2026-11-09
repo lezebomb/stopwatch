@@ -47,6 +47,7 @@ static char message[192] = "今天也要记得给自己放个小假。";
 static nvs_handle_t config;
 static bool nvs_ok;
 static bool was_wifi;
+static atomic_bool external_power_seen, previous_external_power;
 #define PHOTO_BYTES (466u * 466u * 2u)
 #define USER_SLOTS 12
 typedef struct {
@@ -92,7 +93,12 @@ int sw_companion_brightness(int requested) {
 }
 bool sw_companion_keep_awake(void) {
   muse_power_t power = muse_state_power();
-  return root && screen != SW_MUSE && (power.usb || power.charging);
+  /* Bridge the short interval until the UI consumes an unplug edge and
+   * resets idle. The input task must not sleep on the old charging idle. */
+  return root && screen != SW_MUSE &&
+         (power.usb || power.charging ||
+          (atomic_load(&external_power_seen) &&
+           atomic_load(&previous_external_power)));
 }
 static void hash_hex(const uint8_t *bytes, char *text) {
   static const char h[] = "0123456789abcdef";
@@ -706,6 +712,16 @@ static void tick(lv_timer_t *timer) {
       show();
   }
   muse_power_t power = muse_state_power();
+  bool external = power.usb || power.charging;
+  if (!atomic_exchange(&external_power_seen, true)) {
+    atomic_store(&previous_external_power, external);
+  } else if (atomic_load(&previous_external_power) != external) {
+    if (screen != SW_MUSE)
+      muse_state_set_asleep(false); /* Poke once per physical source change. */
+    atomic_store(&previous_external_power, external);
+    ESP_LOGI("companion", "Power source changed to %s; fresh idle window",
+             external ? "USB" : "battery");
+  }
   sw_update_health_tick(pixels != NULL);
   sw_update_interaction(screen == SW_CODEX || egg || atomic_load(&upload_busy));
   photo_result_t result;
