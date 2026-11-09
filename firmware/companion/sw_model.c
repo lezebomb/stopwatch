@@ -6,6 +6,8 @@ sw_power_policy_t sw_power_policy(sw_power_input_t in) {
   int brightness = in.brightness < 10   ? 10
                    : in.brightness > 80 ? 80
                                         : in.brightness;
+  if (!in.charging && brightness > 20)
+    brightness = 20;
   if (!in.charging && in.battery >= 0 && in.battery <= 15 && brightness > 15)
     brightness = 15;
   return (sw_power_policy_t){

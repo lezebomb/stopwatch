@@ -15,6 +15,14 @@ test("visible photographs never claim deep sleep; battery networking is opt-in",
   assert.equal(PHOTO_BYTES, 434312);
 });
 test("critical power, low brightness, charging and unknown battery", () => {
+  assert.equal(
+    powerPolicy({ battery: 97, brightness: 80, charging: false }).brightness,
+    20,
+  );
+  assert.equal(
+    powerPolicy({ battery: 97, brightness: 80, charging: true }).brightness,
+    80,
+  );
   assert.equal(powerPolicy({ battery: 3 }).display, false);
   assert.equal(powerPolicy({ battery: 12, brightness: 50 }).brightness, 15);
   assert.equal(powerPolicy({ battery: 3, charging: true }).display, true);

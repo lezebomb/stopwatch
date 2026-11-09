@@ -2,6 +2,8 @@
 
 基于 M5Stack StopWatch C152 和官方 Muse SDK，在 v0.1 上扩展签名 OTA、自动发布、在线演示及 Windows 后台交付。当前版本 **0.2.0**。
 
+**实机进展：** 原厂完整备份及首次烧录已通过，照片/触屏/按键经本人确认；照片API经USB到真实显示、真实Codex状态和SDK离线音频已实测。手机无线、本人Muse授权、Windows正式安装与生产OTA仍待配置。见 [HARDWARE_TEST.md](HARDWARE_TEST.md)。
+
 **[打开在线隔离演示](https://lezebomb.github.io/stopwatch/)**：无需下载仓库、运行 Node 或安装 APK。发布状态以 GitHub Actions 为准。演示任务、配对和更新均为 Mock，图片仅在浏览器内存处理；不连接真实 Codex，不具备公网执行权限。
 
 ![预览](assets/preview-desktop.png)

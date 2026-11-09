@@ -31,3 +31,7 @@ Windows 的 GCC 15 构建还需要一处局部上游兼容补丁：`muse_chat_se
 已核对ESP-IDF v6.0.3官方OTA API、软件签名和回滚Kconfig。本轮真实构建及espsecure验签通过，默认photos镜像不进入flash_args。上游原先依赖Link联网的健康任务仅对StopWatch交由本项目的离线健康检查替代。开发构建仍用上游公开开发镜像签名；生产构建必须匹配独立RSA3072公钥和环境secret，缺失即拒绝。
 
 [官方OTA与回滚](https://docs.espressif.com/projects/esp-idf/en/v6.0.3/esp32s3/api-reference/system/ota.html)、[无需硬件Secure Boot的软件签名](https://docs.espressif.com/projects/esp-idf/en/v6.0.3/esp32s3/security/secure-boot-v2.html)。不开硬件Secure Boot / anti-rollback / Flash或NVS加密，不烧eFuse。生产显示真实额度或未知值；Mock额度不等于账号信息。
+
+## 实机核对补充
+
+本轮真实设备原厂应用StopWatch-UserDemo cf51acc使用IDF5.5.4；本项目实际启动IDF6.0.3。官方SDK的USB console hook、MP3 selftest和声学回环均复用；不重写音频/电源驱动。已有本机Codex 0.164.0登录用于一次真实App Server任务及额度接口初始化，设备接收真实事件；此前仅schema/替身的说明属于旧阶段。私人数据仅存.data。

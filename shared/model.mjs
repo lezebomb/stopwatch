@@ -46,6 +46,7 @@ export function powerPolicy({
   const low = battery >= 0 && battery <= 15;
   const critical = battery >= 0 && battery <= 5;
   const asleep = !charging && (critical || idleSeconds >= 180);
+  const desired = Math.max(10, Math.min(80, brightness));
   return {
     state: asleep
       ? "screen-off-light-sleep"
@@ -58,8 +59,10 @@ export function powerPolicy({
     brightness: asleep
       ? 0
       : low && !charging
-        ? Math.min(15, brightness)
-        : brightness,
+        ? Math.min(15, desired)
+        : charging
+          ? desired
+          : Math.min(20, desired),
     wifi: !asleep && (screen === "muse" || screen === "codex"),
     refreshHz: screen === "photos" ? 1 : 12,
     pixelShift: charging,

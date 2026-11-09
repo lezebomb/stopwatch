@@ -80,6 +80,13 @@ ui = ui.replace(
   "    build_overlays();",
   "    build_overlays();\n    sw_companion_init();",
 );
+const brightnessHook = "        apply_brightness(target);";
+if (!ui.includes(brightnessHook))
+  throw new Error("Upstream brightness hook changed");
+ui = ui.replace(
+  brightnessHook,
+  "        apply_brightness(sw_companion_brightness(target));",
+);
 await writeChanged(`${component}/muse_ui.c`, ui);
 let app = git(["show", "HEAD:esp32/components/muse/muse_app.c"]);
 app = '#include "sw_updater.h"\n' + app;
@@ -88,6 +95,36 @@ app = app.replace(
   '        muse_state_set_caption("%s", "");   /* the button icons say how to talk */\n        sw_update_services_ready();',
 );
 await writeChanged(`${component}/muse_app.c`, app);
+let tokenConsole = git(["show", "HEAD:esp32/main/sdk_token_console.c"]);
+const tokenHook = "bool sdk_token_console_command(const char *line) {";
+if (!tokenConsole.includes(tokenHook))
+  throw new Error("Upstream console hook changed");
+tokenConsole =
+  '#include "sw_companion.h"\n' +
+  tokenConsole.replace(
+    tokenHook,
+    tokenHook + "\n    if (sw_companion_console(line)) return true;",
+  );
+await writeChanged(`${sdk}/main/sdk_token_console.c`, tokenConsole);
+let input = git(["show", "HEAD:esp32/components/muse/muse_input.c"]);
+const serialStack =
+  'xTaskCreate(serial_task, "muse_serial", 3584, NULL, 5, NULL);';
+if (!input.includes(serialStack))
+  throw new Error("Upstream serial task changed");
+input = input.replace(
+  serialStack,
+  'xTaskCreate(serial_task, "muse_serial", 6144, NULL, 5, NULL);',
+);
+const sleepHook = "    int after = muse_settings_sleep_s();";
+if (!input.includes(sleepHook)) throw new Error("Upstream sleep hook changed");
+input =
+  '#include "sw_companion.h"\n' +
+  input.replace(
+    sleepHook,
+    '    if (sw_companion_keep_awake()) {\n        if (muse_state_asleep()) set_asleep(false, "charging cover");\n        return;\n    }\n' +
+      sleepHook,
+  );
+await writeChanged(`${component}/muse_input.c`, input);
 // Companion health checks replace the Link-only WS validation on this profile.
 let mainApp = git(["show", "HEAD:esp32/main/app.c"]);
 const healthHook = "static void ota_verify_task(void *arg) {\n    (void)arg;";

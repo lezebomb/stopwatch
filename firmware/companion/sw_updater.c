@@ -64,6 +64,9 @@ static void state(const char *phase, const char *detail) {
   snprintf(status.state, sizeof(status.state), "%s", phase);
   snprintf(status.detail, sizeof(status.detail), "%s", detail);
   portEXIT_CRITICAL(&lock);
+  if (!strcmp(phase, "idle") || !strcmp(phase, "health-failed") ||
+      !strcmp(phase, "rolled-back"))
+    ESP_LOGI(TAG, "%s: %s", phase, detail);
 }
 void sw_update_status(sw_update_status_t *out) {
   portENTER_CRITICAL(&lock);
@@ -542,8 +545,8 @@ void sw_update_start(bool storage_ok) {
     policy.min_battery = 20;
   if (policy.min_battery > 90)
     policy.min_battery = 90;
-  if (xTaskCreate(worker, "sw_update", 14336, NULL, 3, &update_task) !=
-      pdPASS) {
+  if (xTaskCreate(worker, "sw_update", SW_UPDATE_PRODUCTION ? 14336 : 4096,
+                  NULL, 3, &update_task) != pdPASS) {
     state("disabled", "无法启动更新任务");
     const esp_partition_t *running = esp_ota_get_running_partition();
     esp_ota_img_states_t current;
