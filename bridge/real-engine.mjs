@@ -42,26 +42,72 @@ export class AppServerCodex {
   }
   async connect() {
     if (this.closed) return;
+    clearTimeout(this.retry);
+    this.ready = false;
     const generation = ++this.generation;
     this.onStatus({ state: "codex-connecting", online: false });
     this.rpc = this.transportFactory
       ? this.transportFactory({
-          onNotification: (n) => this.notify(n),
-          onApproval: (r) => this.approval(r),
+          onNotification: (n) =>
+            generation === this.generation && !this.closed && this.notify(n),
+          onApproval: (r) =>
+            generation === this.generation && !this.closed && this.approval(r),
           onDisconnect: () => this.disconnected(generation),
         })
       : new AppServerTransport({
           executable: this.executable,
           cwd: this.workspaces[0].path,
-          onNotification: (n) => this.notify(n),
-          onApproval: (r) => this.approval(r),
+          onNotification: (n) =>
+            generation === this.generation && !this.closed && this.notify(n),
+          onApproval: (r) =>
+            generation === this.generation && !this.closed && this.approval(r),
           onDisconnect: () => this.disconnected(generation),
         });
     try {
       await this.rpc.initialize();
       for (const task of this.tasks.values())
         if (task.appServerThreadId) {
-          const result = await this.rpc.resume(task.appServerThreadId);
+          const project = this.authorizedProject(task);
+          if (!project) {
+            this.output(
+              task,
+              "interrupted",
+              "此历史会话的工作区已不在当前授权范围",
+              { restoreBlocked: true, approvalId: null },
+            );
+            continue;
+          }
+          let result;
+          try {
+            result = await this.rpc.resume(
+              task.appServerThreadId,
+              project.path,
+            );
+          } catch (error) {
+            if (
+              !/not found|does not exist|missing thread|unknown thread/i.test(
+                error.message,
+              )
+            )
+              throw error;
+            this.output(task, "interrupted", "原会话已不存在，请创建新任务", {
+              restoreBlocked: true,
+              approvalId: null,
+            });
+            continue;
+          }
+          if (
+            result.thread?.cwd &&
+            path.resolve(result.thread.cwd) !== path.resolve(project.path)
+          ) {
+            this.output(
+              task,
+              "interrupted",
+              "恢复会话的工作区不匹配，已停止控制",
+              { restoreBlocked: true, approvalId: null },
+            );
+            continue;
+          }
           const turn = result.thread?.turns?.at(-1);
           const status = turn?.status;
           this.output(
@@ -78,7 +124,11 @@ export class AppServerCodex {
             status === "inProgress"
               ? "已恢复 App Server 线程状态"
               : "已恢复会话历史",
-            { turnId: turn?.id || null, approvalId: null },
+            {
+              turnId: turn?.id || null,
+              approvalId: null,
+              restoreBlocked: false,
+            },
           );
         }
       this.ready = true;
@@ -139,7 +189,18 @@ export class AppServerCodex {
   }
   ownThread(threadId) {
     return [...this.tasks.values()].find(
-      (t) => t.appServerThreadId === threadId,
+      (t) =>
+        t.appServerThreadId === threadId &&
+        !t.restoreBlocked &&
+        this.authorizedProject(t),
+    );
+  }
+  authorizedProject(task) {
+    return this.workspaces.find(
+      (w) =>
+        w.id === task.projectId &&
+        task.projectPath &&
+        path.resolve(w.path) === path.resolve(task.projectPath),
     );
   }
   notify(message) {
@@ -248,6 +309,7 @@ export class AppServerCodex {
         id: c.id,
         appServerThreadId: result.thread.id,
         projectId: project.id,
+        projectPath: project.path,
         project: project.name,
         title: c.text.slice(0, 36),
         prompt: c.text,
@@ -263,6 +325,8 @@ export class AppServerCodex {
     }
     const task = this.tasks.get(c.taskId);
     if (!task?.appServerThreadId) throw new Error("只能控制本桥接创建的会话");
+    if (task.restoreBlocked || !this.authorizedProject(task))
+      throw new Error("会话的工作区不在当前授权范围");
     if (c.action === "approve") {
       const a = this.approvals.get(c.approvalId);
       if (!a || a.taskId !== task.id || a.generation !== this.generation)
@@ -289,7 +353,7 @@ export class AppServerCodex {
       return;
     }
     if (c.action === "continue") {
-      await this.rpc.resume(task.appServerThreadId);
+      await this.rpc.resume(task.appServerThreadId, task.projectPath);
       const result = await this.rpc.turn(task.appServerThreadId, c.text);
       this.output(task, "working", "会话已继续", {
         turnId: result.turn?.id,

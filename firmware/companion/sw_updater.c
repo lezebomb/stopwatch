@@ -540,6 +540,8 @@ void sw_update_start(bool storage_ok) {
     policy.stable_s = 15;
   if (policy.min_battery < 20)
     policy.min_battery = 20;
+  if (policy.min_battery > 90)
+    policy.min_battery = 90;
   if (xTaskCreate(worker, "sw_update", 14336, NULL, 3, &update_task) !=
       pdPASS) {
     state("disabled", "无法启动更新任务");

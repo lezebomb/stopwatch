@@ -66,7 +66,7 @@ npm.cmd audit
 
 应用在 `artifacts/stopwatch.bin`，完整构建在 `firmware/build`，脚本不刷写。首次交付应安装正式信任根和rollback Bootloader；不能假定公开开发密钥的v0.1能自动成为安全生产设备。
 
-20项测试覆盖C更新事务、HTTPS、签名篡改、断网、双槽模拟/回滚、数据保留、Windows损坏恢复、生产隔离、工作区/审批；Edge覆盖桌面/移动和静态零API/WS请求。软件故障注入不等于实物断电测试。
+21项测试覆盖C更新事务、HTTPS、签名篡改、断网、双槽模拟/回滚、数据保留、Windows损坏恢复、生产隔离、工作区/审批；Edge覆盖桌面/移动和静态零API/WS请求。软件故障注入不等于实物断电测试。
 
 ## 工程入口
 

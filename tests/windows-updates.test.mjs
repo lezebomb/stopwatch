@@ -160,3 +160,82 @@ test("real App Server adapter enforces workspace allowlist, owns thread IDs and 
     engine.close();
   }
 });
+
+test("restoration rejects changed workspaces and isolates missing threads while healthy sessions recover", async () => {
+  const workspace = path.resolve("allowed"),
+    calls = [],
+    events = [];
+  let callbacks;
+  const engine = new AppServerCodex({
+    emit: (type, payload) => events.push({ type, payload }),
+    workspaces: [{ id: "allowed", path: workspace, name: "Allowed" }],
+    tasks: [
+      {
+        id: "changed",
+        projectId: "allowed",
+        projectPath: path.resolve("old-location"),
+        appServerThreadId: "outside",
+      },
+      {
+        id: "missing",
+        projectId: "allowed",
+        projectPath: workspace,
+        appServerThreadId: "missing",
+      },
+      {
+        id: "good",
+        projectId: "allowed",
+        projectPath: workspace,
+        appServerThreadId: "good",
+      },
+    ],
+    transportFactory: (c) => {
+      callbacks = c;
+      return {
+        initialize: async () => ({}),
+        resume: async (id, cwd) => {
+          calls.push({ id, cwd });
+          if (id === "missing") throw new Error("thread not found");
+          return {
+            thread: { cwd, turns: [{ id: "done", status: "completed" }] },
+          };
+        },
+        quota: async () => ({ rateLimits: {} }),
+        close: () => {},
+      };
+    },
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(engine.ready, true);
+    assert.deepEqual(calls, [
+      { id: "missing", cwd: workspace },
+      { id: "good", cwd: workspace },
+    ]);
+    assert.equal(engine.tasks.get("changed").restoreBlocked, true);
+    assert.equal(engine.tasks.get("missing").restoreBlocked, true);
+    assert.equal(engine.tasks.get("good").state, "completed");
+    await assert.rejects(
+      engine.command({
+        action: "continue",
+        taskId: "changed",
+        text: "must not run",
+      }),
+      /授权范围/,
+    );
+    assert.equal(engine.ownThread("outside"), undefined);
+    engine.close();
+    const before = events.length;
+    callbacks.onNotification({
+      method: "turn/started",
+      params: { threadId: "good", turn: { id: "stale" } },
+    });
+    assert.equal(
+      events.length,
+      before,
+      "closed transport events cannot change state",
+    );
+  } finally {
+    engine.close();
+  }
+});

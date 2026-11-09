@@ -41,6 +41,19 @@ static void policy_cycle(lv_event_t *event) {
                           (unsigned long)(hours / 3600));
   }
 }
+static void battery_cycle(lv_event_t *event) {
+  nvs_handle_t h;
+  if (nvs_open("sw_updates", NVS_READWRITE, &h) == ESP_OK) {
+    uint8_t minimum = 40;
+    nvs_get_u8(h, "min_battery", &minimum);
+    minimum = minimum == 40 ? 60 : minimum == 60 ? 80 : 40;
+    nvs_set_u8(h, "min_battery", minimum);
+    nvs_commit(h);
+    nvs_close(h);
+    lv_obj_t *label = lv_obj_get_child(lv_event_get_target_obj(event), 0);
+    lv_label_set_text_fmt(label, "最低电量 %u%%（重启生效）", minimum);
+  }
+}
 void sw_update_settings_open(lv_event_t *event) {
   (void)event;
   if (panel)
@@ -62,17 +75,24 @@ void sw_update_settings_open(lv_event_t *event) {
   lv_obj_align(info, LV_ALIGN_TOP_MID, 0, 90);
   lv_obj_t *b = lv_button_create(panel);
   lv_obj_set_size(b, 230, 40);
-  lv_obj_align(b, LV_ALIGN_BOTTOM_MID, 0, -105);
+  lv_obj_align(b, LV_ALIGN_BOTTOM_MID, 0, -148);
   lv_obj_add_event_cb(b, check, LV_EVENT_CLICKED, NULL);
   lv_obj_t *l = lv_label_create(b);
   lv_label_set_text(l, "手动检查更新");
   lv_obj_center(l);
   b = lv_button_create(panel);
   lv_obj_set_size(b, 290, 35);
-  lv_obj_align(b, LV_ALIGN_BOTTOM_MID, 0, -62);
+  lv_obj_align(b, LV_ALIGN_BOTTOM_MID, 0, -106);
   lv_obj_add_event_cb(b, policy_cycle, LV_EVENT_CLICKED, NULL);
   l = lv_label_create(b);
   lv_label_set_text(l, "调整检查间隔（充电联网时）");
+  lv_obj_center(l);
+  b = lv_button_create(panel);
+  lv_obj_set_size(b, 290, 35);
+  lv_obj_align(b, LV_ALIGN_BOTTOM_MID, 0, -64);
+  lv_obj_add_event_cb(b, battery_cycle, LV_EVENT_CLICKED, NULL);
+  l = lv_label_create(b);
+  lv_label_set_text(l, "调整安装最低电量");
   lv_obj_center(l);
   b = lv_button_create(panel);
   lv_obj_set_size(b, 80, 30);

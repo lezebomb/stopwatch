@@ -14,6 +14,7 @@ if (config.mode !== "production" || !config.executionAuthorized)
 let relayOnline = false,
   codexOnline = false,
   busy = false;
+const activeTasks = new Set();
 const status = (detail = {}) =>
   process.send?.({
     ...detail,
@@ -31,9 +32,14 @@ const bridge = connectBridge({
     new AppServerCodex({
       emit: (type, payload) => {
         if (type === "task") {
-          busy = ["thinking", "working", "testing", "approval"].includes(
-            payload.state,
-          );
+          if (
+            ["thinking", "working", "testing", "approval"].includes(
+              payload.state,
+            )
+          )
+            activeTasks.add(payload.id);
+          else activeTasks.delete(payload.id);
+          busy = activeTasks.size > 0;
           status();
         }
         emit(type, payload);

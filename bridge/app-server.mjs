@@ -70,7 +70,7 @@ export class AppServerTransport {
       clientInfo: {
         name: "stopwatch_companion",
         title: "StopWatch",
-        version: "0.1.0",
+        version: "0.2.0",
       },
     });
     this.child.stdin.write('{"method":"initialized"}\n');
@@ -95,8 +95,14 @@ export class AppServerTransport {
       sandbox: "workspace-write",
     });
   }
-  resume(threadId) {
-    return this.request("thread/resume", { threadId });
+  resume(threadId, cwd) {
+    return this.request("thread/resume", {
+      threadId,
+      ...(cwd ? { cwd } : {}),
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandbox: "workspace-write",
+    });
   }
   turn(threadId, text) {
     return this.request("turn/start", {

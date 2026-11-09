@@ -18,7 +18,7 @@
 
 | 项目 | 结果 |
 |---|---|
-| npm test | 20通过、0失败、0跳过；包括实际C编译执行、HTTPS/验签/篡改/断线、模拟双槽回滚、数据保留、资源事务、Windows暂存损坏、生产授权和App Server替身 |
+| npm test | 21通过、0失败、0跳过；包括实际C编译执行、HTTPS/验签/篡改/断线、模拟双槽回滚、数据保留、资源事务、Windows暂存损坏、生产授权和App Server替身 |
 | Web构建 | 本地与隔离静态构建均通过 |
 | Edge E2E | 本地桌面/移动控制台通过；静态/stopwatch/子路径直接打开、任务/图片、零API/WS请求通过 |
 | Windows包 | 实际打包Node24与ESM桥接/监督器；Node语法检查通过，PowerShell5.1 PlanOnly通过，Executed=false |
