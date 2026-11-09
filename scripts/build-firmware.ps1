@@ -14,7 +14,7 @@ if ($Realtime) {
 }
 Push-Location $sdkRoot
 try {
-    python "$env:IDF_PATH/tools/idf.py" -B $buildRoot -D IDF_TARGET=esp32s3 -D "SDKCONFIG_DEFAULTS=$defaults" build
+    python "$env:IDF_PATH/tools/idf.py" -B $buildRoot -D IDF_TARGET=esp32s3 -D PROJECT_VER=0.1.0 -D "SDKCONFIG_DEFAULTS=$defaults" build
     if ($LASTEXITCODE -ne 0) { throw 'ESP-IDF firmware build failed' }
 } finally { Pop-Location }
 Copy-Item -LiteralPath (Join-Path $buildRoot 'muse-gadget.bin') -Destination 'artifacts/stopwatch.bin'

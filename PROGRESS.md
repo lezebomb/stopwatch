@@ -21,7 +21,7 @@
 | Edge E2E `npm run test:browser` | 通过；1440px 桌面、390px 移动、配对、任务审批/继续/失败、照片上传/封面、设置/QR、连接恢复、黄键按住/松开、彩蛋、低电量/充电唤醒；无页面脚本错误、无移动横向溢出 |
 | Codex schema | 9 个所需方法确实存在；检查 `expectedTurnId`；实际使用 PATH CLI 0.164.0；无真实 RPC/账号测试 |
 | npm audit | 升级 sharp=0.35.5、ws=8.22.2 后 0 项漏洞 |
-| ESP-IDF 实际构建 | 已通过 ESP-IDF v6.0.3 / ESP32-S3 真实编译和签名；应用 `0x2c1000`（2,887,680 bytes），4MiB 槽剩余 `0x13f000` / 31%；7MiB SPIFFS 镜像已生成；无 Token 的预期告警保留 |
+| ESP-IDF 实际构建 | 固件版本 0.1.0，已通过 ESP-IDF v6.0.3 / ESP32-S3 真实编译和签名；应用 `0x2c1000`（2,887,680 bytes），4MiB 槽剩余 `0x13f000` / 31%；7MiB SPIFFS 镜像已生成；无 Token 的预期告警保留 |
 | USB / 设备 / 电流 / 续航 | 未执行，设备未连接 |
 
 编译日志在忽略目录 `.tools/firmware-build*.log`；最终应用为 `artifacts/stopwatch.bin`，完整配套镜像在 `firmware/build/`；测试截图在 `artifacts/`。没有刷写设备。首轮编译暴露的缓存头文件和上游格式化告警已局部修复，仍保留严格告警检查。
