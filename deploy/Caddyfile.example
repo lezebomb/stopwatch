@@ -1,6 +1,10 @@
-# Design reference only. The current relay intentionally refuses public Host headers.
-# Implement production trust/origin configuration before deploying this example.
+# Design reference only: add a separate host block to an authorized existing ingress.
+# Never overwrite a proxy configuration, stop an existing service, or assume port 443 is free.
+# Relay remains loopback; STOPWATCH_PUBLIC_ORIGIN must exactly match this origin.
 companion.example.invalid {
     encode zstd gzip
+    header /version.json Cache-Control "no-store"
+    header /index.html Cache-Control "no-cache"
+    header Strict-Transport-Security "max-age=31536000"
     reverse_proxy 127.0.0.1:8787
 }

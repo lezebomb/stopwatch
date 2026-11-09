@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+const randomUUID = () => globalThis.crypto.randomUUID();
 export class MockCodex {
   constructor({ emit, tasks = [], delay = 800 }) {
     this.emit = emit;

@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { assets } from "./assets.mjs";
+import releaseConfig from "../release/config.json" with { type: "json" };
+import { createPublicKey } from "node:crypto";
 const lock = JSON.parse(await readFile("upstream.lock.json", "utf8"));
 const sdk = path.resolve(".deps/muse/esp32"),
   muse = path.resolve(".deps/muse");
@@ -27,6 +29,11 @@ for (const file of [
   "sw_companion.h",
   "sw_model.c",
   "sw_model.h",
+  "sw_update_core.c",
+  "sw_update_core.h",
+  "sw_updater.c",
+  "sw_updater.h",
+  "sw_updater_ui.c",
 ])
   await writeChanged(
     `${component}/${file}`,
@@ -36,11 +43,33 @@ for (const file of [
 let cmake = git(["show", "HEAD:esp32/components/muse/CMakeLists.txt"]);
 cmake = cmake.replace(
   '"muse_app.c"',
-  '"muse_app.c"\n        "sw_companion.c"\n        "sw_model.c"',
+  '"muse_app.c"\n        "sw_companion.c"\n        "sw_model.c"\n        "sw_update_core.c"\n        "sw_updater.c"\n        "sw_updater_ui.c"',
 );
 cmake = cmake.replace(
   "idf_component_register(",
-  "list(APPEND muse_priv_requires spiffs)\nidf_component_register(",
+  'list(APPEND muse_priv_requires spiffs app_update)\nlist(APPEND embed "update_public.pem")\nidf_component_register(',
+);
+const production = process.env.SW_PRODUCTION === "1";
+if (!production) await import("./update-dev-key.mjs");
+const publicPath = production
+  ? releaseConfig.productionPublicKey
+  : ".data/update-dev-public.pem";
+const publicPem = await readFile(publicPath, "utf8");
+const publicKey = createPublicKey(publicPem);
+if (
+  publicKey.asymmetricKeyType !== "rsa" ||
+  publicKey.asymmetricKeyDetails.modulusLength !== 3072
+)
+  throw new Error("RSA-3072 release public key required");
+if (production && !process.env.SW_SIGNING_KEY_PATH)
+  throw new Error("Private image signing key path required for production");
+await writeChanged(
+  `${component}/update_public.pem`,
+  (publicPem.endsWith("\n") ? publicPem : publicPem + "\n") + "\0",
+);
+await writeChanged(
+  `${component}/sw_update_build.h`,
+  `#pragma once\n#define SW_UPDATE_VERSION ${JSON.stringify(releaseConfig.version)}\n#define SW_UPDATE_PRODUCTION ${production ? 1 : 0}\n#define SW_UPDATE_MANIFEST_URL ${JSON.stringify(production ? releaseConfig.manifestUrl : "")}\n`,
 );
 await writeChanged(`${component}/CMakeLists.txt`, cmake);
 let ui = git(["show", "HEAD:esp32/components/muse/muse_ui.c"]);
@@ -52,6 +81,36 @@ ui = ui.replace(
   "    build_overlays();\n    sw_companion_init();",
 );
 await writeChanged(`${component}/muse_ui.c`, ui);
+let app = git(["show", "HEAD:esp32/components/muse/muse_app.c"]);
+app = '#include "sw_updater.h"\n' + app;
+app = app.replace(
+  '        muse_state_set_caption("%s", "");   /* the button icons say how to talk */',
+  '        muse_state_set_caption("%s", "");   /* the button icons say how to talk */\n        sw_update_services_ready();',
+);
+await writeChanged(`${component}/muse_app.c`, app);
+// Companion health checks replace the Link-only WS validation on this profile.
+let mainApp = git(["show", "HEAD:esp32/main/app.c"]);
+const healthHook = "static void ota_verify_task(void *arg) {\n    (void)arg;";
+if (!mainApp.includes(healthHook))
+  throw new Error("Upstream health hook changed");
+mainApp = mainApp.replace(
+  healthHook,
+  healthHook +
+    "\n#if CONFIG_MUSE_BOARD_M5STACK_STOPWATCH\n    stack_monitor_record(NULL);\n    vTaskDelete(NULL);\n    return; /* sw_updater owns storage/UI/services health, including offline operation. */\n#endif",
+);
+await writeChanged(`${sdk}/main/app.c`, mainApp);
+let settingsUi = git(["show", "HEAD:esp32/components/muse/muse_settings_ui.c"]);
+settingsUi = '#include "sw_updater.h"\n' + settingsUi;
+const settingsHook =
+  '    row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_home_battery, on_nav, (void *)&BATTERY);';
+if (!settingsUi.includes(settingsHook))
+  throw new Error("Upstream settings hook changed");
+settingsUi = settingsUi.replace(
+  settingsHook,
+  settingsHook +
+    '\n    row(list, LV_SYMBOL_REFRESH, "Software update", NULL, sw_update_settings_open, NULL);',
+);
+await writeChanged(`${component}/muse_settings_ui.c`, settingsUi);
 let board = git([
   "show",
   "HEAD:esp32/components/muse/boards/board_m5stack_stopwatch.c",
@@ -89,12 +148,24 @@ await writeChanged(
   await readFile("firmware/partitions.csv", "utf8"),
 );
 let top = git(["show", "HEAD:esp32/CMakeLists.txt"]);
-top += `\nspiffs_create_partition_image(photos "${path.resolve("firmware/assets").replaceAll("\\", "/")}" FLASH_IN_PROJECT)\n`;
+top += `\nif(SW_FACTORY_ASSETS)\n  spiffs_create_partition_image(photos "${path.resolve("firmware/assets").replaceAll("\\", "/")}" FLASH_IN_PROJECT)\nelse()\n  spiffs_create_partition_image(photos "${path.resolve("firmware/assets").replaceAll("\\", "/")}")\nendif()\n`;
 await writeChanged(`${sdk}/CMakeLists.txt`, top);
 await writeChanged(
   `${sdk}/sdkconfig.companion`,
   await readFile("firmware/sdkconfig.companion", "utf8"),
 );
+if (production) {
+  const privatePem = await readFile(process.env.SW_SIGNING_KEY_PATH, "utf8");
+  if (
+    createPublicKey(privatePem).export({ type: "spki", format: "pem" }) !==
+    publicKey.export({ type: "spki", format: "pem" })
+  )
+    throw new Error("Signing key/public trust mismatch");
+  await writeChanged(
+    `${sdk}/sdkconfig.release`,
+    `CONFIG_SECURE_BOOT_SIGNING_KEY=${JSON.stringify(path.resolve(process.env.SW_SIGNING_KEY_PATH).replaceAll("\\", "/"))}\n`,
+  );
+}
 if (existsSync("firmware/dependencies.lock"))
   await writeChanged(
     `${sdk}/dependencies.lock`,

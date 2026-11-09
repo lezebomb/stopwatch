@@ -43,13 +43,42 @@ export async function createRelay({
   port = 8787,
   bridgeToken = secret(),
   webRoot = "dist",
+  mode = "mock",
+  publicOrigin = null,
+  allowExecution = false,
 } = {}) {
+  if (!["mock", "production"].includes(mode))
+    throw new Error("Unknown relay profile");
+  if (
+    mode === "production" &&
+    (!publicOrigin ||
+      new URL(publicOrigin).protocol !== "https:" ||
+      new URL(publicOrigin).origin !== publicOrigin)
+  )
+    throw new Error(
+      "Production requires a fixed HTTPS origin and trusted loopback TLS proxy",
+    );
   const store = new Store(directory),
     sockets = new Set();
   let bridge = null,
     bridgeLastSeen = 0;
   const attempts = new Map();
-  const authenticated = (req) => store.session(cookie(req));
+  const authenticated = (req) => {
+    const session = store.session(cookie(req));
+    return session?.role === "bridge" ? null : session;
+  };
+  const originFor = (req) =>
+    mode === "production" ? publicOrigin : `http://${req.headers.host}`;
+  const hostAllowed = (req) =>
+    mode === "production"
+      ? req.headers.host === new URL(publicOrigin).host &&
+        req.headers["x-forwarded-proto"] === "https"
+      : [
+          `127.0.0.1:${server.address()?.port}`,
+          `localhost:${server.address()?.port}`,
+        ].includes(req.headers.host);
+  const sessionCookie = (token) =>
+    `sw_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${mode === "production" ? "; Secure" : ""}`;
   const send = (ws, value) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(value));
   };
@@ -63,12 +92,14 @@ export async function createRelay({
   };
   const online = () => !!bridge && Date.now() - bridgeLastSeen < 35000;
   const status = () => ({
-    mode: "mock",
+    mode,
+    executionEnabled: mode === "production" && allowExecution,
     bridgeOnline: online(),
     deviceOnline: false,
     deviceNote: "实物未连接",
     tasks: store.tasks(),
     quota: store.snapshot("quota"),
+    codex: store.snapshot("bridgeStatus"),
     settings: store.settings(),
     photos: store.photos(),
     photoBudget: PHOTO_BUDGET,
@@ -86,27 +117,38 @@ export async function createRelay({
     );
     try {
       const url = new URL(req.url, "http://localhost");
-      const expectedHost = `127.0.0.1:${server.address()?.port}`;
-      if (
-        req.headers.host !== expectedHost &&
-        req.headers.host !== `localhost:${server.address()?.port}`
-      )
-        return json(res, 403, { error: "不允许的 Host" });
+      if (!hostAllowed(req)) return json(res, 403, { error: "不允许的 Host" });
       const origin = req.headers.origin;
-      if (origin && origin !== `http://${req.headers.host}`)
+      if (origin && origin !== originFor(req))
         return json(res, 403, { error: "不允许的来源" });
       if (
         !["GET", "HEAD"].includes(req.method) &&
-        origin !== `http://${req.headers.host}`
+        origin !== originFor(req) &&
+        !["/api/bridge/enroll", "/api/bridge/revoke-self"].includes(
+          url.pathname,
+        )
       )
         return json(res, 403, { error: "写入请求必须同源" });
       if (url.pathname === "/api/health")
         return json(res, 200, {
           ok: true,
-          mode: "mock",
+          mode,
           bridgeOnline: online(),
         });
-      if (url.pathname === "/api/pair" && req.method === "POST") {
+      if (url.pathname === "/api/bridge/revoke-self" && req.method === "POST") {
+        const token = req.headers.authorization?.replace(/^Bearer /, "") || "";
+        const enrolled = store.session(token);
+        if (enrolled?.role !== "bridge")
+          return json(res, 401, { error: "有效电脑授权必需" });
+        store.revoke(enrolled.id);
+        if (bridge?.sessionId === enrolled.id) bridge.close(4001, "revoked");
+        return json(res, 200, { revoked: true });
+      }
+      if (
+        (url.pathname === "/api/pair" ||
+          url.pathname === "/api/bridge/enroll") &&
+        req.method === "POST"
+      ) {
         const key = req.socket.remoteAddress,
           now = Date.now();
         const attempt = attempts.get(key) || { count: 0, until: now + 60000 };
@@ -120,22 +162,39 @@ export async function createRelay({
         const data = JSON.parse((await body(req)).toString());
         if (typeof data.code !== "string" || data.code.length > 128)
           return json(res, 400, { error: "无效配对码" });
-        const session = store.pair(data.code);
+        const enrollment = url.pathname === "/api/bridge/enroll";
+        const session = store.pair(
+          data.code,
+          Date.now(),
+          enrollment ? "bridge" : "browser",
+        );
         if (!session)
           return json(res, 401, {
             error: "配对码已过期或已使用，请在电脑上重新生成",
           });
-        res.setHeader(
-          "Set-Cookie",
-          `sw_session=${session.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800`,
-        );
+        if (enrollment) {
+          store.audit(session.id, "bridge.enrolled");
+          return json(res, 200, {
+            bridgeId: session.id,
+            token: session.token,
+            mode,
+          });
+        }
+        res.setHeader("Set-Cookie", sessionCookie(session.token));
         return json(res, 200, { id: session.id, role: session.role });
       }
       if (url.pathname.startsWith("/api/")) {
         const session = authenticated(req);
         if (!session) return json(res, 401, { error: "请先配对" });
+        store.touch(cookie(req));
+        res.setHeader("Set-Cookie", sessionCookie(cookie(req)));
         if (req.method !== "GET" && session.role !== "operator")
           return json(res, 403, { error: "只读设备不可执行操作" });
+        if (url.pathname === "/api/bridge/tickets" && req.method === "POST") {
+          const ticket = store.ticket("bridge");
+          store.audit(session.id, "bridge.ticket.created");
+          return json(res, 200, ticket);
+        }
         if (url.pathname === "/api/state" && req.method === "GET")
           return json(res, 200, { ...status(), session });
         if (url.pathname === "/api/events" && req.method === "GET") {
@@ -153,7 +212,7 @@ export async function createRelay({
           const ticket = store.ticket(
             data.role === "viewer" ? "viewer" : "operator",
           );
-          const link = `http://${req.headers.host}/#pair=${ticket.code}`;
+          const link = `${originFor(req)}/#pair=${ticket.code}`;
           store.audit(session.id, "ticket.created");
           return json(res, 200, {
             ...ticket,
@@ -166,6 +225,7 @@ export async function createRelay({
           if (typeof id !== "string")
             return json(res, 400, { error: "无效设备" });
           store.revoke(id);
+          if (bridge?.sessionId === id) bridge.close(4001, "revoked");
           for (const ws of sockets)
             if (ws.sessionId === id) ws.close(4001, "revoked");
           return json(res, 200, { ok: true });
@@ -219,6 +279,10 @@ export async function createRelay({
           return json(res, 200, store.settings());
         }
         if (url.pathname === "/api/commands" && req.method === "POST") {
+          if (mode === "production" && !allowExecution)
+            return json(res, 503, {
+              error: "真实执行尚未由维护者启用；演示与生产权限保持隔离",
+            });
           const key = `command:${session.id}`,
             now = Date.now();
           let rate = attempts.get(key);
@@ -262,6 +326,8 @@ export async function createRelay({
             approvalId: data.approvalId,
             decision: data.decision,
             actor: session.id,
+            projectId:
+              typeof data.projectId === "string" ? data.projectId : undefined,
           };
           const added = store.command(command);
           if (added && bridge) send(bridge, { type: "command", command });
@@ -393,33 +459,55 @@ export async function createRelay({
   });
   const wss = new WebSocketServer({ noServer: true, maxPayload: 65536 });
   server.on("upgrade", (req, socket, head) => {
-    const host = req.headers.host,
-      actualPort = server.address()?.port;
-    if (![`127.0.0.1:${actualPort}`, `localhost:${actualPort}`].includes(host))
-      return socket.destroy();
+    const host = req.headers.host;
+    if (!hostAllowed(req)) return socket.destroy();
     if (req.url === "/bridge") {
       const candidate =
         req.headers.authorization?.replace(/^Bearer /, "") || "";
-      if (
-        !timingSafeEqual(
+      const enrolled = store.session(candidate);
+      const validSession = enrolled?.role === "bridge";
+      const validLegacy =
+        mode === "mock" &&
+        timingSafeEqual(
           Buffer.from(digest(candidate)),
           Buffer.from(digest(bridgeToken)),
-        )
-      )
-        return socket.destroy();
+        );
+      if (
+        (req.headers["x-stopwatch-mode"] || "mock") !== mode ||
+        (!validSession && !validLegacy)
+      ) {
+        socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+        return;
+      }
       wss.handleUpgrade(req, socket, head, (ws) => {
         if (bridge) bridge.close(4002, "replaced");
         bridge = ws;
+        ws.sessionId = enrolled?.id;
+        ws.credential = validSession ? candidate : null;
         bridgeLastSeen = Date.now();
         broadcast({ type: "bridge", online: true });
         ws.on("message", (raw) => {
           try {
             const data = JSON.parse(raw.toString());
             bridgeLastSeen = Date.now();
-            if (data.type === "heartbeat") return;
+            if (data.type === "heartbeat") {
+              if (ws.credential) {
+                if (!store.session(ws.credential))
+                  return ws.close(4001, "revoked");
+                store.touch(ws.credential);
+              }
+              return;
+            }
             if (data.type === "ack" && typeof data.id === "string")
               return store.ack(data.id);
             if (data.type === "event" && validEvent(data.event)) {
+              if (
+                ["task", "quota", "bridgeStatus", "commandError"].includes(
+                  data.event.type,
+                ) &&
+                data.event.payload.mode !== mode
+              )
+                return ws.close(1008, "profile mismatch");
               if (
                 data.event.type === "task" &&
                 (typeof data.event.payload.id !== "string" ||
@@ -457,7 +545,7 @@ export async function createRelay({
     if (
       !req.url.startsWith("/events?") ||
       !session ||
-      req.headers.origin !== `http://${host}`
+      req.headers.origin !== originFor(req)
     )
       return socket.destroy();
     wss.handleUpgrade(req, socket, head, (ws) => {

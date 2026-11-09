@@ -1,43 +1,42 @@
-# StopWatch MVP 进度
+# StopWatch 0.2.0 进度
 
-记录日期：2026-11-09（北京时间）。这是实际开发记录，Mock、主机测试与硬件测试分开报告。
+记录日期：2026-11-09，北京时间。软件模型、真实编译、实机验证分别记录。
 
-## 已完成
+## 本轮完成
 
-- 检查 Windows / Git / Python / Node / WSL 状态，建立项目专用原生 ESP-IDF v6.0.3、官方 ESP32-S3 GCC 工具、CMake/Ninja、Python 环境与主机 C 编译器。
-- 官方 Muse、ESP-IDF Commit 和许可证记录；沿用已支持 StopWatch 的官方板级、触摸、音频、电源和配对管线，用可重复补丁集成新增固件。
-- 真正的 ESP-IDF 固件源：离线照片、页面导航、NVS 封面与轮播配置、中文指南、Codex Mock 状态表情、示例彩蛋、电源策略、SPIFFS 资源。照片读取由独立 FreeRTOS worker 完成；PSRAM/队列/任务分配失败保留文字界面。黄键固定 PTT，官方录音状态机保留。
-- 响应式 Web 控制台和 466px 交互模拟器，原创照片资源与猫咪动画，照片管理、一次性配对二维码、operator/viewer、撤销、任务操作、事件历史、未读提示和可配置彩蛋。
-- 仅 loopback 的本地中转 + Windows 主动 WS Mock 桥接，SQLite 持久化、命令幂等、断线重连、事件重放与去重、有界队列、短日志。
-- Codex stdio 传输适配器和本机 schema 核对；默认不接真实账号，不读取 Token。真实 App Server 会话与 Desktop 会话边界已有文档。
-- README、硬件测试手册、安全说明、上游考证、环境记录、协议与架构文档、双击启动器。
+- 沿用Muse SDK固定commit和ESP-IDF v6.0.3，不改分区布局、不重写驱动/Bootloader。
+- 固件增加HTTPS更新、RSA-PSS签名清单、严格大小/SHA256、官方镜像验签、版本匹配、备用槽切换、启动健康确认/回滚、失败版本隔离和退避。
+- 充电/联网/空闲/电量/通话策略，手动检查和版本状态页面。电池照片页不为更新联网；已保存设置不再被启动默认值重置。
+- 默认flash_args去除photos.bin。程序更新不碰个人照片、配置与授权。系统资源单独清单、写时复制和指针恢复，空间不足拒绝。
+- main自动测试/构建、成功后GitHub Pages；正式Release再验证，缺生产身份失败关闭。Windows与生产控制台打包流程已加入。
+- 静态演示无需仓库/Node，支持子路径及移动端，不请求任何API/WS；网页JS/CSS内容哈希与前台版本检查自动刷新。
+- Windows图形首次安装/设置、含Node运行时的包、用户级后台启动、DPAPI、签名更新、独立版本及恢复实现。仅执行PlanOnly，没有安装。
+- 真实App Server引擎接入点、自己创建会话恢复、工作区allowlist、按次审批、真实在线状态和授权失效停止重试；只用替身测试，没有访问真实账号。
+- production中转的固定TLS Origin、安全cookie、目的隔离的一次性电脑授权、滚动续期、撤销及执行默认关闭。
 
-## 实际测试
+## 实际验证
 
-| 测试 | 实际结果 |
+| 项目 | 结果 |
 |---|---|
-| Web 构建 `npm run build` | 通过 |
-| `npm test` | 12 项通过、0 失败、0 跳过；包括真实 C 编译运行、SQLite 重启、配对/权限/跨站/撤销、图片解码与容量、事件去重、审批/拒绝/中断/重连、模拟 stdio RPC |
-| Edge E2E `npm run test:browser` | 通过；1440px 桌面、390px 移动、配对、任务审批/继续/失败、照片上传/封面、设置/QR、连接恢复、黄键按住/松开、彩蛋、低电量/充电唤醒；无页面脚本错误、无移动横向溢出 |
-| Codex schema | 9 个所需方法确实存在；检查 `expectedTurnId`；实际使用 PATH CLI 0.164.0；无真实 RPC/账号测试 |
-| npm audit | 升级 sharp=0.35.5、ws=8.22.2 后 0 项漏洞 |
-| ESP-IDF 实际构建 | 固件版本 0.1.0，已通过 ESP-IDF v6.0.3 / ESP32-S3 真实编译和签名；应用 `0x2c1000`（2,887,680 bytes），4MiB 槽剩余 `0x13f000` / 31%；7MiB SPIFFS 镜像已生成；无 Token 的预期告警保留 |
-| USB / 设备 / 电流 / 续航 | 未执行，设备未连接 |
+| npm test | 20通过、0失败、0跳过；包括实际C编译执行、HTTPS/验签/篡改/断线、模拟双槽回滚、数据保留、资源事务、Windows暂存损坏、生产授权和App Server替身 |
+| Web构建 | 本地与隔离静态构建均通过 |
+| Edge E2E | 本地桌面/移动控制台通过；静态/stopwatch/子路径直接打开、任务/图片、零API/WS请求通过 |
+| Windows包 | 实际打包Node24与ESM桥接/监督器；Node语法检查通过，PowerShell5.1 PlanOnly通过，Executed=false |
+| ESP-IDF固件 | 0.2.0已真实编译；包含完整更新路径；当前应用约2.82MiB（0x2d1000），4MiB槽剩余30%；最终报告以build-security.json和日志为准 |
+| SDK配置 | rollback和软件签名开启；硬件Secure Boot/eFuse anti-rollback/Flash及NVS密钥生成关闭；默认flash_args无photos.bin |
+| GitHub Actions / Pages | 已启用Pages workflow发布；本轮远端运行结果在提交后补充 |
+| 真实USB/刷写/电流/断电 | 未执行，设备未连接 |
 
-编译日志在忽略目录 `.tools/firmware-build*.log`；最终应用为 `artifacts/stopwatch.bin`，完整配套镜像在 `firmware/build/`；测试截图在 `artifacts/`。没有刷写设备。首轮编译暴露的缓存头文件和上游格式化告警已局部修复，仍保留严格告警检查。
+日志在忽略目录.tools，二进制artifacts/stopwatch.bin，完整构建firmware/build。正式发布需要生产公钥和私钥secret；当前没有正式Release、真实域名或VPS部署。
 
-## 仍未完成 / 当前限制
+## 仍需完成/验证
 
-1. 真实 Muse Token 和账号绑定、网络、录放音、黄/蓝键及实时语音需收礼人授权和实机验证。当前没有伪造连接成功。
-2. 电脑照片资源库尚未同步到实机；设备安全配对、HTTPS 资源拉取、断电原子更新、远程设置下发与遥测未接线。固件内置三张构建资源，不等于已实现无线相册。
-3. 固件 Codex 为可切换的 Mock 表情/状态；实时远程任务协议尚未接到设备。浏览器和 Windows 桥接链路已实际连通。
-4. 真实 Codex stdio 适配器未接入 relay，也未执行真实线程或额度查询；Desktop 同步未实现。模拟 stdio 测试只证明传输适配器逻辑。
-5. 彩蛋的 Web 留言/日期可配，固件仍用示例留言和固定示例日期；隐藏照片、可更换音效、动态图像/视频封面、IMU 动作触发留待扩展。
-6. 低刷新/按需 Wi-Fi 是策略目标；显示、BLE、Wi-Fi 和音频并发下的真实功耗与内部 DMA 堆需要硬件测量。没有续航估计或实测电流。
-7. 当前服务固定 127.0.0.1，二维码地址只能本机使用；手机远程访问、TLS/WSS、生产部署配置与撤销设备身份还未上线。未登录或修改 VPS。
-8. 后台 Web Push 未启用；不能保证华为手机 Edge/Chrome 后台通知。打开网页时实时同步，后续再进行手机测试。
-9. Node 内置 SQLite 当前有 experimental 提示。固件开发签名、不加密 NVS 仅用于开发；正式交付前需安全发布处理及第三方许可证打包。
+1. 正式公钥与secret、固定生产域名和经授权的中转部署；不能用开发身份冒充可交付生产系统。
+2. 实机启动、签名OTA、异常重启回滚、断电前中后恢复、存储/触屏/按键/音频/电池、真实续航。
+3. Muse真实账号/SDK授权和长期刷新，Codex收礼人账号下的真实会话恢复；当前没有读取Token或登录。
+4. 设备私人相册/系统资源的无线传输仍未接线；资源事务和断点故障目前在电脑端测试，不能声称已经自动传到挂件。
+5. Windows GUI交互、实际登录自启动/停止/卸载、脚本发布策略、断网及账号过期恢复需交付环境验证；当前仅打包/计划/替身测试。
+6. 桥接应用bundle可自动更新；bootstrap/Node运行时大版本需单独迁移发布。不兼容版本拒绝盲装。
+7. 后台Web Push仍未启用，华为Edge/Chrome后台通知不作稳定保证；打开时事件同步。
 
-## 下一阶段
-
-先接 USB-C 做只读识别和原固件备份，再确认刷写，按 HARDWARE_TEST.md 逐项验证。优先修复真实屏幕/触摸/音频/电源问题，再实现设备安全资源同步、真实自有 App Server 适配和 VPS HTTPS 中转。无需拆机、换电池、焊接或重做硬件。
+下一次接USB先识别和完整备份，再确认首次生产初始化；以后用OTA，不重写照片镜像。详见HARDWARE_TEST.md和docs/DELIVERY.md。

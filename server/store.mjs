@@ -34,16 +34,18 @@ export class Store {
       .run(digest(code), now + 120000, role);
     return { code, expires: now + 120000 };
   }
-  pair(code, now = Date.now()) {
+  pair(code, now = Date.now(), expected = null) {
     const ticket = this.db
-      .prepare("DELETE FROM tickets WHERE hash=? AND expires>? RETURNING role")
-      .get(digest(code), now);
+      .prepare(
+        "DELETE FROM tickets WHERE hash=? AND expires>? AND (? IS NULL OR (?='browser' AND role IN ('operator','viewer')) OR role=?) RETURNING role",
+      )
+      .get(digest(code), now, expected, expected, expected);
     if (!ticket) return null;
     const token = secret(),
       id = randomBytes(8).toString("hex");
     this.db
       .prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, 0)")
-      .run(digest(token), id, ticket.role, now + 7 * 86400000);
+      .run(digest(token), id, ticket.role, now + 30 * 86400000);
     this.audit(id, "paired");
     return { token, id, role: ticket.role };
   }
@@ -53,6 +55,13 @@ export class Store {
         "SELECT id,role FROM sessions WHERE hash=? AND expires>? AND revoked=0",
       )
       .get(digest(token), now);
+  }
+  touch(token, now = Date.now()) {
+    this.db
+      .prepare(
+        "UPDATE sessions SET expires=? WHERE hash=? AND revoked=0 AND expires>?",
+      )
+      .run(now + 30 * 86400000, digest(token), now);
   }
   revoke(id) {
     this.db.prepare("UPDATE sessions SET revoked=1 WHERE id=?").run(id);
@@ -86,10 +95,10 @@ export class Store {
       this.db
         .prepare("INSERT OR REPLACE INTO tasks VALUES (?,?)")
         .run(event.payload.id, JSON.stringify(event.payload));
-    if (event.type === "quota")
+    if (event.type === "quota" || event.type === "bridgeStatus")
       this.db
         .prepare("INSERT OR REPLACE INTO snapshots VALUES (?,?)")
-        .run("quota", JSON.stringify(event.payload));
+        .run(event.type, JSON.stringify(event.payload));
     this.db.exec(
       "DELETE FROM events WHERE seq < (SELECT COALESCE(MAX(seq),0)-999 FROM events)",
     );

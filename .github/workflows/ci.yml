@@ -1,0 +1,69 @@
+name: Test and build
+on:
+  push:
+    branches: [main, stable]
+  pull_request:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24.13.0"
+          cache: npm
+      - run: npm ci --no-fund
+      - run: python -m pip install --target .tools/host ziglang==0.14.1
+      - run: npm test
+      - run: npm run build
+      - run: npm run test:browser
+      - run: npm run build:preview
+      - run: npm run test:preview
+      - run: npm run package:windows
+      - name: Validate installer plan without modifying Windows startup
+        shell: pwsh
+        run: |
+          powershell.exe -NoProfile -NonInteractive -File windows/package/setup/Install-StopWatch.ps1 -PlanOnly -InstallRoot "$env:GITHUB_WORKSPACE/.data/install-plan"
+          node --check windows/package/app/bridge.mjs
+          node --check windows/package/app/supervisor.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: browser-evidence
+          path: artifacts/*.png
+  firmware:
+    runs-on: ubuntu-24.04
+    container: espressif/idf:v6.0.3
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24.13.0"
+      - run: npm ci --no-fund
+      - run: node scripts/fetch-upstream.mjs
+      - run: node scripts/prepare-firmware.mjs
+      - name: Build exact supported SDK and board
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          VERSION=$(node -p 'JSON.parse(require("fs").readFileSync("release/config.json")).version')
+          cd .deps/muse/esp32
+          idf.py -B "$GITHUB_WORKSPACE/firmware/build" -DIDF_TARGET=esp32s3 -DPROJECT_VER="$VERSION" -DSW_FACTORY_ASSETS=OFF '-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-stopwatch;sdkconfig.companion' build
+          python -m espsecure verify-signature --version 2 --keyfile dev_signing_key.pem "$GITHUB_WORKSPACE/firmware/build/muse-gadget.bin"
+      - run: node scripts/check-firmware-config.mjs firmware/build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: DEVELOPMENT-firmware-not-for-production-OTA
+          path: |
+            firmware/build/muse-gadget.bin
+            firmware/build/partition_table/partition-table.bin
+            artifacts/build-security.json
+          retention-days: 7

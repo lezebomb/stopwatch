@@ -1,3 +1,18 @@
+# 0.2.0 OTA专用验收补充
+
+本轮没有执行任何USB访问、复位、刷写或断电实验。下列项目均待实机验证。
+
+- 首次安装前完整备份，确认C152/16MiB/8MiB PSRAM及实际Bootloader、分区表。旧开发信任根不能假定能直接接收正式密钥的更新。
+- 首次照片初始化才使用 -FactoryAssets；正常构建默认不写photos.bin。升级前记录照片哈希/封面、彩蛋、Wi-Fi、Muse和设备授权，之后逐项比对，不在公开日志放Token。
+- 正式交付需正式公钥和签名版本。核验rollback=on，硬件Secure Boot、Flash/NVS eFuse密钥生成和eFuse anti-rollback=off；不烧eFuse。
+- 测试健康更新进入备用槽，等待UI/照片/服务健康确认，再检查当前槽VALID；重启仍用新版本且封面/授权不变。
+- 使用专门故障固件令健康确认失败，验证Bootloader回旧版本、显示回滚并隔离失败版本；不使用生产账号测试危险命令。
+- 测试假签名、错误哈希/大小、错板型/布局、降级、HTTP、网络掉线；均不得激活新槽，旧照片和应用可用。
+- 在可恢复、有备份条件下分别测试清单前、下载中、镜像验签后、写otadata附近、首次启动期间断电。软件故障注入不代替这些实测。
+- 电池照片页观察Wi-Fi不被更新拉起；充电后自动连接已存热点并限频检查。低电、通话、Codex交互和不稳定网络推迟安装，结束后恢复。
+- 先测Windows用户级安装、登录自启、后台重连、停止/撤销/卸载及更新包损坏恢复；不将开发电脑PlanOnly称为实际安装成功。
+
+下面保留首次连接、备份和恢复流程。正常OTA只更新应用，不跟随这些有线步骤反复初始化照片。
 # 首次 USB-C 接入与硬件验证
 
 **本轮没有连接、重置、刷写或擦除设备。以下命令为下一阶段操作手册，不能视为执行记录。**
@@ -26,7 +41,7 @@ Get-FileHash .data/backups/original-16MB.bin -Algorithm SHA256
 ## 3. 检查构建产物后再刷写
 
 ```powershell
-./scripts/build-firmware.ps1
+./scripts/build-firmware.ps1 -FactoryAssets
 Set-Location .deps/muse/esp32
 python "$env:IDF_PATH/tools/idf.py" -B D:/stopwatch/firmware/build -p COM7 flash
 python "$env:IDF_PATH/tools/idf.py" -B D:/stopwatch/firmware/build -p COM7 monitor

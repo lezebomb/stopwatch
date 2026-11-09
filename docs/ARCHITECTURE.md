@@ -1,33 +1,33 @@
-# 架构与边界
+# 架构与边界（0.2.0）
 
-## 当前可运行链路
+## 产品链路
 
-浏览器控制台 / 466px 模拟器 → 127.0.0.1 Node HTTP + WS 中转 → 主动连接的 Windows Mock 桥接 → MockCodex 状态机。
+固定 HTTPS 手机控制台 / StopWatch → 独立域名 TLS 反代 → loopback relay / SQLite ← 当前用户 Windows 主动 WSS ← 独立 Codex App Server stdio。生产默认禁止执行，首次安装选工作区并明确授权后才能开启。没有登录或部署真实 VPS。
 
-中转用 Node 24 自带 SQLite（当前 Node 仍提示 experimental），不需要 Go、Docker、外部数据库或管理员权限。选择 Node 是为了复用当前 Windows 已安装工具，降低本轮安装依赖。后续可按协议替换成 Go 中转。没有连接 VPS、代理或真实账号。
+公开 GitHub Pages 为独立静态演示：浏览器 Mock、内存图片、零 API / WS 请求。开发者本地 CMD 入口保留；演示身份不能用于生产。
 
-- `server/app.mjs`：HTTP、图片转换、认证、WS 角色路由。
-- `server/store.mjs`：短时票据、授权、设置、1000 条事件、命令幂等、审计。
-- `bridge/client.mjs`：电脑主动连接 relay `/bridge`，不监听家庭公网端口；有界指数退避、持久 outbox、事件确认。
-- `bridge/mock.mjs`：Mock 的执行、测试、审批、完成、失败和中断。无任务百分比。
-- `bridge/app-server.mjs`：独立 stdio RPC 传输适配器；默认运行不会创建它，也没有真实账号访问测试。
-- `shared/model.mjs` / `firmware/companion/sw_model.*`：相同状态顺序、照片限制和电源策略；主机测试分别验证。
-- `web/app.mjs`：控制台与圆屏模拟器共用事件流和资源。
+- server/app.mjs、store.mjs：profile / 固定 Origin、受保护 cookie、浏览器与电脑目的隔离的短时授权、撤销、持久事件与幂等。
+- bridge/client.mjs：主动连接、退避、SQLite outbox / 处理日志；崩溃时不重放不确定的执行命令。
+- bridge/real-engine.mjs、app-server.mjs：真实 stdio 适配、工作区 allowlist、仅恢复自身线程、按请求审批 / TTL、授权失效停止重试。当前用替身验证，未连接真实账号；不接管 Desktop 会话。
+- windows/：一次图形安装，自带 Node，DPAPI、用户级自动启动；监督器与可更新应用分离，签名暂存、健康确认、回退、停止 / 撤销 / 卸载。没有在开发电脑安装。
+- web/：事件控制台、466px 模拟器、哈希静态资源与前台自动版本刷新；生产额度来自真实提供者，不能伪造百分比。
 
-## 设备固件
+## 设备与更新
 
-通过锁定的 Muse SDK 扩展，不复制重写硬件驱动。`scripts/prepare-firmware.mjs` 每次从固定 commit 的原始 Git blob 重新生成最小补丁；hook 不匹配即报错。上游下载目录被忽略，补丁源在 `firmware/companion`。驱动继续由 Muse 的 StopWatch board 文件维护：CO5300 QSPI、CST820、M5PM1、M5IOE1、ES8311、音频队列和状态机。
+Muse 固定 commit、ESP-IDF v6.0.3 和现有驱动保持，prepare 从锁定 blob 生成可复现补丁。CO5300 / CST820 / M5PM1 / M5IOE1 / ES8311、音频队列与官方 Muse 授权链路继续沿用。黄键 GPIO2 TALK、蓝键 GPIO1 SPEAKER；没有旁路录音管线。
 
-扩展：照片页、页面导航、中文指南、Codex Mock 状态、留言彩蛋、RGB565 资源、NVS 设置、电源策略。黄键 GPIO2 固定 TALK，蓝键 GPIO1 保留 SPEAKER 行为，不新建旁路录音管线。真实 Muse 配对仍在原 UI 内，无 Token 不声称已连接。实验性实时语音用 `-Realtime` 独立构建，未经硬件验证。上游普通界面语言为英文，扩展指南为中文。
+sw_update_core 为便携 C 策略 / 写入顺序；sw_updater 为真实 ESP 适配。RSA-PSS 签名清单 → HTTPS CA / 主机名验证 → 备用槽流式写入及完整 SHA256 → 官方 esp_ota_end 镜像验签 → 版本匹配 → 持久待确认记录 → 官方切槽 → UI / 照片 / 存储 / 服务健康检查。Bootloader rollback 保留，健康失败回退，不依赖外网连接才能确认健康。
 
-Flash 表保持 table=0x10000、双 4 MiB OTA 槽与原 product 分区偏移；增加 7 MiB SPIFFS。照片预算只使用其中 6 MiB，最多 12 张。每张 466²×2=434312 字节 RGB565；12 张约 4.97 MiB，JPEG 预览也计入服务端预算。SPIFFS 失败不自动格式化。
+默认每6小时，联网恢复30分钟限频，稳定60秒、空闲30秒、电量40%以上且充电、无通话 / 交互才安装；失败有界指数退避。更新器不会主动为检查唤醒电池模式 Wi-Fi。阈值保存于独立 sw_updates NVS 命名空间，设置页可手动检查。
 
-当前上传保存在电脑资源库，**尚未实现设备远程照片同步和安全凭据下发**。固件使用构建时生成的三张原创风景，不表示手机上传已经传到实物。后续应通过具有独立 viewer 设备身份的 HTTPS 拉取清单、流式临时文件写入、校验哈希、原子激活与断电恢复完成同步。不能把浏览器 operator cookie 直接复制给挂件。
+保持 table=0x10000、两个4MiB OTA槽、product分区和0x822000的7MiB photos。程序更新不改分区 / Bootloader，不触碰私人数据，不烧eFuse。默认不向 flash_args 加 photos.bin；只有首次初始化显式 FactoryAssets。
 
-## 后续 VPS 链路
+## 数据与资源
 
-StopWatch / 手机 → Caddy HTTPS/WSS → 轻量 relay / SQLite ← Windows 主动 WSS ← 本地独立 Codex App Server stdio。
+固件程序、system动态资源、私人照片 / 配置 / 账号分开。ResourceStore 有签名清单、逐文件 SHA256、临时写入、不可变对象、active / previous 原子切换与恢复；写时复制空间不足就拒绝。不能在7MiB中承诺同时存两套6MiB相册。
 
-当前 relay 是严格 loopback 开发配置；Host 与 Origin 校验固定，不可直接改为监听 0.0.0.0 就部署。正式阶段需加入配置化公共 origin、受信反代边界、Secure cookie、浏览器及桥接独立身份、限速/资源配额、设备证书或可轮转密钥、备份和运维检查。`deploy/Caddyfile.example` 仅示意，没有执行部署。
+实际设备无线照片 / 资源传输仍未接线；资源事务目前在电脑端执行。固件仍使用构建的默认照片资源，不能把手机上传演示当成照片已到实物。真实授权刷新、设备电流、实际回滚 / 断电恢复均待实机验收。
 
-不公开 Codex 原始 RPC。中转只允许白名单命令，不转发任意 shell；真实桥接还需工作区 allowlist、审批到具体 request 的绑定、TTL、每台电脑单一控制权和同一命令持久去重。Desktop 会话同步是独立未实现模块，不能假设独立 App Server 可以接管 Desktop。
+## 发布与部署
+
+main 经 CI 后部署 Pages；正式 Release 经验证及 production-signing 环境产生签名固件 / 清单、Windows 包和生产控制台制品。生产公钥 / secret / 域名缺失时失败关闭。无 SSH 自动执行步骤；未来独立版本目录、健康后切换、保留持久 data，不能改动 VPS 已有代理。详见 DELIVERY.md、SECURITY.md 和 HARDWARE_TEST.md。

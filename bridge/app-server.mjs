@@ -9,6 +9,7 @@ export class AppServerTransport {
     cwd,
     onNotification = () => {},
     onApproval = () => {},
+    onDisconnect = () => {},
   }) {
     this.child = spawn(executable, args, {
       cwd,
@@ -44,8 +45,14 @@ export class AppServerTransport {
       }
       this.pending.clear();
     };
-    this.child.on("exit", rejectAll);
-    this.child.on("error", rejectAll);
+    this.child.on("exit", () => {
+      rejectAll();
+      onDisconnect();
+    });
+    this.child.on("error", () => {
+      rejectAll();
+      onDisconnect();
+    });
   }
   request(method, params) {
     const id = this.next++;
@@ -84,6 +91,7 @@ export class AppServerTransport {
     return this.request("thread/start", {
       cwd,
       approvalPolicy: "on-request",
+      approvalsReviewer: "user",
       sandbox: "workspace-write",
     });
   }

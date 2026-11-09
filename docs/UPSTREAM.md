@@ -25,3 +25,9 @@
 Windows 的 GCC 15 构建还需要一处局部上游兼容补丁：`muse_chat_session.cpp` 的连接错误提示把 hostname 格式限定为 `%.32s`，以适配调用处 48 字节缓冲区，保留 `-Werror`。照片扩展显式包含 LVGL 9.5 的图片缓存头文件。补丁由 prepare 脚本从锁定 blob 生成，不直接修改音频或网络状态机。
 
 项目新增代码为 Apache-2.0。第三方 Muse / ESP-IDF 的源文件、版权头、LICENSE、NOTICE、子组件许可证应随固件分发保留；中文字体 Noto Sans SC 的 OFL 要求保留。`THIRD_PARTY_NOTICES.md` 记录入口。不要提交上游的开发签名密钥到本仓库；固件构建沿用上游开发签名但不启用 Secure Boot 或烧写 eFuse。正式礼物固件需要独立签名与安全存储评审，开发签名不提供生产防篡改保证。
+
+## 0.2.0 OTA核对补充
+
+已核对ESP-IDF v6.0.3官方OTA API、软件签名和回滚Kconfig。本轮真实构建及espsecure验签通过，默认photos镜像不进入flash_args。上游原先依赖Link联网的健康任务仅对StopWatch交由本项目的离线健康检查替代。开发构建仍用上游公开开发镜像签名；生产构建必须匹配独立RSA3072公钥和环境secret，缺失即拒绝。
+
+[官方OTA与回滚](https://docs.espressif.com/projects/esp-idf/en/v6.0.3/esp32s3/api-reference/system/ota.html)、[无需硬件Secure Boot的软件签名](https://docs.espressif.com/projects/esp-idf/en/v6.0.3/esp32s3/security/secure-boot-v2.html)。不开硬件Secure Boot / anti-rollback / Flash或NVS加密，不烧eFuse。生产显示真实额度或未知值；Mock额度不等于账号信息。

@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "version": "0.2.0",
+  "hardware": "m5stack-stopwatch-c152",
+  "partitionLayout": "c152-16m-dual4m-photos7m-v1",
+  "dataSchema": 1,
+  "channel": "stable",
+  "keyId": "stable-v1",
+  "manifestUrl": "https://github.com/lezebomb/stopwatch/releases/latest/download/firmware-manifest.json",
+  "productionPublicKey": "release/trust/stable-public.pem",
+  "productionOrigin": null
+}

@@ -1,85 +1,82 @@
-# StopWatch · 随身的小小陪伴
+# StopWatch · 小小挂件，长期陪伴
 
-为 M5Stack StopWatch C152 开发的私人礼物项目：离线照片封面、官方 Muse、Codex 桌宠与移动网页控制台。当前为可本地运行的 **Mock MVP**；没有连接硬件、登录真实 Muse/Codex 账号或部署 VPS。
+基于 M5Stack StopWatch C152 和官方 Muse SDK，在 v0.1 上扩展签名 OTA、自动发布、在线演示及 Windows 后台交付。当前版本 **0.2.0**。
 
-![控制台预览](assets/preview-desktop.png)
+**[打开在线隔离演示](https://lezebomb.github.io/stopwatch/)**：无需下载仓库、运行 Node 或安装 APK。发布状态以 GitHub Actions 为准。演示任务、配对和更新均为 Mock，图片仅在浏览器内存处理；不连接真实 Codex，不具备公网执行权限。
 
-## 在这台 Windows 电脑上预览
+![预览](assets/preview-desktop.png)
 
-在 `D:\stopwatch` 双击 **Start-StopWatch.cmd**，会构建网页、启动本地中转和 Mock 桥接，并用 Edge 打开短时配对链接。保持启动窗口运行；Ctrl+C 停止。Node.js 24 是运行前提。
+## 日常使用与当前边界
 
-也可以执行：
+- 挂件进入上次照片封面，保留 Wi-Fi、Muse 授权和配置。充电联网且空闲时更新；电池照片页不为更新唤醒 Wi-Fi。
+- 正式手机入口是维护者的固定 HTTPS 域名，一次扫码配对，保护会话滚动续期。Edge / Chrome，无需 APK。公开演示不是正式控制台。
+- Windows 正式包自带 Node，一次图形安装、选择工作区并授权，之后后台启动、主动 WSS、恢复和更新，无需每次 CMD。
+- 授权失效会明确提示重新授权；仅恢复桥接自己创建的 App Server 会话，不接管 Desktop。
+
+**正式启用还需要维护者一次性生产公钥/签名 secret、域名/中转配置和实机验收。本轮未部署 VPS，未安装本机自启动。**
+
+## 自动交付
+
+main push → Windows 测试 + ESP-IDF v6.0.3 构建 → 成功后部署 Pages 隔离演示。
+
+正式 vX.Y.Z Release → 再验证 → production-signing 环境 → 签名固件/清单、Windows 安装包/自动更新、生产控制台制品。版本来自 `release/config.json`，tag 必须匹配。缺生产公钥或 secret 就失败关闭，不使用公开开发密钥代替。Actions 固定 SHA，PR 不接触发布 secret。[交付配置](docs/DELIVERY.md)。
+
+## OTA 与数据保留
+
+使用官方 Bootloader 与 `esp_ota_begin/write/end/set_boot_partition`。先验证 RSA-3072/PSS-SHA256 清单与兼容性，再 HTTPS 流式写备用 4MiB 槽，核对完整字节数/SHA256，调用 ESP-IDF 镜像签名验证及镜像版本检查后才切槽。
+
+新启动通过存储/照片、UI 心跳、服务任务与内存检查才确认；失败回滚，失败版本隔离，下载错误退避。默认每6小时检查，重连限频30分钟，网络稳定60秒、空闲30秒、电量至少40%、无通话/Codex交互才安装。设备设置新增 Software update，可查看版本/状态与手动检查。
+
+真实配置已核验 rollback 和软件签名。没有启用硬件 Secure Boot、Flash/NVS eFuse 密钥生成或 eFuse anti-rollback。分区布局保持双4MiB应用与 `0x822000 / 7MiB` 照片分区。**默认 flash_args 不含 photos.bin，OTA不写照片、NVS、授权、Bootloader或分区表。**
+
+独立系统资源有签名清单、逐文件校验、写时复制、原子指针和恢复实现。空间不足推迟而不擦旧数据。设备私人相册/资源无线传输尚未接线；目前资源事务实现及测试在电脑端运行。
+
+## 开发者本地调试
+
+`Start-StopWatch.cmd`仅为开发工具，不是最终交付入口。
 
 ```powershell
 cd D:\stopwatch
 npm.cmd ci
 npm.cmd run build
 npm.cmd start
+npm.cmd run build:preview
+npm.cmd run mock:updates
+npm.cmd run package:windows
 ```
 
-打开启动输出中的 `http://127.0.0.1:8787/#pair=...`（两分钟、一次性）。控制台和模拟器共用同一个 Web App，模拟器位于总览；`http://127.0.0.1:8787/simulator` 也可以打开。过期后运行 `node scripts/pair.mjs` 获取新链接，或在已配对控制台设置中生成二维码。
+本地服务只绑定127.0.0.1:8787；打开输出中的两分钟配对链接，总览含466px模拟器。`node scripts/pair.mjs`生成新码。静态输出为preview-dist；HTTPS测试更新源为127.0.0.1:8790。Windows开发包阻止正式安装，打包不会注册启动。
 
-所有服务只绑定 `127.0.0.1`。**手机不能访问电脑的 127.0.0.1**；当前可用 Edge 的移动视口预览，实际 Mate 80 Pro Max 联机与 HTTPS 中转属于下一阶段。未开局域网端口，未改代理，不需要 APK。
+## 构建与测试
 
-## 可以体验什么
-
-- 466×466 圆屏模拟器：点击换照片、左右滑动切页、黄键按住/松开模拟说话、蓝键模拟静音、猫咪桌宠、五次轻点彩蛋、日期彩蛋、充电/电量/Wi-Fi 控件。
-- 照片管理：上传、实际解码、居中裁切、JPEG 预览与设备 RGB565 转换、默认封面、删除、6MiB/12张容量限制。三张内置风景为程序原创测试图。
-- Mock Codex：项目/任务、执行过程、继续、追加、中断、按次批准或拒绝、结果、模拟额度、实时事件与未读提示。输入“审批”触发确认，输入“失败”触发失败。
-- 设置与中文指南：亮度、轮播、边框、彩蛋留言与日期、一次性二维码、只读权限、撤销浏览器授权。
-- 本地中转 + 主动连接的 Windows Mock 桥接：SQLite 持久化、命令幂等、事件去重/重放、离线排队和自动重连。
-- ESP-IDF 固件扩展：基于官方 Muse StopWatch 驱动，加入照片、界面切换、中文指南、Codex Mock 表情、彩蛋、NVS 和电源策略。真实 Muse 配对/语音管线保持上游实现；黄键固定录音。
-
-手机上传的照片目前保存于电脑，**设备网络同步尚未接线**。固件使用构建时的三张测试图；真实 Codex stdio 适配器尚未接入运行链路，Desktop 会话不接管。后台 Web Push、动态图片解码/视频封面与设备在线遥测尚未实现。
-
-## 固件环境与构建
-
-官方 Muse 固定 commit、ESP-IDF **v6.0.3** 和组件锁见 `upstream.lock.json` / `firmware/dependencies.lock`。PowerDemo 使用 5.5.5，仅作参考，不能替代 Muse 的 SDK 版本。
-
-本机工具均已放在项目 `.tools` / `.deps` 下。没有安装 WSL 或进行管理员系统配置。新电脑先安装 Git、Node.js 24 和便携式 [uv](https://docs.astral.sh/uv/)，再运行：
+本机工具在 `.tools` / `.deps`；新Windows准备Git、Node24、便携uv后运行 `scripts/setup.ps1`。
 
 ```powershell
-./scripts/setup.ps1
 ./scripts/build-firmware.ps1
-# 实验性实时语音为另一构建目录；需要后续实机验证：
+./scripts/build-firmware.ps1 -FactoryAssets # 仅首次初始化
 ./scripts/build-firmware.ps1 -Realtime
-```
-
-常规固件在 `firmware/build/`，成功时应用复制为 `artifacts/stopwatch.bin`。不要只拿应用 bin 猜偏移刷写：分区表、bootloader、SPIFFS 与 flash_args 必须对应同一次构建。脚本只构建，**绝不刷写**。完整刷写/备份说明见 [HARDWARE_TEST.md](HARDWARE_TEST.md)。
-
-工具下载如遇 GitHub 504，可使用脚本配置的乐鑫官方镜像；不关闭证书验证。初次下载工具和组件需较长时间及数 GB 磁盘空间。上游不带 SDK Token 可构建离线界面，但不能声称完成真实 Muse 授权。
-
-## 测试
-
-```powershell
-npm.cmd run build
+./scripts/build-firmware.ps1 -Release       # 须配置正式信任根和私钥路径
 npm.cmd test
 npm.cmd run test:browser
+npm.cmd run build:preview
+npm.cmd run test:preview
 npm.cmd run protocol:check
 npm.cmd audit
 ```
 
-主机 C 测试使用 `.tools/host/ziglang/zig.exe`（setup 脚本安装）。浏览器测试启动独立 headless Edge 上下文、独立临时数据库，不使用现有浏览器账号；默认 Edge 在 `C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe`，可用 `EDGE_BIN` 指定路径。测试截图输出到 `artifacts/desktop.png` / `mobile.png`。`protocol:check` 只生成并检查本机 CLI 的 schema，不访问账号。
+应用在 `artifacts/stopwatch.bin`，完整构建在 `firmware/build`，脚本不刷写。首次交付应安装正式信任根和rollback Bootloader；不能假定公开开发密钥的v0.1能自动成为安全生产设备。
 
-Web、API、Mock 与 C 主机测试结果不等于 ESP32 硬件测试或实测续航。最新实际记录见 [PROGRESS.md](PROGRESS.md)。
+20项测试覆盖C更新事务、HTTPS、签名篡改、断网、双槽模拟/回滚、数据保留、Windows损坏恢复、生产隔离、工作区/审批；Edge覆盖桌面/移动和静态零API/WS请求。软件故障注入不等于实物断电测试。
 
-## 目录
+## 工程入口
 
-```text
-firmware/       固件扩展、分区表、Kconfig overlay、组件锁
-server/         本地 HTTP / WS / SQLite 中转
-bridge/         Windows 主动连接、Mock、未接线的真实 RPC 适配器
-web/            移动控制台与交互模拟器
-shared/         状态定义、照片预算、中文指南
-scripts/        安装、构建、配对与启动工具
-tests/          C 主机、API/通信/异常、Edge 浏览器测试
-assets/         自制测试风景图
-docs/           架构、协议、上游考证
-deploy/         尚不可直接上线的 Caddy 设计示例
-.data/          私密运行数据（Git 忽略）
-.tools/ .deps/  本项目专用工具与上游源码（Git 忽略）
-```
+| 路径 | 内容 |
+|---|---|
+| firmware/companion/sw_updater.* | ESP更新、验签、回滚、健康检查 |
+| firmware/companion/sw_update_core.* | 可主机运行的策略与OTA操作顺序 |
+| updates/ | 清单、HTTPS Mock、资源事务/故障模型 |
+| windows/、bridge/real-engine.mjs | 后台、更新、图形安装、授权会话 |
+| server/、web/ | 中转与控制台，演示/生产隔离 |
+| .github/workflows/、release/ | CI、Pages、稳定发布配置 |
 
-## 安全与交付
-
-不要提交 `.data`、真实 Token、照片、密码、代理订阅或生成的 sdkconfig。当前公开仓库只包含测试资源。正式远程控制需收礼人授权、设备身份与安全下发、生产 TLS/Origin/ACL 配置、独立签名和实机测试。见 [SECURITY.md](SECURITY.md)、[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/UPSTREAM.md](docs/UPSTREAM.md)、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+实际结果：[PROGRESS.md](PROGRESS.md)。实机：[HARDWARE_TEST.md](HARDWARE_TEST.md)。安全：[SECURITY.md](SECURITY.md)。上游/许可：[docs/UPSTREAM.md](docs/UPSTREAM.md)、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。私人照片、Token、私钥和运行数据不进仓库。

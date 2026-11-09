@@ -9,6 +9,14 @@ firmware/sdkconfig
 firmware/assets/*.rgb
 firmware/build-realtime/
 *.log
+.keys/
+.secrets/
+*.private.pem
+release-output/
+preview-dist/
+production-dist/
+windows/package/
+windows/dist/
 .env
 .env.*
 !.env.example
@@ -20,4 +28,5 @@ artifacts/*.json
 artifacts/*.exe
 artifacts/*.pdb
 artifacts/*.obj
+artifacts/update-core-host
 !artifacts/.gitkeep

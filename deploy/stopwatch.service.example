@@ -1,0 +1,16 @@
+[Unit]
+Description=StopWatch private relay (user service)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/stopwatch/current
+EnvironmentFile=%h/stopwatch/production.env
+ExecStart=/usr/bin/env node server/main.mjs
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

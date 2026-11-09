@@ -5,9 +5,22 @@ import {
   powerPolicy,
 } from "../shared/model.mjs";
 import { guide } from "../shared/guide.mjs";
+import releaseConfig from "../release/config.json" with { type: "json" };
+const VERSION = releaseConfig.version;
+import { installDemo } from "./demo.mjs";
+import { watchVersion } from "./version-watch.mjs";
+watchVersion(
+  typeof __SW_BUILD_ID__ === "undefined" ? "local" : __SW_BUILD_ID__,
+);
+const PREVIEW = typeof __SW_PREVIEW__ !== "undefined" && __SW_PREVIEW__;
+const demo = PREVIEW ? await installDemo() : null;
+const asset = (p) => new URL(p.replace(/^\//, ""), import.meta.url).href;
+const photoUrl = (id) =>
+  PREVIEW ? demo.photoUrl(id) : `/api/photos/${id}.jpg`;
 const root = document.querySelector("#app");
 const state = {
   paired: false,
+  mode: "mock",
   page: location.pathname === "/simulator" ? "overview" : "overview",
   tasks: [],
   photos: [],
@@ -105,6 +118,9 @@ function merge(snapshot) {
     "bridgeOnline",
     "sessions",
     "quota",
+    "mode",
+    "executionEnabled",
+    "codex",
   ])
     if (snapshot[key] != null) state[key] = snapshot[key];
   if (snapshot.session) state.session = snapshot.session;
@@ -115,6 +131,12 @@ function merge(snapshot) {
     );
 }
 async function boot() {
+  if (!PREVIEW) {
+    try {
+      state.mode = (await api("health")).mode || "mock";
+    } catch {}
+  }
+  if (PREVIEW) document.title = "StopWatch · 隔离演示";
   const match = /pair=([\w-]+)/.exec(location.hash);
   if (match) {
     history.replaceState(null, "", location.pathname);
@@ -128,7 +150,9 @@ async function boot() {
     const snapshot = await api("state");
     state.paired = true;
     merge(snapshot);
-    const savedCursor = Number(localStorage.getItem("sw-cursor") || 0);
+    const savedCursor = PREVIEW
+      ? 0
+      : Number(localStorage.getItem("sw-cursor") || 0);
     state.cursor = Number.isSafeInteger(savedCursor) ? savedCursor : 0;
     const response = await api(
       `events?after=${Math.max(0, state.cursor - 30)}`,
@@ -142,6 +166,13 @@ async function boot() {
 }
 function renderPair() {
   root.innerHTML = `<main class="pair-page"><section class="pair-card"><div class="brand"><span class="brandmark"></span>StopWatch</div><div class="eyebrow">A LITTLE COMPANION, ALWAYS NEAR</div><h1>让陪伴，从这里开始。</h1><p>在启动服务的电脑上找到两分钟有效的配对链接，直接打开；也可以粘贴一次性配对码。</p><form id="pair-form"><label for="pair-code">一次性配对码</label><input id="pair-code" autocomplete="off" required placeholder="粘贴电脑显示的短时配对码"><button>连接我的 StopWatch</button></form><p class="small">当前为本地 MOCK 预览 · 无需 Muse / Codex 账号<br>二维码不会包含长期控制密钥。</p></section></main>`;
+  if (state.mode === "production") {
+    const paragraphs = root.querySelectorAll(".pair-card p");
+    paragraphs[0].textContent =
+      "扫描设备或已授权控制台的短时二维码，完成一次性绑定。";
+    paragraphs[1].textContent =
+      "受保护的正式控制台；长期密钥不会放在二维码中。";
+  }
   document.querySelector("#pair-form").onsubmit = async (e) => {
     e.preventDefault();
     try {
@@ -208,6 +239,7 @@ function receive(event, silent = false) {
     }
   }
   if (event.type === "quota") state.quota = event.payload;
+  if (event.type === "bridgeStatus") state.codex = event.payload;
   if (event.type === "settings") state.settings = event.payload;
   if (event.type === "photos") state.photos = event.payload.photos;
   if (event.type === "commandError" && !silent) toast(event.payload.message);
@@ -272,16 +304,23 @@ function quotaCard() {
   ]
     .map(([key, title]) => {
       const q = state.quota?.[key];
-      return `<div><div class="quota-name">${title}</div><div class="quota-number">${q ? 100 - q.usedPercent + "%" : "—"}<span>剩余</span></div><div class="quota-track"><div class="quota-fill" data-width="${q ? 100 - q.usedPercent : 0}"></div></div><div class="quota-reset">${q ? date(q.resetsAt) + " 重置" : "等待桥接返回"}</div></div>`;
+      const displayTitle =
+        state.mode === "production" &&
+        q?.windowDurationMins !== (key === "primary" ? 300 : 10080)
+          ? q?.windowDurationMins
+            ? `${q.windowDurationMins} 分钟窗口`
+            : "额度窗口"
+          : title;
+      return `<div><div class="quota-name">${escape(displayTitle)}</div><div class="quota-number">${q ? 100 - q.usedPercent + "%" : "—"}<span>剩余</span></div><div class="quota-track"><div class="quota-fill" data-width="${q ? 100 - q.usedPercent : 0}"></div></div><div class="quota-reset">${q ? date(q.resetsAt) + " 重置" : "等待桥接返回"}</div></div>`;
     })
     .join("")}</div></section>`;
 }
 function overview() {
-  return `<div class="dashboard">${watchCard()}<div class="right-stack">${taskCard()}${quotaCard()}</div></div><div class="bottom-grid"><section class="card"><div class="card-head"><h2>把喜欢的瞬间带在身边</h2><button class="text-button" data-page="photos">管理照片 ↗</button></div><div class="mini-photos">${[0, 1, 2].map((i) => `<img class="photo-thumb" src="/photos/${i}.jpg" alt="自制风景测试图片 ${i + 1}">`).join("")}${state.photos
+  return `<div class="dashboard">${watchCard()}<div class="right-stack">${taskCard()}${quotaCard()}</div></div><div class="bottom-grid"><section class="card"><div class="card-head"><h2>把喜欢的瞬间带在身边</h2><button class="text-button" data-page="photos">管理照片 ↗</button></div><div class="mini-photos">${[0, 1, 2].map((i) => `<img class="photo-thumb" src="${asset(`/photos/${i}.jpg`)}" alt="自制风景测试图片 ${i + 1}">`).join("")}${state.photos
     .slice(0, 2)
     .map(
       (p) =>
-        `<img class="photo-thumb" src="/api/photos/${p.id}.jpg" alt="${escape(p.name)}">`,
+        `<img class="photo-thumb" src="${photoUrl(p.id)}" alt="${escape(p.name)}">`,
     )
     .join(
       "",
@@ -326,7 +365,7 @@ function photos() {
     .concat(state.photos)
     .map(
       (p) =>
-        `<article class="photo-tile"><img src="${p.builtin ? `/photos/${p.id.slice(-1)}.jpg` : `/api/photos/${p.id}.jpg`}" alt="${escape(p.name)}"><p>${escape(p.name)} ${state.settings.defaultPhoto === p.id ? "· 当前封面" : ""}</p><div class="actions"><button class="secondary" data-cover="${p.id}">设为封面</button>${!p.builtin ? `<button class="danger" data-delete="${p.id}">删除</button>` : ""}</div></article>`,
+        `<article class="photo-tile"><img src="${p.builtin ? asset(`/photos/${p.id.slice(-1)}.jpg`) : photoUrl(p.id)}" alt="${escape(p.name)}"><p>${escape(p.name)} ${state.settings.defaultPhoto === p.id ? "· 当前封面" : ""}</p><div class="actions"><button class="secondary" data-cover="${p.id}">设为封面</button>${!p.builtin ? `<button class="danger" data-delete="${p.id}">删除</button>` : ""}</div></article>`,
     )
     .join("")}</div>`;
 }
@@ -339,7 +378,7 @@ function settings() {
     )
     .join(
       "",
-    )}</section><section class="card"><h2>连接情况</h2><p class="small muted">中转服务：${state.connected ? "在线" : "重连中"}<br>Windows Mock 桥接：${state.bridgeOnline ? "在线" : "离线"}<br>StopWatch 实物：未连接<br>浏览器后台推送：未启用<br>电流与续航：尚未实测</p><button class="quiet" id="disconnect">模拟事件连接断开 / 重连</button></section></div></div>`;
+    )}</section><section class="card"><h2>连接情况</h2><p class="small muted">中转服务：${state.connected ? "在线" : "重连中"}<br>Windows ${state.mode === "production" ? "" : "Mock "}桥接：${state.bridgeOnline ? "在线" : "离线"}<br>StopWatch 实物：未连接<br>浏览器后台推送：未启用<br>电流与续航：尚未实测</p><button class="quiet" id="disconnect">模拟事件连接断开 / 重连</button></section></div></div>`;
 }
 function guidePage() {
   return `<div class="guide-grid">${guide.map(([title, text], i) => `<article class="guide-card"><div class="number">GUIDE / ${String(i + 1).padStart(2, "0")}</div><h2>${title}</h2><p>${text}</p></article>`).join("")}</div>`;
@@ -364,7 +403,55 @@ function render() {
     ],
     guide: ["第一次用，也没关系。", "关于这位小伙伴，你需要知道的小事。"],
   };
-  root.innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand"><span class="brandmark"></span>StopWatch</div><div class="brand-note">小小挂件 · 长长陪伴</div><nav class="nav" aria-label="主导航">${nav.map(([key, icon, title]) => `<button data-page="${key}" class="${state.page === key ? "active" : ""}"><span class="nav-icon">${icon}</span>${title}${key === "tasks" && state.unread ? `<span class="unread">${state.unread}</span>` : ""}</button>`).join("")}</nav><div class="side-bottom"><strong>MADE FOR SOMEONE SPECIAL</strong>把日常的一点温柔，<br>装进 466 像素的圆里。<p class="small muted">开发预览 · v0.1.0</p></div></aside><main class="main"><header class="topbar"><span class="muted">WORKSPACE / 我的小小陪伴</span><div class="top-actions"><span><i class="dot ${state.bridgeOnline ? "" : "off"}"></i> ${state.bridgeOnline ? "Mock 桥接在线" : "桥接离线"}</span><span class="tag">MOCK PREVIEW</span><span class="avatar">S</span></div></header><div class="pagehead"><div><div class="eyebrow">${new Date().toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "long" })} · A LITTLE MOMENT</div><h1>${titles[state.page][0]}</h1><p>${titles[state.page][1]}</p></div><button class="quiet" data-page="guide">快速上手 ↗</button></div>${!state.connected ? '<div class="offline-banner">事件连接已断开，正在自动重连。任务历史仍保留在电脑上。</div>' : ""}${{ overview, tasks, photos, settings, guide: guidePage }[state.page]()}<footer class="footer"><span>StopWatch Companion · 为日常留一点温柔</span><span>本地模拟 · 未连接真实硬件与账号</span></footer></main></div>`;
+  root.innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand"><span class="brandmark"></span>StopWatch</div><div class="brand-note">小小挂件 · 长长陪伴</div><nav class="nav" aria-label="主导航">${nav.map(([key, icon, title]) => `<button data-page="${key}" class="${state.page === key ? "active" : ""}"><span class="nav-icon">${icon}</span>${title}${key === "tasks" && state.unread ? `<span class="unread">${state.unread}</span>` : ""}</button>`).join("")}</nav><div class="side-bottom"><strong>MADE FOR SOMEONE SPECIAL</strong>把日常的一点温柔，<br>装进 466 像素的圆里。<p class="small muted">v${VERSION}</p></div></aside><main class="main"><header class="topbar"><span class="muted">WORKSPACE / 我的小小陪伴</span><div class="top-actions"><span><i class="dot ${state.bridgeOnline ? "" : "off"}"></i> ${state.bridgeOnline ? "Mock 桥接在线" : "桥接离线"}</span><span class="tag">MOCK PREVIEW</span><span class="avatar">S</span></div></header><div class="pagehead"><div><div class="eyebrow">${new Date().toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "long" })} · A LITTLE MOMENT</div><h1>${titles[state.page][0]}</h1><p>${titles[state.page][1]}</p></div><button class="quiet" data-page="guide">快速上手 ↗</button></div>${!state.connected ? '<div class="offline-banner">事件连接已断开，正在自动重连。任务历史仍保留在电脑上。</div>' : ""}${{ overview, tasks, photos, settings, guide: guidePage }[state.page]()}<footer class="footer"><span>StopWatch Companion · 为日常留一点温柔</span><span>本地模拟 · 未连接真实硬件与账号</span></footer></main></div>`;
+  if (state.mode === "production") {
+    root.querySelectorAll(".tag").forEach((el) => {
+      el.textContent = el.textContent.includes("额度")
+        ? "实际额度接口"
+        : "远程控制";
+    });
+    const bridgeLabel = root.querySelector(".top-actions > span");
+    if (bridgeLabel)
+      bridgeLabel.textContent = state.bridgeOnline
+        ? state.codex?.online
+          ? "电脑与 Codex 在线"
+          : "桥接在线 · Codex 尚未就绪"
+        : "电脑离线";
+    const footer = root.querySelector(".footer span:last-child");
+    if (footer) footer.textContent = "受保护的远程控制 · 设备实机状态独立显示";
+    if (state.page === "tasks") {
+      const notice = root.querySelector(".notice");
+      if (notice)
+        notice.textContent =
+          "指令将在你明确授权的电脑与工作区执行；敏感操作按次审批。";
+      const submit = root.querySelector("#task-form button");
+      if (submit) submit.textContent = "创建任务 ↗";
+    }
+    if (state.page === "settings") {
+      const button = document.createElement("button");
+      button.className = "secondary";
+      button.textContent = "生成电脑一次性授权码";
+      button.onclick = async () => {
+        try {
+          const ticket = await api("bridge/tickets", {});
+          const box = document.createElement("div");
+          box.className = "notice";
+          box.textContent = `电脑安装授权码：${ticket.code}（两分钟有效，仅一次）`;
+          button.after(box);
+        } catch (e) {
+          toast(e.message);
+        }
+      };
+      root.querySelector(".panel-grid").prepend(button);
+    }
+  }
+  if (PREVIEW) {
+    const notice = document.createElement("div");
+    notice.className = "notice";
+    notice.textContent =
+      "隔离演示：所有配对、任务、更新与桥接均为 Mock。图片只在当前浏览器内存中处理，不会上传，也不会连接真实 Codex。";
+    document.querySelector("main").prepend(notice);
+  }
   document.querySelectorAll("[data-page]").forEach(
     (button) =>
       (button.onclick = () => {
@@ -424,16 +511,14 @@ function bind() {
         render();
       }),
   );
-  document
-    .querySelectorAll("[data-decision]")
-    .forEach(
-      (el) =>
-        (el.onclick = () =>
-          command("approve", {
-            approvalId: active()?.approvalId,
-            decision: el.dataset.decision,
-          })),
-    );
+  document.querySelectorAll("[data-decision]").forEach(
+    (el) =>
+      (el.onclick = () =>
+        command("approve", {
+          approvalId: active()?.approvalId,
+          decision: el.dataset.decision,
+        })),
+  );
   on("mark-read", "click", () => {
     markRead();
     render();
@@ -555,10 +640,8 @@ function bind() {
 }
 function allPhotos() {
   return [0, 1, 2]
-    .map((i) => ({ id: `builtin-${i}`, url: `/photos/${i}.jpg` }))
-    .concat(
-      state.photos.map((p) => ({ ...p, url: `/api/photos/${p.id}.jpg` })),
-    );
+    .map((i) => ({ id: `builtin-${i}`, url: asset(`/photos/${i}.jpg`) }))
+    .concat(state.photos.map((p) => ({ ...p, url: photoUrl(p.id) })));
 }
 function switchScreen(screen) {
   state.screen = screen;

@@ -1,6 +1,6 @@
 {
   "name": "stopwatch-companion",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -11,6 +11,10 @@
     "server": "node server/main.mjs",
     "bridge": "node bridge/main.mjs",
     "build": "node scripts/build.mjs",
+    "build:preview": "node scripts/build.mjs --preview",
+    "test:preview": "node tests/preview-browser.mjs",
+    "mock:updates": "node scripts/mock-updates.mjs",
+    "package:windows": "node scripts/package-windows.mjs --development",
     "test": "node --test --test-isolation=none tests/*.test.mjs",
     "test:browser": "node tests/browser.mjs",
     "firmware:prepare": "node scripts/prepare-firmware.mjs",

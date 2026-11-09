@@ -9,6 +9,8 @@ export function connectBridge({
   directory = ".data",
   delay = 800,
   onStatus = () => {},
+  engineFactory,
+  mode = "mock",
 }) {
   if (
     !/^ws:\/\/(127\.0\.0\.1|localhost):\d+$/.test(url) &&
@@ -20,11 +22,20 @@ export function connectBridge({
   db.exec(
     "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS seen(id TEXT PRIMARY KEY); CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,value TEXT); CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,value TEXT);",
   );
+  if (
+    !db
+      .prepare("PRAGMA table_info(seen)")
+      .all()
+      .some((c) => c.name === "status")
+  )
+    db.exec("ALTER TABLE seen ADD COLUMN status TEXT NOT NULL DEFAULT 'done'");
   let ws,
     stopped = false,
     retry,
     heartbeat,
-    attempts = 0;
+    attempts = 0,
+    authorizationBlocked = false,
+    queue = Promise.resolve();
   const send = (value) => {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(value));
   };
@@ -41,19 +52,24 @@ export function connectBridge({
       );
     send({ type: "event", event });
   };
-  const engine = new MockCodex({
+  const engineOptions = {
     emit,
     delay,
     tasks: db
       .prepare("SELECT value FROM tasks")
       .all()
       .map((r) => JSON.parse(r.value)),
-  });
+  };
+  const engine = engineFactory
+    ? engineFactory(engineOptions)
+    : new MockCodex(engineOptions);
+  if (mode === "production" && !engineFactory)
+    throw new Error("Production bridge requires a real authorized engine");
   engine.recover();
   const open = () => {
     if (stopped) return;
     ws = new WebSocket(`${url}/bridge`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${token}`, "X-StopWatch-Mode": mode },
       maxPayload: 65536,
     });
     ws.on("open", () => {
@@ -62,19 +78,20 @@ export function connectBridge({
       heartbeat = setInterval(() => send({ type: "heartbeat" }), 10000);
       for (const row of db.prepare("SELECT value FROM outbox").all())
         send({ type: "event", event: JSON.parse(row.value) });
-      emit("quota", {
-        mode: "mock",
-        primary: {
-          usedPercent: 24,
-          windowDurationMins: 300,
-          resetsAt: Math.floor(Date.now() / 1000) + 10800,
-        },
-        secondary: {
-          usedPercent: 42,
-          windowDurationMins: 10080,
-          resetsAt: Math.floor(Date.now() / 1000) + 345600,
-        },
-      });
+      if (mode === "mock")
+        emit("quota", {
+          mode: "mock",
+          primary: {
+            usedPercent: 24,
+            windowDurationMins: 300,
+            resetsAt: Math.floor(Date.now() / 1000) + 10800,
+          },
+          secondary: {
+            usedPercent: 42,
+            windowDurationMins: 10080,
+            resetsAt: Math.floor(Date.now() / 1000) + 345600,
+          },
+        });
     });
     ws.on("message", (raw) => {
       try {
@@ -85,32 +102,63 @@ export function connectBridge({
         }
         if (data.type !== "command") return;
         const c = data.command;
-        db.exec("BEGIN IMMEDIATE");
-        try {
-          const inserted = db
-            .prepare("INSERT OR IGNORE INTO seen VALUES (?)")
-            .run(c.id).changes;
-          if (inserted) engine.command(c);
-          db.exec("COMMIT");
-        } catch (error) {
-          db.exec("ROLLBACK");
-          emit("commandError", {
-            commandId: c.id,
-            message: error.message,
-            mode: "mock",
-          });
-          db.prepare("INSERT OR IGNORE INTO seen VALUES (?)").run(c.id);
-        }
-        send({ type: "ack", id: c.id });
+        queue = queue
+          .then(async () => {
+            if (stopped) return;
+            const seen = db
+              .prepare("SELECT status FROM seen WHERE id=?")
+              .get(c.id);
+            if (seen) {
+              if (seen.status === "processing")
+                emit("commandError", {
+                  commandId: c.id,
+                  message:
+                    "桥接在执行确认前重启；已避免重复执行，请核对会话结果",
+                  mode,
+                });
+              send({ type: "ack", id: c.id });
+              return;
+            }
+            db.prepare(
+              "INSERT INTO seen(id,status) VALUES (?,'processing')",
+            ).run(c.id);
+            try {
+              await engine.command(c);
+            } catch (error) {
+              emit("commandError", {
+                commandId: c.id,
+                message: error.message,
+                mode,
+              });
+            }
+            db.prepare("UPDATE seen SET status='done' WHERE id=?").run(c.id);
+            send({ type: "ack", id: c.id });
+          })
+          .catch(() =>
+            onStatus(false, { state: "bridge-error", online: false }),
+          );
       } catch {
         ws.close(1008, "invalid protocol");
       }
     });
     ws.on("error", () => {});
-    ws.on("close", () => {
+    ws.on("unexpected-response", (_req, res) => {
+      if ([401, 403].includes(res.statusCode)) {
+        authorizationBlocked = true;
+        onStatus(false, { state: "revoked", online: false });
+        engine.close();
+      }
+      res.resume();
+      ws.terminate();
+    });
+    ws.on("close", (code) => {
       clearInterval(heartbeat);
-      onStatus(false);
-      if (!stopped)
+      if (code === 4001) authorizationBlocked = true;
+      onStatus(
+        false,
+        authorizationBlocked ? { state: "revoked", online: false } : {},
+      );
+      if (!stopped && !authorizationBlocked)
         retry = setTimeout(
           open,
           Math.min(15000, 500 * 2 ** Math.min(attempts++, 5)) +
@@ -128,7 +176,7 @@ export function connectBridge({
       clearInterval(heartbeat);
       engine.close();
       ws?.terminate();
-      setTimeout(() => db.close(), 100);
+      queue.finally(() => setTimeout(() => db.close(), 100));
     },
   };
 }
