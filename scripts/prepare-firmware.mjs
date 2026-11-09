@@ -167,6 +167,18 @@ void sw_companion_phone_ble(bool enabled) {
     }
 }`);
 await writeChanged(`${component}/muse_settings.c`, settings);
+let ble = git(["show", "HEAD:esp32/components/muse/muse_ble.c"]);
+const bleCommand = "static void run_command(char *cmd)";
+const bleSave = "            muse_settings_set_wifi(s_pending_ssid, s_pending_pass);";
+if (!ble.includes(bleCommand) || !ble.includes(bleSave) ||
+    !ble.includes("            run_command(cmd);"))
+  throw new Error("Upstream phone Wi-Fi command hook changed");
+ble = '#include "sw_companion.h"\n' + ble
+  .replace(bleCommand, "static void run_command(char *cmd, bool phone)")
+  .replace(bleSave, bleSave + "\n            if (phone) sw_companion_phone_network(s_pending_ssid);")
+  .replace("    run_command(cmd);\n}", "    run_command(cmd, false);\n}")
+  .replace("            run_command(cmd);", "            run_command(cmd, true);");
+await writeChanged(`${component}/muse_ble.c`, ble);
 let board = git([
   "show",
   "HEAD:esp32/components/muse/boards/board_m5stack_stopwatch.c",

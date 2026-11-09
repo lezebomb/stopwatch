@@ -6,6 +6,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import sharp from "sharp";
 import QRCode from "qrcode";
 import { Store, secret, digest } from "./store.mjs";
+import { createDeviceSync, deviceHardware } from "./device-sync.mjs";
 import {
   validEvent,
   PHOTO_BYTES,
@@ -65,7 +66,7 @@ export async function createRelay({
   const attempts = new Map();
   const authenticated = (req) => {
     const session = store.session(cookie(req));
-    return session?.role === "bridge" ? null : session;
+    return ["operator", "viewer"].includes(session?.role) ? session : null;
   };
   const originFor = (req) =>
     mode === "production" ? publicOrigin : `http://${req.headers.host}`;
@@ -91,12 +92,13 @@ export async function createRelay({
     return saved;
   };
   const online = () => !!bridge && Date.now() - bridgeLastSeen < 35000;
+  const deviceSync = createDeviceSync(store, directory, online);
   const status = () => ({
     mode,
     executionEnabled: mode === "production" && allowExecution,
     bridgeOnline: online(),
-    deviceOnline: false,
-    deviceNote: "实物未连接",
+    deviceOnline: deviceSync.present(),
+    deviceNote: deviceSync.present() ? "挂件最近已同步" : "暂无在线挂件",
     tasks: store.tasks(),
     quota: store.snapshot("quota"),
     codex: store.snapshot("bridgeStatus"),
@@ -124,7 +126,7 @@ export async function createRelay({
       if (
         !["GET", "HEAD"].includes(req.method) &&
         origin !== originFor(req) &&
-        !["/api/bridge/enroll", "/api/bridge/revoke-self"].includes(
+        !["/api/bridge/enroll", "/api/bridge/revoke-self", "/api/device/enroll"].includes(
           url.pathname,
         )
       )
@@ -145,10 +147,12 @@ export async function createRelay({
         return json(res, 200, { revoked: true });
       }
       if (
-        (url.pathname === "/api/pair" ||
-          url.pathname === "/api/bridge/enroll") &&
+        ["/api/pair", "/api/bridge/enroll", "/api/device/enroll"].includes(url.pathname) &&
         req.method === "POST"
       ) {
+        const deviceEnrollment = url.pathname === "/api/device/enroll";
+        if (deviceEnrollment && mode !== "production")
+          return json(res, 404, { error: "当前模式不提供挂件同步" });
         const key = req.socket.remoteAddress,
           now = Date.now();
         const attempt = attempts.get(key) || { count: 0, until: now + 60000 };
@@ -163,15 +167,21 @@ export async function createRelay({
         if (typeof data.code !== "string" || data.code.length > 128)
           return json(res, 400, { error: "无效配对码" });
         const enrollment = url.pathname === "/api/bridge/enroll";
+        if (deviceEnrollment && data.hardware !== deviceHardware)
+          return json(res, 400, { error: "设备型号不匹配" });
         const session = store.pair(
           data.code,
           Date.now(),
-          enrollment ? "bridge" : "browser",
+          deviceEnrollment ? "device" : enrollment ? "bridge" : "browser",
         );
         if (!session)
           return json(res, 401, {
             error: "配对码已过期或已使用，请在电脑上重新生成",
           });
+        if (deviceEnrollment) {
+          store.audit(session.id, "device.enrolled");
+          return json(res, 200, { deviceId: session.id, token: session.token });
+        }
         if (enrollment) {
           store.audit(session.id, "bridge.enrolled");
           return json(res, 200, {
@@ -183,6 +193,31 @@ export async function createRelay({
         res.setHeader("Set-Cookie", sessionCookie(session.token));
         return json(res, 200, { id: session.id, role: session.role });
       }
+      const devicePhoto = /^\/api\/device\/photos\/([a-f0-9-]{36})$/.exec(url.pathname);
+      if (url.pathname === "/api/device/sync" || devicePhoto) {
+        if (mode !== "production" || req.method !== "GET")
+          return json(res, 404, { error: "接口不存在" });
+        const token = /^Bearer ([A-Za-z0-9_-]{32})$/.exec(req.headers.authorization || "")?.[1];
+        const device = token && store.session(token);
+        if (device?.role !== "device")
+          return json(res, 401, { error: "需要有效的挂件授权" });
+        try {
+          if (!devicePhoto) {
+            const snapshot = await deviceSync.snapshot();
+            if (!store.session(token)) return json(res, 401, { error: "挂件授权已失效" });
+            store.touch(token);
+            deviceSync.markSeen(device.id);
+            return json(res, 200, snapshot);
+          }
+          const data = await deviceSync.photo(devicePhoto[1]);
+          if (!data) return json(res, 404, { error: "照片不存在" });
+          if (!store.session(token)) return json(res, 401, { error: "挂件授权已失效" });
+          res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": data.length, "Cache-Control": "private, no-store" });
+          return res.end(data);
+        } catch {
+          return json(res, 503, { error: "相册暂时不可用，请稍后同步" });
+        }
+      }
       if (url.pathname.startsWith("/api/")) {
         const session = authenticated(req);
         if (!session) return json(res, 401, { error: "请先配对" });
@@ -193,6 +228,11 @@ export async function createRelay({
         if (url.pathname === "/api/bridge/tickets" && req.method === "POST") {
           const ticket = store.ticket("bridge");
           store.audit(session.id, "bridge.ticket.created");
+          return json(res, 200, ticket);
+        }
+        if (url.pathname === "/api/device/tickets" && req.method === "POST" && mode === "production") {
+          const ticket = store.ticket("device");
+          store.audit(session.id, "device.ticket.created");
           return json(res, 200, ticket);
         }
         if (url.pathname === "/api/state" && req.method === "GET")
@@ -225,6 +265,7 @@ export async function createRelay({
           if (typeof id !== "string")
             return json(res, 400, { error: "无效设备" });
           store.revoke(id);
+          deviceSync.forget(id);
           if (bridge?.sessionId === id) bridge.close(4001, "revoked");
           for (const ws of sockets)
             if (ws.sessionId === id) ws.close(4001, "revoked");

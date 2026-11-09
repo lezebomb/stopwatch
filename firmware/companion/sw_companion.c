@@ -38,7 +38,9 @@ static lv_obj_t *root, *photo_obj, *caption, *status_label, *pet_face, *menu;
 static lv_obj_t *setup_panel, *setup_status;
 static atomic_bool setup_active;
 static atomic_int setup_requested;
-static uint32_t setup_started;
+static uint32_t setup_started, setup_joined;
+static char setup_network[MUSE_SSID_MAX + 1];
+static unsigned setup_network_generation;
 static lv_image_dsc_t image;
 static uint8_t *pixels;
 typedef struct {
@@ -681,22 +683,84 @@ static void navigation_style(lv_obj_t *button) {
   lv_obj_set_style_text_font(button, &companion_font, 0);
   lv_obj_remove_flag(button, LV_OBJ_FLAG_EVENT_BUBBLE);
 }
+void sw_companion_phone_network(const char *ssid) {
+  portENTER_CRITICAL(&device_lock);
+  if (atomic_load(&setup_active)) {
+    strlcpy(setup_network, ssid, sizeof(setup_network));
+    setup_network_generation++;
+  }
+  portEXIT_CRITICAL(&device_lock);
+}
 static void close_phone_setup(lv_event_t *event) {
   (void)event;
   if (!atomic_exchange(&setup_active, false))
     return;
   lv_obj_add_flag(setup_panel, LV_OBJ_FLAG_HIDDEN);
   sw_companion_phone_ble(false);
+  screen = SW_PHOTOS;
+  egg = false;
+  show();
   muse_state_poke();
 }
 static void open_phone_setup(lv_event_t *event) {
   (void)event;
-  if (!atomic_exchange(&setup_active, true))
-    sw_companion_phone_ble(true);
+  if (atomic_load(&setup_active))
+    return;
+  portENTER_CRITICAL(&device_lock);
+  setup_network[0] = '\0';
+  setup_network_generation++;
+  atomic_store(&setup_active, true);
+  portEXIT_CRITICAL(&device_lock);
+  sw_companion_phone_ble(true);
   setup_started = lv_tick_get();
   lv_obj_remove_flag(setup_panel, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(setup_panel);
   muse_state_set_asleep(false);
+}
+static void tick_phone_setup(uint32_t now, bool critical_battery) {
+  if (!atomic_load(&setup_active))
+    return;
+  if (now - setup_started >= 300000 || critical_battery) {
+    close_phone_setup(NULL);
+    return;
+  }
+  char target[sizeof(setup_network)];
+  static unsigned observed_generation;
+  portENTER_CRITICAL(&device_lock);
+  memcpy(target, setup_network, sizeof(target));
+  unsigned generation = setup_network_generation;
+  portEXIT_CRITICAL(&device_lock);
+  if (observed_generation != generation) {
+    observed_generation = generation;
+    setup_joined = now;
+  }
+  char hint[128];
+  muse_wifi_status_t wifi;
+  muse_wifi_status(&wifi);
+  if (!target[0]) {
+    muse_ble_status_t ble;
+    muse_ble_status(&ble);
+    snprintf(hint, sizeof(hint), "扫码后用 Chrome 打开\n%s", ble.name);
+  } else if (wifi.state == MUSE_WIFI_CONNECTED && wifi.ip[0] &&
+             !strcmp(wifi.ssid, target)) {
+    /* Allow the phone to read the successful status before BLE is released. */
+    if (now - setup_joined >= 6000) {
+      close_phone_setup(NULL);
+      return;
+    }
+    strlcpy(hint, "Wi-Fi 已连接\n即将返回照片", sizeof(hint));
+  } else {
+    setup_joined = now;
+    const char *text = "正在连接网络\n请保持手机热点开启";
+    if (wifi.state == MUSE_WIFI_FAILED)
+      text = "连接失败，请检查密码\n然后在手机上重试";
+    else if (wifi.state == MUSE_WIFI_NOT_NEARBY ||
+             wifi.state == MUSE_WIFI_CONNECTED)
+      text = "暂未连上所选网络\n请检查 2.4GHz 网络";
+    strlcpy(hint, text, sizeof(hint));
+  }
+  if (strcmp(hint, lv_label_get_text(setup_status)))
+    lv_label_set_text(setup_status, hint);
 }
 static void show(void) {
   lv_obj_set_flag(root, LV_OBJ_FLAG_HIDDEN, screen == SW_MUSE);
@@ -741,6 +805,7 @@ static void tick(lv_timer_t *timer) {
   muse_mode_t mode = muse_state_mode(NULL);
   if (mode == MUSE_MODE_LISTENING || mode == MUSE_MODE_THINKING ||
       mode == MUSE_MODE_SPEAKING) {
+    close_phone_setup(NULL);
     if (screen != SW_MUSE) {
       screen = SW_MUSE;
       show();
@@ -754,22 +819,8 @@ static void tick(lv_timer_t *timer) {
     open_phone_setup(NULL);
   else if (setup_request < 0)
     close_phone_setup(NULL);
-  if (atomic_load(&setup_active)) {
-    if (now - setup_started >= 300000 ||
-        (!external && power.battery_pct >= 0 && power.battery_pct <= 5))
-      close_phone_setup(NULL);
-    else {
-      muse_wifi_status_t wifi;
-      muse_wifi_status(&wifi);
-      const char *hint =
-          wifi.state == MUSE_WIFI_CONNECTED ? "Wi-Fi 已连接\n更换网络可继续扫码"
-          : wifi.state == MUSE_WIFI_FAILED
-              ? "连接失败，请在手机检查密码\n支持家用网络和 2.4GHz 热点"
-              : "扫码后用 Chrome 打开\n按手机提示输入屏幕六位码";
-      if (strcmp(hint, lv_label_get_text(setup_status)))
-        lv_label_set_text(setup_status, hint);
-    }
-  }
+  tick_phone_setup(now, !external && power.battery_pct >= 0 &&
+                            power.battery_pct <= 5);
   unsigned selection = atomic_exchange(&requested_photo, UINT32_MAX);
   if (selection != UINT32_MAX) {
     photo = selection;

@@ -1,10 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { WebSocket } from "ws";
 import { createRelay } from "../server/app.mjs";
+import { deviceHardware } from "../server/device-sync.mjs";
 import http from "node:http";
 const localFetch = (url, options = {}) =>
   new Promise((resolve, reject) => {
@@ -123,5 +125,52 @@ test("production profile requires TLS origin, purpose-bound pairing, Secure sess
       maxRetries: 10,
       retryDelay: 100,
     });
+  }
+});
+
+test("device sync delivers uploaded RGB565 and prevents device credentials from controlling Codex", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "sw-device-relay-"));
+  const origin = "https://console.example.invalid";
+  const relay = await createRelay({ directory, port: 0, mode: "production", publicOrigin: origin });
+  const call = (route, { method = "GET", headers = {}, body } = {}) => localFetch(`${relay.url}/api/${route}`, {
+    method,
+    headers: { Host: "console.example.invalid", "X-Forwarded-Proto": "https", ...headers },
+    body,
+  });
+  const post = (route, value, headers = {}) => call(route, {
+    method: "POST", headers: { Origin: origin, "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(value),
+  });
+  try {
+    const pair = await post("pair", { code: relay.store.ticket().code });
+    const operator = { Cookie: pair.headers.get("set-cookie").split(";")[0] };
+    const ticket = await (await post("device/tickets", {}, operator)).json();
+    assert.equal((await post("pair", { code: ticket.code })).status, 401);
+    const enrolled = await post("device/enroll", { code: ticket.code, hardware: deviceHardware });
+    assert.equal(enrolled.status, 200);
+    const { deviceId, token } = await enrolled.json();
+    assert.equal(enrolled.headers.has("set-cookie"), false);
+    assert.equal((await post("device/enroll", { code: ticket.code, hardware: deviceHardware })).status, 401);
+    const device = { Authorization: `Bearer ${token}` };
+    assert.equal((await post("commands", { action: "start" }, { Cookie: `sw_session=${token}` })).status, 401);
+    assert.equal((await call("device/sync", { headers: operator })).status, 401);
+    const upload = await call("photos", { method: "POST", headers: { Origin: origin, ...operator }, body: await readFile("assets/photos/0.jpg") });
+    assert.equal(upload.status, 201);
+    const { id } = await upload.json();
+    const snapshot = await (await call("device/sync", { headers: device })).json();
+    const image = await call(`device/photos/${id}`, { headers: device });
+    assert.equal(image.status, 200);
+    const bytes = Buffer.from(await image.arrayBuffer());
+    assert.deepEqual(snapshot.photos, [{ id, size: 466 * 466 * 2, sha256: createHash("sha256").update(bytes).digest("hex") }]);
+    assert.deepEqual(snapshot.codex, { online: false, task: null, quota: null });
+    assert.equal((await (await call("state", { headers: operator })).json()).deviceOnline, true);
+    assert.equal((await call(`photos/${id}`, { method: "DELETE", headers: { Origin: origin, ...operator } })).status, 200);
+    assert.deepEqual((await (await call("device/sync", { headers: device })).json()).photos, []);
+    assert.equal((await call(`device/photos/${id}`, { headers: device })).status, 404);
+    assert.equal((await post("revoke", { id: deviceId }, operator)).status, 200);
+    assert.equal((await call("device/sync", { headers: device })).status, 401);
+  } finally {
+    await relay.close();
+    await rm(directory, { recursive: true, force: true });
   }
 });

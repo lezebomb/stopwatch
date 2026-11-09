@@ -1,28 +1,39 @@
 import { PhoneSetup, validateNetwork } from "./transport.mjs";
 const $ = id => document.getElementById(id);
-let busy = false, target = "", submitted = false;
+let busy = false, target = "", submitted = false, completed = false;
+let confirmAfter = 0;
 const say = text => { $("message").textContent = text; };
 const client = new PhoneSetup(navigator.bluetooth, () => {
+  $("password").value = "";
   $("network").disabled = true;
   $("connect").disabled = false;
   $("disconnect").disabled = true;
-  say("蓝牙已断开。已保存的 Wi-Fi 不受影响；需要修改时重新连接。");
+  if (!completed)
+    say("蓝牙已断开。可在挂件上查看联网结果，需要修改时重新打开手机配网。");
 });
 function render(status) {
   $("device").textContent = `${status.name} · 固件 ${status.fw}`;
   const state = status.wifi.state;
   const names = { off: "Wi-Fi 已关闭", no_network: "尚未配置网络", connecting: "正在连接 Wi-Fi…", connected: "Wi-Fi 已连接", failed: "连接失败，请检查密码与网络设置", not_nearby: "暂未找到已保存网络，请确认热点开启且使用 2.4GHz" };
   $("wifi-status").textContent = names[state] || "等待设备状态";
-  if (state === "connected" && (!target || status.wifi.ssid === target)) {
-    say(`已连接 ${status.wifi.ssid}。设备会记住网络，可关闭此页并返回照片。`);
-    submitted = false;
+  const matched = state === "connected" && (!target || status.wifi.ssid === target);
+  if (matched && Date.now() >= confirmAfter) {
+    completed = submitted;
+    say(submitted
+      ? `已连接 ${status.wifi.ssid}。挂件会记住网络，可以关闭此页。`
+      : `当前已连接 ${status.wifi.ssid}。你也可以添加其他网络。`);
   } else if (submitted) {
-    say(state === "connected"
+    completed = false;
+    say(state === "connected" && !matched
       ? "挂件目前连着另一个已保存网络。测试热点时请离开原网络覆盖范围，并保持热点开启。"
       : "挂件已收到配置。手机热点请保持开启，密码错误可修改后重新提交。");
   }
 }
 $("connect").onclick = async () => {
+  if (busy) return;
+  target = "";
+  confirmAfter = 0;
+  submitted = completed = false;
   busy = true; $("connect").disabled = true;
   say("选择你的 MuseGadget 设备。手机要求配对时，输入挂件屏幕显示的六位码。");
   try {
@@ -50,10 +61,15 @@ $("form").onsubmit = async event => {
   try { network = validateNetwork($("ssid").value, $("password").value, $("open-network").checked); }
   catch (error) { say(error.message); return; }
   $("password").value = ""; busy = true; $("save").disabled = true;
+  completed = false;
   say("正在通过加密蓝牙保存到挂件…");
   try {
     const status = await client.provision(network.ssid, network.password, $("open-network").checked);
-    target = network.ssid; submitted = true; render(status);
+    target = network.ssid;
+    submitted = true;
+    // The previous connection can still be up while the keeper applies new credentials.
+    confirmAfter = Date.now() + 1000;
+    render(status);
   } catch { say("配置未完整确认，请重新连接后重试。不会自动重复发送密码。"); }
   finally { network.password = ""; busy = false; $("save").disabled = false; }
 };
