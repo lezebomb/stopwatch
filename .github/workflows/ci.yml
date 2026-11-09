@@ -60,6 +60,7 @@ jobs:
           idf.py -B "$GITHUB_WORKSPACE/firmware/build" -DIDF_TARGET=esp32s3 -DPROJECT_VER="$VERSION" -DSW_FACTORY_ASSETS=OFF '-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-stopwatch;sdkconfig.companion' build
           python -m espsecure verify-signature --version 2 --keyfile dev_signing_key.pem "$GITHUB_WORKSPACE/firmware/build/muse-gadget.bin"
       - run: node scripts/check-firmware-config.mjs firmware/build
+      - run: node scripts/package-firmware-notices.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: DEVELOPMENT-firmware-not-for-production-OTA

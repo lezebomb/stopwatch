@@ -48,10 +48,12 @@ jobs:
           mkdir -p release-output
           cp firmware/build/muse-gadget.bin release-output/stopwatch-firmware.bin
           node scripts/release-manifest.mjs --kind firmware --binary release-output/stopwatch-firmware.bin --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/stopwatch-firmware.bin" --output release-output/firmware-manifest.json
+          node scripts/package-firmware-notices.mjs
+          tar -czf release-output/firmware-notices.tar.gz -C release-output firmware-notices
       - name: Publish binary before discovery manifest
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/publish-release.mjs release-output/stopwatch-firmware.bin release-output/firmware-manifest.json
+        run: node scripts/publish-release.mjs release-output/firmware-notices.tar.gz release-output/stopwatch-firmware.bin release-output/firmware-manifest.json
       - name: Remove ephemeral private signing key
         if: always()
         run: node -e 'require("fs").rmSync(".secrets",{recursive:true,force:true})'

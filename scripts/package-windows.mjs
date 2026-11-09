@@ -54,6 +54,8 @@ await cp(
   `${root}/release-public.pem`,
 );
 await cp("LICENSE", `${root}/LICENSE`);
+await cp("THIRD_PARTY_NOTICES.md", `${root}/THIRD_PARTY_NOTICES.md`);
+await cp("node_modules/ws/LICENSE", `${root}/app/ws-LICENSE.txt`);
 await writeFile(
   `${root}/install-profile.json`,
   JSON.stringify({
