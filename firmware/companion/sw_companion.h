@@ -7,3 +7,7 @@ void sw_companion_init(void);
 bool sw_companion_console(const char *line);
 int sw_companion_brightness(int requested);
 bool sw_companion_keep_awake(void);
+/* Implemented beside the SDK's existing tileview; LVGL task only. */
+bool sw_companion_native_page(bool settings);
+/* RAM-only override implemented beside the SDK's persistent BLE setting. */
+void sw_companion_phone_ble(bool enabled);

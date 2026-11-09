@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#122521">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>StopWatch · 手机配网</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body><main>
+  <p class="eyebrow">STOPWATCH · 一次设置，自动重连</p>
+  <h1>手机帮挂件联网</h1>
+  <p>家里 Wi-Fi 和外出手机热点都可以。密码通过配对后的加密蓝牙发给挂件，本页不上传、不保存密码。</p>
+  <ol>
+    <li>在挂件打开「手机配网」，手机开启蓝牙。</li>
+    <li>点击下方连接，选择你的 MuseGadget，按提示输入挂件显示的六位码。</li>
+    <li>填写 <strong>2.4GHz</strong> 网络名称与密码，保存即可。</li>
+  </ol>
+  <section aria-label="蓝牙连接">
+    <h2 id="device">连接你的挂件</h2>
+    <button id="connect" type="button">连接挂件</button>
+    <button id="disconnect" type="button" class="secondary" disabled>断开蓝牙</button>
+    <p id="message" role="status" aria-live="polite">无需电脑，无需安装 APK。建议使用 Android Chrome。</p>
+    <p id="wifi-status"></p>
+  </section>
+  <form id="form" autocomplete="off">
+    <fieldset id="network" disabled>
+      <legend>Wi-Fi 或手机热点</legend>
+      <label for="ssid">网络名称（与热点或路由器完全一致）</label>
+      <input id="ssid" name="network-name" type="text" required maxlength="32" autocapitalize="off" spellcheck="false" autocomplete="off">
+      <label for="password">网络密码</label>
+      <input id="password" type="password" required maxlength="64" autocomplete="off">
+      <label class="check"><input id="open-network" type="checkbox">这是没有密码的开放网络</label>
+      <button id="save" type="submit">保存到挂件并连接</button>
+    </fieldset>
+  </form>
+  <details><summary>外出时使用手机热点</summary><p>先开启手机热点，再通过本页蓝牙填入热点名称和密码，无需关闭热点。若设备搜不到或无法连接，请检查热点的 2.4GHz／兼容性设置。网络可以保存多个，以后在范围内自动重连；热点关闭时暂时离线，不必重新配对。</p></details>
+  <p class="footnote">这是本地蓝牙配网工具，不包含 Codex 任务执行、Muse 账号登录或云端控制权限。只给自己持有的挂件配对。</p>
+</main><script type="module" src="./app.js"></script></body>
+</html>

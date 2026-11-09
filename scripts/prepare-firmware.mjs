@@ -5,6 +5,7 @@ import path from "node:path";
 import { assets } from "./assets.mjs";
 import releaseConfig from "../release/config.json" with { type: "json" };
 import { createPublicKey } from "node:crypto";
+import { setupQrHeader } from "./setup-qr.mjs";
 const lock = JSON.parse(await readFile("upstream.lock.json", "utf8"));
 const sdk = path.resolve(".deps/muse/esp32"),
   muse = path.resolve(".deps/muse");
@@ -24,6 +25,7 @@ if (git(["rev-parse", "HEAD"]).trim() !== lock.muse.commit)
   throw new Error("Muse commit differs from upstream.lock.json");
 await assets();
 const component = `${sdk}/components/muse`;
+await writeChanged(`${component}/sw_setup_qr.h`, setupQrHeader());
 for (const file of [
   "sw_companion.c",
   "sw_companion.h",
@@ -87,6 +89,10 @@ ui = ui.replace(
   brightnessHook,
   "        apply_brightness(sw_companion_brightness(target));",
 );
+if (!ui.includes("s_settings = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_LEFT);"))
+  throw new Error("Upstream settings tile changed");
+ui +=
+  "\nbool sw_companion_native_page(bool settings) {\n    if (!s_tv || !s_settings || !s_face) return false;\n    lv_tileview_set_tile(s_tv, settings ? s_settings : s_face, LV_ANIM_OFF);\n    update_tileview_swipe();\n    return true;\n}\n";
 await writeChanged(`${component}/muse_ui.c`, ui);
 let app = git(["show", "HEAD:esp32/components/muse/muse_app.c"]);
 app = '#include "sw_updater.h"\n' + app;
@@ -148,6 +154,19 @@ settingsUi = settingsUi.replace(
     '\n    row(list, LV_SYMBOL_REFRESH, "Software update", NULL, sw_update_settings_open, NULL);',
 );
 await writeChanged(`${component}/muse_settings_ui.c`, settingsUi);
+let settings = git(["show", "HEAD:esp32/components/muse/muse_settings.c"]);
+const bleSettingHook = "bool muse_settings_ble_on(void) { return s.ble_on; }";
+if (!settings.includes(bleSettingHook))
+  throw new Error("Upstream Bluetooth setting hook changed");
+settings = '#include "sw_companion.h"\n' + settings.replace(bleSettingHook,
+  `static atomic_bool s_phone_setup_ble;
+bool muse_settings_ble_on(void) { return s.ble_on || atomic_load(&s_phone_setup_ble); }
+void sw_companion_phone_ble(bool enabled) {
+    if (atomic_exchange(&s_phone_setup_ble, enabled) != enabled) {
+        notify(MUSE_SETTING_BLE);
+    }
+}`);
+await writeChanged(`${component}/muse_settings.c`, settings);
 let board = git([
   "show",
   "HEAD:esp32/components/muse/boards/board_m5stack_stopwatch.c",

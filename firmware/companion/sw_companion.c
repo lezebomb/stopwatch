@@ -10,9 +10,11 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "mbedtls/base64.h"
+#include "muse_ble.h"
 #include "muse_board.h"
 #include "muse_input.h"
 #include "muse_settings.h"
+#include "muse_settings_ui.h"
 #include "muse_state.h"
 #include "muse_voice.h"
 #include "muse_wifi.h"
@@ -20,6 +22,7 @@
 #include "psa/crypto.h"
 #include "src/misc/cache/instance/lv_image_cache.h"
 #include "sw_model.h"
+#include "sw_setup_qr.h"
 #include "sw_updater.h"
 #include <dirent.h>
 #include <stdatomic.h>
@@ -30,7 +33,12 @@
 #include <unistd.h>
 
 LV_FONT_DECLARE(muse_font_cjk_noto_16);
+static lv_font_t companion_font;
 static lv_obj_t *root, *photo_obj, *caption, *status_label, *pet_face, *menu;
+static lv_obj_t *setup_panel, *setup_status;
+static atomic_bool setup_active;
+static atomic_int setup_requested;
+static uint32_t setup_started;
 static lv_image_dsc_t image;
 static uint8_t *pixels;
 typedef struct {
@@ -46,7 +54,6 @@ static bool egg, slideshow;
 static char message[192] = "今天也要记得给自己放个小假。";
 static nvs_handle_t config;
 static bool nvs_ok;
-static bool was_wifi;
 static atomic_bool external_power_seen, previous_external_power;
 #define PHOTO_BYTES (466u * 466u * 2u)
 #define USER_SLOTS 12
@@ -83,22 +90,25 @@ int sw_companion_brightness(int requested) {
   if (!root || screen == SW_MUSE)
     return requested;
   muse_power_t power = muse_state_power();
-  return sw_power_policy(
-             (sw_power_input_t){.charging = power.usb || power.charging,
-                                .battery = power.battery_pct,
-                                .screen = screen,
-                                .idle_s = (unsigned)muse_state_idle_secs(),
-                                .brightness = requested})
+  return sw_power_policy((sw_power_input_t){
+                             .charging = power.usb || power.charging,
+                             .battery = power.battery_pct,
+                             .screen = screen,
+                             .idle_s = atomic_load(&setup_active)
+                                           ? 0
+                                           : (unsigned)muse_state_idle_secs(),
+                             .brightness = requested})
       .brightness;
 }
 bool sw_companion_keep_awake(void) {
   muse_power_t power = muse_state_power();
   /* Bridge the short interval until the UI consumes an unplug edge and
    * resets idle. The input task must not sleep on the old charging idle. */
-  return root && screen != SW_MUSE &&
-         (power.usb || power.charging ||
-          (atomic_load(&external_power_seen) &&
-           atomic_load(&previous_external_power)));
+  return atomic_load(&setup_active) ||
+         (root && screen != SW_MUSE &&
+          (power.usb || power.charging ||
+           (atomic_load(&external_power_seen) &&
+            atomic_load(&previous_external_power))));
 }
 static void hash_hex(const uint8_t *bytes, char *text) {
   static const char h[] = "0123456789abcdef";
@@ -344,6 +354,11 @@ static bool device_console_locked(const char *line) {
     fflush(stdout);
     cJSON_Delete(request);
     return true;
+  }
+  if (!strcmp(op, "setup.open") || !strcmp(op, "setup.close")) {
+    atomic_store(&setup_requested, !strcmp(op, "setup.open") ? 1 : -1);
+    error = NULL;
+    goto done;
   }
   if (!strcmp(op, "task")) {
     cJSON *source = cJSON_GetObjectItemCaseSensitive(request, "source"),
@@ -639,16 +654,55 @@ static void back(lv_event_t *event) {
 static void page(lv_event_t *event) {
   screen = (sw_screen_t)(uintptr_t)lv_event_get_user_data(event);
   egg = false;
+  if (screen == SW_MUSE)
+    sw_companion_native_page(false);
   show();
   muse_state_poke();
+}
+static void open_settings(lv_event_t *event) {
+  (void)event;
+  if (!sw_companion_native_page(true)) {
+    lv_label_set_text(caption, "设置尚未就绪");
+    return;
+  }
+  screen = SW_MUSE;
+  egg = false;
+  show();
+  muse_state_poke();
+}
+static void navigation_style(lv_obj_t *button) {
+  lv_obj_set_style_bg_color(button, lv_color_hex(0x244b3e), 0);
+  lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(button, 1, 0);
+  lv_obj_set_style_border_color(button, lv_color_hex(0xc2d1ad), 0);
+  lv_obj_set_style_radius(button, 12, 0);
+  lv_obj_set_style_pad_all(button, 0, 0);
+  lv_obj_set_style_text_color(button, lv_color_hex(0xf4f5e9), 0);
+  lv_obj_set_style_text_font(button, &companion_font, 0);
+  lv_obj_remove_flag(button, LV_OBJ_FLAG_EVENT_BUBBLE);
+}
+static void close_phone_setup(lv_event_t *event) {
+  (void)event;
+  if (!atomic_exchange(&setup_active, false))
+    return;
+  lv_obj_add_flag(setup_panel, LV_OBJ_FLAG_HIDDEN);
+  sw_companion_phone_ble(false);
+  muse_state_poke();
+}
+static void open_phone_setup(lv_event_t *event) {
+  (void)event;
+  if (!atomic_exchange(&setup_active, true))
+    sw_companion_phone_ble(true);
+  setup_started = lv_tick_get();
+  lv_obj_remove_flag(setup_panel, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(setup_panel);
+  muse_state_set_asleep(false);
 }
 static void show(void) {
   lv_obj_set_flag(root, LV_OBJ_FLAG_HIDDEN, screen == SW_MUSE);
   lv_obj_set_flag(menu, LV_OBJ_FLAG_HIDDEN, screen != SW_MUSE);
-  if (screen == SW_MUSE) {
-    muse_settings_set_wifi_on(true);
+  if (screen == SW_MUSE)
     return;
-  }
   lv_obj_set_flag(photo_obj, LV_OBJ_FLAG_HIDDEN, screen != SW_PHOTOS || egg);
   lv_obj_set_flag(pet_face, LV_OBJ_FLAG_HIDDEN, screen != SW_CODEX && !egg);
   if (egg) {
@@ -679,7 +733,8 @@ static void show(void) {
         "开彩蛋\nMuse 设置中连接 "
         "Wi-Fi\n扫码控制台管理照片与任务\n低电量休眠后连接充电\n轻点返回照片");
   lv_obj_align(caption, LV_ALIGN_CENTER, 0, screen == SW_GUIDE ? 0 : 130);
-  lv_obj_move_foreground(root);
+  if (!atomic_load(&setup_active))
+    lv_obj_move_foreground(root);
 }
 static void tick(lv_timer_t *timer) {
   (void)timer;
@@ -692,6 +747,29 @@ static void tick(lv_timer_t *timer) {
     }
   }
   uint32_t now = lv_tick_get();
+  muse_power_t power = muse_state_power();
+  bool external = power.usb || power.charging;
+  int setup_request = atomic_exchange(&setup_requested, 0);
+  if (setup_request > 0)
+    open_phone_setup(NULL);
+  else if (setup_request < 0)
+    close_phone_setup(NULL);
+  if (atomic_load(&setup_active)) {
+    if (now - setup_started >= 300000 ||
+        (!external && power.battery_pct >= 0 && power.battery_pct <= 5))
+      close_phone_setup(NULL);
+    else {
+      muse_wifi_status_t wifi;
+      muse_wifi_status(&wifi);
+      const char *hint =
+          wifi.state == MUSE_WIFI_CONNECTED ? "Wi-Fi 已连接\n更换网络可继续扫码"
+          : wifi.state == MUSE_WIFI_FAILED
+              ? "连接失败，请在手机检查密码\n支持家用网络和 2.4GHz 热点"
+              : "扫码后用 Chrome 打开\n按手机提示输入屏幕六位码";
+      if (strcmp(hint, lv_label_get_text(setup_status)))
+        lv_label_set_text(setup_status, hint);
+    }
+  }
   unsigned selection = atomic_exchange(&requested_photo, UINT32_MAX);
   if (selection != UINT32_MAX) {
     photo = selection;
@@ -711,8 +789,6 @@ static void tick(lv_timer_t *timer) {
     if (screen == SW_CODEX && !egg)
       show();
   }
-  muse_power_t power = muse_state_power();
-  bool external = power.usb || power.charging;
   if (!atomic_exchange(&external_power_seen, true)) {
     atomic_store(&previous_external_power, external);
   } else if (atomic_load(&previous_external_power) != external) {
@@ -723,7 +799,11 @@ static void tick(lv_timer_t *timer) {
              external ? "USB" : "battery");
   }
   sw_update_health_tick(pixels != NULL);
-  sw_update_interaction(screen == SW_CODEX || egg || atomic_load(&upload_busy));
+  if (screen == SW_MUSE)
+    lv_obj_set_flag(menu, LV_OBJ_FLAG_HIDDEN, muse_settings_ui_in_subpage());
+  sw_update_interaction(screen == SW_CODEX || egg ||
+                        atomic_load(&upload_busy) ||
+                        atomic_load(&setup_active));
   photo_result_t result;
   if (photo_results && xQueueReceive(photo_results, &result, 0) == pdTRUE) {
     if (result.index == photo) {
@@ -742,29 +822,21 @@ static void tick(lv_timer_t *timer) {
   }
   if (screen == SW_CODEX || egg)
     lv_obj_align(pet_face, LV_ALIGN_CENTER, 0, (now / 750) % 2 ? -3 : 3);
-  sw_power_policy_t policy = sw_power_policy(
-      (sw_power_input_t){.charging = power.usb || power.charging,
-                         .battery = power.battery_pct,
-                         .screen = screen,
-                         .idle_s = (unsigned)muse_state_idle_secs(),
-                         .brightness = muse_settings_brightness()});
+  sw_power_policy_t policy = sw_power_policy((sw_power_input_t){
+      .charging = power.usb || power.charging,
+      .battery = power.battery_pct,
+      .screen = screen,
+      .idle_s =
+          atomic_load(&setup_active) ? 0 : (unsigned)muse_state_idle_secs(),
+      .brightness = muse_settings_brightness()});
   if (now - last_power >= 1000) {
     last_power = now;
     if (screen != SW_MUSE) {
       if (!policy.display)
         muse_state_set_asleep(true);
     }
-    /* Settings owns actual hardware changes. Keep Muse radio on while its view
-     * is active. */
-    if (screen == SW_PHOTOS && was_wifi && !power.usb) {
-      muse_settings_set_wifi_on(false);
-      was_wifi = false;
-    } else if ((power.usb || power.charging || screen == SW_MUSE ||
-                screen == SW_CODEX) &&
-               !was_wifi) {
-      muse_settings_set_wifi_on(true);
-      was_wifi = true;
-    }
+    /* Muse owns the saved Wi-Fi switch, reconnect backoff and screen-off nap.
+     * Never turn off the user's network preference when showing the cover. */
     lv_label_set_text_fmt(status_label, "%s  %s  %d%%", names[screen],
                           screen == SW_CODEX ? (codex_online ? "在线" : "离线")
                                              : "",
@@ -772,7 +844,7 @@ static void tick(lv_timer_t *timer) {
     if (policy.pixel_shift) {
       int shift_x = (int)((now / 60000) % 3) - 1;
       int shift_y = (int)((now / 120000) % 3) - 1;
-      lv_obj_align(status_label, LV_ALIGN_TOP_MID, shift_x, 55 + shift_y);
+      lv_obj_align(status_label, LV_ALIGN_TOP_MID, -40 + shift_x, 55 + shift_y);
       lv_obj_align(photo_obj, LV_ALIGN_CENTER, shift_x, shift_y);
     }
     time_t wall = time(NULL);
@@ -796,6 +868,10 @@ static void toggle_slide(lv_event_t *event) {
   save();
 }
 void sw_companion_init(void) {
+  /* The SDK Noto subset starts at U+3000: ASCII must resolve through a
+   * Latin font. Keep this local copy; never mutate the SDK's const font. */
+  companion_font = muse_font_cjk_noto_16;
+  companion_font.fallback = LV_FONT_DEFAULT;
   psa_crypto_init();
   esp_vfs_spiffs_conf_t fs = {.base_path = "/photos",
                               .partition_label = "photos",
@@ -850,15 +926,17 @@ void sw_companion_init(void) {
   lv_obj_set_style_radius(root, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_clip_corner(root, true, 0);
   lv_obj_set_style_bg_color(root, lv_color_hex(0x122521), 0);
+  lv_obj_set_style_text_font(root, &companion_font, 0);
+  lv_obj_set_style_text_color(root, lv_color_hex(0xf4f5e9), 0);
   lv_obj_add_event_cb(root, touch, LV_EVENT_CLICKED, NULL);
   lv_obj_add_event_cb(root, touch, LV_EVENT_GESTURE, NULL);
   photo_obj = lv_image_create(root);
   lv_obj_center(photo_obj);
   lv_obj_remove_flag(photo_obj, LV_OBJ_FLAG_CLICKABLE);
   status_label = lv_label_create(root);
-  lv_obj_set_style_text_font(status_label, &muse_font_cjk_noto_16, 0);
+  lv_obj_set_style_text_font(status_label, &companion_font, 0);
   lv_obj_set_style_text_color(status_label, lv_color_hex(0xe1e9ce), 0);
-  lv_obj_align(status_label, LV_ALIGN_TOP_MID, 0, 55);
+  lv_obj_align(status_label, LV_ALIGN_TOP_MID, -40, 55);
   pet_face = lv_label_create(root);
   lv_obj_set_style_text_font(pet_face, &lv_font_montserrat_28, 0);
   lv_obj_set_style_text_color(pet_face, lv_color_hex(0xe3e6d0), 0);
@@ -866,25 +944,73 @@ void sw_companion_init(void) {
   caption = lv_label_create(root);
   lv_obj_set_width(caption, 300);
   lv_obj_set_style_text_align(caption, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_text_font(caption, &muse_font_cjk_noto_16, 0);
+  lv_obj_set_style_text_font(caption, &companion_font, 0);
   lv_obj_set_style_text_color(caption, lv_color_hex(0xe5e9d3), 0);
   menu = lv_button_create(lv_screen_active());
-  lv_obj_set_size(menu, 95, 34);
+  navigation_style(menu);
+  lv_obj_set_size(menu, 126, 42);
   lv_obj_align(menu, LV_ALIGN_BOTTOM_MID, 0, -30);
   lv_obj_add_event_cb(menu, back, LV_EVENT_CLICKED, NULL);
   lv_obj_t *back_label = lv_label_create(menu);
-  lv_label_set_text(back_label, "HOME");
+  lv_label_set_text(back_label, "返回照片");
   lv_obj_center(back_label);
   for (unsigned i = 0; i < SW_SCREEN_COUNT; i++) {
     lv_obj_t *button = lv_button_create(root);
-    lv_obj_set_size(button, 60, 28);
-    lv_obj_align(button, LV_ALIGN_BOTTOM_MID, ((int)i - 2) * 64 + 32, -60);
+    navigation_style(button);
+    lv_obj_set_size(button, 68, 42);
+    lv_obj_align(button, LV_ALIGN_CENTER, ((int)i * 72) - 108, 172);
     lv_obj_add_event_cb(button, page, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
     lv_obj_t *label = lv_label_create(button);
-    lv_obj_set_style_text_font(label, &muse_font_cjk_noto_16, 0);
+    lv_obj_set_style_text_font(label, &companion_font, 0);
     lv_label_set_text(label, names[i]);
     lv_obj_center(label);
   }
+  lv_obj_t *settings_button = lv_button_create(root);
+  navigation_style(settings_button);
+  lv_obj_set_size(settings_button, 100, 42);
+  lv_obj_align(settings_button, LV_ALIGN_CENTER, 100, -145);
+  lv_obj_add_event_cb(settings_button, open_settings, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *settings_label = lv_label_create(settings_button);
+  lv_label_set_text(settings_label, "设置");
+  lv_obj_center(settings_label);
+  lv_obj_t *phone_button = lv_button_create(root);
+  navigation_style(phone_button);
+  lv_obj_set_size(phone_button, 128, 42);
+  lv_obj_align(phone_button, LV_ALIGN_CENTER, -80, -145);
+  lv_obj_add_event_cb(phone_button, open_phone_setup, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *phone_label = lv_label_create(phone_button);
+  lv_label_set_text(phone_label, "手机配网");
+  lv_obj_center(phone_label);
+  setup_panel = lv_obj_create(lv_screen_active());
+  lv_obj_set_size(setup_panel, 466, 466);
+  lv_obj_center(setup_panel);
+  lv_obj_remove_flag(setup_panel, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_radius(setup_panel, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_clip_corner(setup_panel, true, 0);
+  lv_obj_set_style_pad_all(setup_panel, 0, 0);
+  lv_obj_set_style_border_width(setup_panel, 0, 0);
+  lv_obj_set_style_bg_color(setup_panel, lv_color_hex(0x122521), 0);
+  lv_obj_set_style_text_color(setup_panel, lv_color_hex(0xf4f5e9), 0);
+  lv_obj_set_style_text_font(setup_panel, &companion_font, 0);
+  lv_obj_t *setup_title = lv_label_create(setup_panel);
+  lv_label_set_text(setup_title, "手机扫码配网");
+  lv_obj_align(setup_title, LV_ALIGN_CENTER, 0, -175);
+  lv_obj_t *qr = lv_image_create(setup_panel);
+  lv_image_set_src(qr, &setup_qr_image);
+  lv_obj_align(qr, LV_ALIGN_CENTER, 0, -25);
+  setup_status = lv_label_create(setup_panel);
+  lv_obj_set_width(setup_status, 320);
+  lv_obj_set_style_text_align(setup_status, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(setup_status, LV_ALIGN_CENTER, 0, 140);
+  lv_obj_t *setup_close = lv_button_create(setup_panel);
+  navigation_style(setup_close);
+  lv_obj_set_size(setup_close, 126, 42);
+  lv_obj_align(setup_close, LV_ALIGN_CENTER, 0, 195);
+  lv_obj_add_event_cb(setup_close, close_phone_setup, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *close_label = lv_label_create(setup_close);
+  lv_label_set_text(close_label, "返回");
+  lv_obj_center(close_label);
+  lv_obj_add_flag(setup_panel, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_event_cb(photo_obj, toggle_slide, LV_EVENT_LONG_PRESSED, NULL);
   lv_obj_add_flag(photo_obj, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_flag(photo_obj, LV_OBJ_FLAG_EVENT_BUBBLE);
@@ -897,7 +1023,6 @@ void sw_companion_init(void) {
     nvs_set_u8(config, "initialized", 1);
     nvs_commit(config);
   }
-  was_wifi = muse_settings_wifi_on();
   sw_update_start(mounted == ESP_OK && nvs_ok);
   lv_timer_create(tick, 250, NULL);
   screen = SW_PHOTOS;

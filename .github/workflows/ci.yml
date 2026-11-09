@@ -27,6 +27,7 @@ jobs:
       - run: npm run test:browser
       - run: npm run build:preview
       - run: npm run test:preview
+      - run: node tests/phone-setup-browser.mjs
       - run: npm run package:windows
       - name: Validate installer plan without modifying Windows startup
         shell: pwsh

@@ -70,6 +70,16 @@ await writeFile(
   }),
 );
 await writeFile(`${output}/.nojekyll`, "");
+// A separate local-BLE utility. The demo bundle never imports or opens it.
+await mkdir(`${output}/setup`, { recursive: true });
+await build({ entryPoints: ["web/setup/app.mjs"], bundle: true, format: "esm", outfile: `${output}/setup/app.js`, minify: true, target: "es2022" });
+const setupScript = await readFile(`${output}/setup/app.js`);
+const setupName = `app.${createHash("sha256").update(setupScript).digest("hex").slice(0, 12)}.js`;
+await rename(`${output}/setup/app.js`, `${output}/setup/${setupName}`);
+const setupCss = await readFile("web/setup/style.css");
+const setupCssName = `style.${createHash("sha256").update(setupCss).digest("hex").slice(0, 12)}.css`;
+await writeFile(`${output}/setup/${setupCssName}`, setupCss);
+await writeFile(`${output}/setup/index.html`, (await readFile("web/setup/index.html", "utf8")).replace("./app.js", `./${setupName}`).replace("./style.css", `./${setupCssName}`));
 console.log(
   `Web build complete: ${output}/ (${preview ? "ISOLATED DEMO; no remote control" : "local developer console"})`,
 );

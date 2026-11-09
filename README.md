@@ -82,3 +82,9 @@ npm.cmd audit
 | .github/workflows/、release/ | CI、Pages、稳定发布配置 |
 
 实际结果：[PROGRESS.md](PROGRESS.md)。实机：[HARDWARE_TEST.md](HARDWARE_TEST.md)。安全：[SECURITY.md](SECURITY.md)。上游/许可：[docs/UPSTREAM.md](docs/UPSTREAM.md)、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。私人照片、Token、私钥和运行数据不进仓库。
+
+## 手机扫码配网
+
+挂件照片页左上角「手机配网」显示二维码，用 Android Chrome 打开 [蓝牙配网页](https://lezebomb.github.io/stopwatch/setup/)，选择 MuseGadget 并输入挂件显示的六位配对码，然后在手机输入已有 Wi-Fi 或手机热点的名称、密码。无需电脑或 APK；网络由官方 Muse SDK 保存（最多8个）并按范围自动重连。手机热点可以保持开启，必须兼容2.4GHz。手机网页不能替设备连接5GHz热点。
+
+本页仅做本地加密蓝牙配网，与 Pages Mock 控制台分离；不上传/持久保存密码，没有任务执行或账号授权入口。需要支持 Web Bluetooth 的浏览器；优先 Android Chrome，Edge按功能检测提示。进入配网页临时开启挂件端手机配网蓝牙并保持唤醒，返回、5分钟到期或重启即结束。照片页尊重用户的 Wi-Fi 开关，休眠和唤醒后的重连由 Muse SDK 管理；首次 Muse 账号授权仍单独进行。真实手机 BLE 配对与联网以 HARDWARE_TEST 现场结果为准。
