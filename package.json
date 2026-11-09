@@ -1,0 +1,28 @@
+{
+  "name": "stopwatch-companion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node scripts/dev.mjs",
+    "server": "node server/main.mjs",
+    "bridge": "node bridge/main.mjs",
+    "build": "node scripts/build.mjs",
+    "test": "node --test --test-isolation=none tests/*.test.mjs",
+    "test:browser": "node tests/browser.mjs",
+    "firmware:prepare": "node scripts/prepare-firmware.mjs",
+    "protocol:check": "node scripts/check-codex-schema.mjs"
+  },
+  "dependencies": {
+    "qrcode": "1.5.4",
+    "sharp": "0.35.5",
+    "ws": "8.22.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "esbuild": "0.25.12"
+  }
+}

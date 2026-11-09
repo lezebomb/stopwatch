@@ -1,0 +1,6 @@
+# Design reference only. The current relay intentionally refuses public Host headers.
+# Implement production trust/origin configuration before deploying this example.
+companion.example.invalid {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8787
+}

@@ -1,0 +1,20 @@
+{
+  "muse": {
+    "url": "https://github.com/facebookincubator/muse-gadget-sdk.git",
+    "commit": "463bd2a05380fea4211b0099ad0f70933c108b20",
+    "license": "Apache-2.0"
+  },
+  "espIdf": {
+    "url": "https://github.com/espressif/esp-idf.git",
+    "tag": "v6.0.3",
+    "commit": "76f5dedd9950a3012fee8fb7d5586df21fc67802",
+    "license": "Apache-2.0 and component licenses"
+  },
+  "powerReference": {
+    "url": "https://github.com/m5stack/M5StopWatch-PowerDemo",
+    "commit": "a68d0302324f2b289a790d29fa8a3690abc21011",
+    "usedAs": "reference only; not linked"
+  },
+  "codexDesktopBundledCliObserved": "0.167.0-alpha.3.2",
+  "codexCliSchemaValidated": "0.164.0"
+}

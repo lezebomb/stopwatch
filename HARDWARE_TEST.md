@@ -1,0 +1,62 @@
+# 首次 USB-C 接入与硬件验证
+
+**本轮没有连接、重置、刷写或擦除设备。以下命令为下一阶段操作手册，不能视为执行记录。**
+
+## 1. 连接和识别
+
+1. 使用可靠的数据 USB-C 线接电脑，先保持原装电池和机壳不动。
+2. 在设备管理器查看新增端口；PowerShell 可运行 `[System.IO.Ports.SerialPort]::GetPortNames()` 比较连接前后端口。
+3. 记录包装 C152、设备界面版本、USB VID/PID、COM 号；ESP32 原生 USB 303a:1001 只能证明 USB 类型，不能单凭它断定是 StopWatch。
+4. 原固件如提供关于页面，先拍照记录版本。确认确为 16MB Flash / 8MB PSRAM 的 StopWatch；不要刷入其他板型。
+
+## 2. 优先备份
+
+在本工程 PowerShell 中加载 `. ./scripts/idf-env.ps1`。把 COM7 替换为实际识别端口。esptool 访问会进入 ROM/复位，必须在允许进行硬件操作后执行。
+
+```powershell
+python -m esptool --chip esp32s3 --port COM7 chip-id
+python -m esptool --chip esp32s3 --port COM7 flash-id
+New-Item -ItemType Directory -Force .data/backups
+python -m esptool --chip esp32s3 --port COM7 read-flash 0x0 0x1000000 .data/backups/original-16MB.bin
+Get-FileHash .data/backups/original-16MB.bin -Algorithm SHA256
+```
+
+完整备份如成功应包含原分区和配置；加密 Flash / 读保护可能导致不可用，必须报告真实结果。文件可能含 Wi-Fi 与授权信息，只保存在忽略目录并安全保管。若查询发现 Secure Boot、Flash Encryption 或未知 eFuse 状态，停止并先评估，不试烧 eFuse、不强刷。
+
+## 3. 检查构建产物后再刷写
+
+```powershell
+./scripts/build-firmware.ps1
+Set-Location .deps/muse/esp32
+python "$env:IDF_PATH/tools/idf.py" -B D:/stopwatch/firmware/build -p COM7 flash
+python "$env:IDF_PATH/tools/idf.py" -B D:/stopwatch/firmware/build -p COM7 monitor
+```
+
+刷写会覆盖原厂应用和分区表，且本项目有新照片分区；不要把当前 Muse 的 NVS 格式与原厂配置兼容当作事实。首次升级默认写应用与 photos 镜像，但不能保留用户后续新增照片时还反复写默认 SPIFFS：后续 OTA 应只更新应用或走迁移程序。先核对 flash_args，保存备份。禁止默认 `erase-flash`。监视器 Ctrl+] 退出；进入监视器可能重置设备。
+
+## 4. 功能验收表
+
+| 项目 | 方法 / 成功条件 | 当前结果 |
+|---|---|---|
+| 启动 / 存储 | 无 panic / 重启循环；SPIFFS、NVS、8MB PSRAM 初始化成功 | 待硬件 |
+| 圆屏 | 466×466 正确、颜色无 RGB565 反序、圆边缘及 x gap 正常 | 待硬件 |
+| 触屏 | 点击切照片、滑动切页、退出 Muse、长按轮播 | 待硬件 |
+| 按键 | USB 向下时黄键录音，松开发送；蓝键扬声器；按键无粘连 | 待硬件 |
+| 官方 Muse | 收礼人账号、正式 Token、原绑定流程；断网重连、回复文字与播放 | 待账号+硬件 |
+| 麦克风/扬声器 | 录音和播放无破音；10分钟工作无缓冲泄漏；拔网后可取消 | 待硬件 |
+| 电源 | 实际 USB / 充电状态、电压、电量；低电量变暗、休眠和按键唤醒 | 待硬件 |
+| 照片离线 | Wi-Fi 关闭仍显示内置照片；断电重启保留默认封面 | 待硬件 |
+| Flash 与内存 | 4MiB app 槽通过；连续切图、音频/网络并发下内部 DMA 堆仍足够 | 待硬件 |
+| 续航 | 原装450mAh；记录30%/50%亮度、静态/轮播、Wi-Fi开关条件 | 未测量 |
+
+照片常亮意味着显示电源与 CPU 的必要工作仍存在；屏幕关闭且无任务时才允许自动 Light-sleep。Modem-sleep 只控制 Wi-Fi 无线活动。Deep-sleep / PMIC 关机时不显示照片。不要把官方 PowerDemo 数据充当这台设备或本固件的实测值。
+
+## 5. 恢复
+
+先保存日志和失败配置。正常原生 USB 刷写失败时使用官方 StopWatch/M5Burner 恢复说明核对进入下载模式的步骤，不能猜电源键 GPIO 或要求拆机短接。确认串口、固件和分区后，必要时用已验证的完整备份恢复（经用户授权后）：
+
+```powershell
+python -m esptool --chip esp32s3 --port COM7 write-flash 0x0 D:/stopwatch/.data/backups/original-16MB.bin
+```
+
+备份加密、型号不符或读保护时不得盲目使用此命令。恢复过程中不改代理，不拆换电池，不用 PPK2 给未知接线供电。
