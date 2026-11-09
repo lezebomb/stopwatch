@@ -1,5 +1,7 @@
 # 2026-11-09 · 已进入实机阶段
 
+稳定阶段代码 **711c015** 已提交并推送；[GitHub CI](https://github.com/lezebomb/stopwatch/actions/runs/42609491234)（Windows测试/打包与Linux固件构建）及 [Pages部署](https://github.com/lezebomb/stopwatch/actions/runs/42610242127) 均成功。最终设备充电闲置超过7分钟仍亮，45秒被动观察无异常复位，内部空闲堆保持33567字节、封面保留；临时测试服务已关闭。
+
 - 已同步main，发现并确认真实StopWatch（S3 rev0.2 / 16MiB / 8MiB），完整原厂备份核验成功，私有数据未上传。
 - 首次全量安装和后续app-only更新成功；用户已确认照片、触屏、滑动和按键正常。没有整片擦除、eFuse写入或关闭原有安全保护。
 - 已打通原照片API→USB→SPIFFS→实际显示缓冲；23.5秒定向实机测试覆盖断传、错误哈希、默认图共存、完整上传、重启保留；后续应用更新再次核对封面不变。
