@@ -389,7 +389,7 @@ function settings() {
     )
     .join(
       "",
-    )}</section><section class="card"><h2>连接情况</h2><p class="small muted">中转服务：${state.connected ? "在线" : "重连中"}<br>Windows ${production ? "" : "Mock "}桥接：${state.bridgeOnline ? "在线" : "离线"}<br>StopWatch 实物：${state.connected && state.deviceOnline ? "最近已同步" : "暂无在线挂件"}</p><button class="quiet" id="disconnect">重新连接</button></section></div></div>`;
+    )}</section><section class="card"><h2>连接情况</h2><p class="small muted">中转服务：${state.connected ? "在线" : "重连中"}<br>Windows ${production ? "" : "Mock "}桥接：${state.bridgeOnline ? "在线" : "离线"}<br>StopWatch 实物：${state.connected && state.deviceOnline ? "最近已同步" : "暂无在线挂件"}</p><button class="quiet" id="disconnect">${production ? "重新连接" : "模拟事件连接断开 / 重连"}</button></section></div></div>`;
 }
 function guidePage() {
   return `<div class="guide-grid">${guide.map(([title, text], i) => `<article class="guide-card"><div class="number">GUIDE / ${String(i + 1).padStart(2, "0")}</div><h2>${title}</h2><p>${text}</p></article>`).join("")}</div>`;
