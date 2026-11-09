@@ -24,8 +24,12 @@
 | Windows包 | 实际打包Node24与ESM桥接/监督器；Node语法检查通过，PowerShell5.1 PlanOnly通过，Executed=false |
 | ESP-IDF固件 | 0.2.0已真实编译；包含完整更新路径；当前应用约2.82MiB（0x2d1000），4MiB槽剩余30%；最终报告以build-security.json和日志为准 |
 | SDK配置 | rollback和软件签名开启；硬件Secure Boot/eFuse anti-rollback/Flash及NVS密钥生成关闭；默认flash_args无photos.bin |
-| GitHub Actions / Pages | 已启用Pages workflow发布；本轮远端运行结果在提交后补充 |
+| GitHub Actions / Pages | 最终代码b2bf4c6的Windows测试/打包、Linux ESP-IDF v6.0.3构建/验签/配置检查/许可收集均成功；Pages自动部署成功，公网Edge移动验证通过 |
 | 真实USB/刷写/电流/断电 | 未执行，设备未连接 |
+
+远端记录：[最终CI](https://github.com/lezebomb/stopwatch/actions/runs/42586132112)、[Pages部署](https://github.com/lezebomb/stopwatch/actions/runs/42586677203)、[直接打开隔离演示](https://lezebomb.github.io/stopwatch/)。在线version.json已核对为0.2.0 / isolated-demo / b2bf4c6；公网移动Edge零脚本错误、零API/WS请求、无横向溢出。文档收尾提交不重跑代码构建。
+
+发布包保留Node、ws、项目通知及实际固件组件许可；本地收集109份SDK/组件许可材料。
 
 日志在忽略目录.tools，二进制artifacts/stopwatch.bin，完整构建firmware/build。正式发布需要生产公钥和私钥secret；当前没有正式Release、真实域名或VPS部署。
 

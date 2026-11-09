@@ -25,7 +25,7 @@ main push → Windows 测试 + ESP-IDF v6.0.3 构建 → 成功后部署 Pages �
 
 使用官方 Bootloader 与 `esp_ota_begin/write/end/set_boot_partition`。先验证 RSA-3072/PSS-SHA256 清单与兼容性，再 HTTPS 流式写备用 4MiB 槽，核对完整字节数/SHA256，调用 ESP-IDF 镜像签名验证及镜像版本检查后才切槽。
 
-新启动通过存储/照片、UI 心跳、服务任务与内存检查才确认；失败回滚，失败版本隔离，下载错误退避。默认每6小时检查，重连限频30分钟，网络稳定60秒、空闲30秒、电量至少40%、无通话/Codex交互才安装。设备设置新增 Software update，可查看版本/状态与手动检查。
+新启动通过存储/照片、UI 心跳、服务任务与内存检查才确认；失败回滚，失败版本隔离，下载错误退避。默认每6小时检查，重连限频30分钟，网络稳定60秒、空闲30秒、电量至少40%、无通话/Codex交互才安装。设备设置新增 Software update，可查看版本/状态、手动检查，调整检查间隔及最低电量（重启生效）。
 
 真实配置已核验 rollback 和软件签名。没有启用硬件 Secure Boot、Flash/NVS eFuse 密钥生成或 eFuse anti-rollback。分区布局保持双4MiB应用与 `0x822000 / 7MiB` 照片分区。**默认 flash_args 不含 photos.bin，OTA不写照片、NVS、授权、Bootloader或分区表。**
 
