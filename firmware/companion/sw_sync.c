@@ -3,6 +3,7 @@
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -91,7 +92,8 @@ static bool net_ready(void) {
  * be sent to that origin. Use the IDF trust bundle and hostname validation. */
 static esp_http_client_handle_t open_request(const char *path,
                                              const char *token,
-                                             const char *body, int *status,
+                                             const char *body, size_t offset,
+                                             int *status,
                                              int64_t *length) {
   *status = 0;
   *length = -1;
@@ -107,7 +109,7 @@ static esp_http_client_handle_t open_request(const char *path,
       .method = body ? HTTP_METHOD_POST : HTTP_METHOD_GET,
       .crt_bundle_attach = SW_RELAY_CA[0] ? NULL : esp_crt_bundle_attach,
       .cert_pem = SW_RELAY_CA[0] ? SW_RELAY_CA : NULL,
-      .timeout_ms = 6000,
+      .timeout_ms = 10000,
       .buffer_size = 1024,
       .buffer_size_tx = 512,
       .disable_auto_redirect = true,
@@ -127,13 +129,18 @@ static esp_http_client_handle_t open_request(const char *path,
   if (body)
     ok = ok && esp_http_client_set_header(client, "Content-Type",
                                           "application/json") == ESP_OK;
+  if (offset) {
+    char range[24];
+    snprintf(range, sizeof(range), "bytes=%u-", (unsigned)offset);
+    ok = ok && esp_http_client_set_header(client, "Range", range) == ESP_OK;
+  }
   int body_size = body ? (int)strlen(body) : 0;
   if (ok && esp_http_client_open(client, body_size) == ESP_OK &&
       (!body_size ||
        esp_http_client_write(client, body, body_size) == body_size)) {
     *length = esp_http_client_fetch_headers(client);
     *status = esp_http_client_get_status_code(client);
-    if (*length >= 0 && *status == 200)
+    if (*length >= 0 && *status == (offset ? 206 : 200))
       return client;
   }
   esp_http_client_cleanup(client);
@@ -144,7 +151,7 @@ static cJSON *get_json(const char *path, const char *token, const char *body,
                        int *status) {
   int64_t length;
   esp_http_client_handle_t client =
-      open_request(path, token, body, status, &length);
+      open_request(path, token, body, 0, status, &length);
   if (!client)
     return NULL;
   char *data = length <= MANIFEST_MAX
@@ -157,6 +164,8 @@ static cJSON *get_json(const char *path, const char *token, const char *body,
   while (data && used < limit && net_ready() &&
          esp_timer_get_time() < deadline) {
     int count = esp_http_client_read(client, data + used, limit - used);
+    if (count == -ESP_ERR_HTTP_EAGAIN)
+      continue;
     if (count <= 0)
       break;
     used += count;
@@ -300,32 +309,52 @@ static sw_sync_album_result_t fetch_photo(const sw_sync_photo_t *photo,
                                           FILE *file, void *ctx) {
   char path[70];
   snprintf(path, sizeof(path), "/api/device/photos/%s", photo->id);
-  int status;
-  int64_t length;
-  esp_http_client_handle_t client =
-      open_request(path, ctx, NULL, &status, &length);
-  if (!client)
-    return status == 401 || status == 403 ? SW_SYNC_ALBUM_AUTH
-                                          : SW_SYNC_ALBUM_ERROR;
-  char *buffer =
-      length == SW_SYNC_PHOTO_BYTES
-          ? heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
-          : NULL;
+  char *buffer = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!buffer)
+    return SW_SYNC_ALBUM_ERROR;
   size_t used = 0;
-  int64_t deadline = esp_timer_get_time() + 25000000;
-  while (buffer && net_ready() && used < SW_SYNC_PHOTO_BYTES &&
-         esp_timer_get_time() < deadline) {
-    size_t left = SW_SYNC_PHOTO_BYTES - used;
-    int count = esp_http_client_read(client, buffer, left < 4096 ? left : 4096);
-    if (count <= 0 || fwrite(buffer, 1, count, file) != count)
+  int status = 0;
+  bool complete = false, write_failed = false;
+  const int64_t deadline = esp_timer_get_time() + 75000000;
+  for (unsigned attempt = 0; attempt < 4 && used < SW_SYNC_PHOTO_BYTES &&
+                             net_ready() && esp_timer_get_time() < deadline;
+       attempt++) {
+    int64_t length;
+    esp_http_client_handle_t client =
+        open_request(path, ctx, NULL, used, &status, &length);
+    if (status == 401 || status == 403)
       break;
-    used += count;
+    if (!client)
+      continue;
+    if (length == (int64_t)(SW_SYNC_PHOTO_BYTES - used)) {
+      while (used < SW_SYNC_PHOTO_BYTES && net_ready() &&
+             esp_timer_get_time() < deadline) {
+        size_t left = SW_SYNC_PHOTO_BYTES - used;
+        int count = esp_http_client_read(client, buffer, left < 4096 ? left : 4096);
+        if (count == -ESP_ERR_HTTP_EAGAIN)
+          continue;
+        if (count <= 0)
+          break;
+        if (fwrite(buffer, 1, count, file) != count) {
+          write_failed = true;
+          break;
+        }
+        used += count;
+      }
+    }
+    complete = used == SW_SYNC_PHOTO_BYTES &&
+               esp_http_client_is_complete_data_received(client);
+    esp_http_client_cleanup(client);
+    if (write_failed)
+      break;
   }
-  bool ok = used == SW_SYNC_PHOTO_BYTES &&
-            esp_http_client_is_complete_data_received(client);
   free(buffer);
-  esp_http_client_cleanup(client);
-  return ok ? SW_SYNC_ALBUM_OK : SW_SYNC_ALBUM_ERROR;
+  if (status == 401 || status == 403)
+    return SW_SYNC_ALBUM_AUTH;
+  if (!complete)
+    ESP_LOGW("sw_relay", "Photo transfer incomplete (%u/%u bytes, HTTP %d)",
+             (unsigned)used, (unsigned)SW_SYNC_PHOTO_BYTES, status);
+  return complete ? SW_SYNC_ALBUM_OK : SW_SYNC_ALBUM_ERROR;
 }
 
 static void save_task(cJSON *root) {
@@ -464,7 +493,8 @@ void sw_sync_start(void) {
   if (!SW_RELAY_ORIGIN[0] ||
       nvs_open("sw_relay", NVS_READWRITE, &nvs) != ESP_OK)
     return;
-  if (xTaskCreate(sync_worker, "sw_relay", 6144, NULL, 2, &worker) != pdPASS) {
+  /* A photo download opens TLS while the album transaction is on the stack. */
+  if (xTaskCreate(sync_worker, "sw_relay", 8192, NULL, 2, &worker) != pdPASS) {
     nvs_close(nvs);
     worker = NULL;
   }

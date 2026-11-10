@@ -219,7 +219,19 @@ export async function createRelay({
           const data = await deviceSync.photo(devicePhoto[1]);
           if (!data) return json(res, 404, { error: "照片不存在" });
           if (!store.session(token)) return json(res, 401, { error: "挂件授权已失效" });
-          res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": data.length, "Cache-Control": "private, no-store" });
+          const headers = { "Content-Type": "application/octet-stream", "Cache-Control": "private, no-store", "Accept-Ranges": "bytes" };
+          const range = req.headers.range;
+          if (range !== undefined) {
+            const start = /^bytes=(\d{1,6})-$/.exec(range)?.[1];
+            if (start === undefined || Number(start) >= data.length) {
+              res.writeHead(416, { ...headers, "Content-Range": `bytes */${data.length}` });
+              return res.end();
+            }
+            const offset = Number(start);
+            res.writeHead(206, { ...headers, "Content-Length": data.length - offset, "Content-Range": `bytes ${offset}-${data.length - 1}/${data.length}` });
+            return res.end(data.subarray(offset));
+          }
+          res.writeHead(200, { ...headers, "Content-Length": data.length });
           return res.end(data);
         } catch {
           return json(res, 503, { error: "相册暂时不可用，请稍后同步" });
