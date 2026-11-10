@@ -11,5 +11,5 @@
   "resourceManifestUrl": "https://github.com/lezebomb/stopwatch/releases/latest/download/miao-manifest.json",
   "portalManifestUrl": "https://github.com/lezebomb/stopwatch/releases/latest/download/portal-manifest.json",
   "productionPublicKey": "release/trust/stable-public.pem",
-  "productionOrigin": null
+  "productionOrigin": "https://fym.lezebomb.top"
 }

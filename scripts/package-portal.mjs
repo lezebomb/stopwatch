@@ -1,18 +1,24 @@
-import { mkdir, cp, writeFile, readFile } from "node:fs/promises";
+import { mkdir, cp, writeFile } from "node:fs/promises";
 import config from "../release/config.json" with { type: "json" };
 if (
   !config.productionOrigin ||
   new URL(config.productionOrigin).protocol !== "https:"
 )
   throw new Error("Production origin missing");
-const root = "release-output/portal";
+// The first VPS install can add Linux dependencies from the lockfile on the
+// server, without copying Windows native modules or building on a small VPS.
+const withDependencies = !process.argv.includes("--without-dependencies");
+const root = withDependencies ? "release-output/portal" : "release-output/portal-bootstrap";
 await mkdir(root, { recursive: true });
 for (const file of ["server", "shared", "package.json", "package-lock.json"])
   await cp(file, `${root}/${file}`, { recursive: true });
 await cp("production-dist", `${root}/dist`, { recursive: true });
 await mkdir(`${root}/release`, { recursive: true });
 await cp("release/config.json", `${root}/release/config.json`);
-await cp("node_modules", `${root}/node_modules`, { recursive: true });
+await mkdir(`${root}/scripts`, { recursive: true });
+await cp("scripts/pair.mjs", `${root}/scripts/pair.mjs`);
+if (withDependencies)
+  await cp("node_modules", `${root}/node_modules`, { recursive: true, verbatimSymlinks: true });
 for (const directory of ["scripts", "updates", "release", "deploy"])
   await mkdir(`${root}/bootstrap/${directory}`, { recursive: true });
 for (const file of ["scripts/portal-update.mjs", "scripts/portal-service.mjs", "updates/portal.mjs", "updates/security.mjs",

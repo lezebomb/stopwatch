@@ -85,5 +85,5 @@ const setupCssName = `style.${createHash("sha256").update(setupCss).digest("hex"
 await writeFile(`${output}/setup/${setupCssName}`, setupCss);
 await writeFile(`${output}/setup/index.html`, (await readFile("web/setup/index.html", "utf8")).replace("./app.js", `./${setupName}`).replace("./style.css", `./${setupCssName}`));
 console.log(
-  `Web build complete: ${output}/ (${preview ? "ISOLATED DEMO; no remote control" : "local developer console"})`,
+  `Web build complete: ${output}/ (${mode})`,
 );

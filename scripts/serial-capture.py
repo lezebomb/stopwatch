@@ -41,7 +41,7 @@ except serial.SerialException as e:
     print('Serial disconnected:', type(e).__name__)
 finally:
     port.close()
-pattern = re.compile(r'Guru Meditation|panic|assert failed|Backtrace:|Brownout|watchdog|abort\(\)|esp_psram:|PSRAM test|companion:|sw_update:|voice pipeline|CO5300|CST820: Chip ID|ES8311|M5IOE1 initialized|Project name:|App version:|ESP-IDF:|heap_init:')
+pattern = re.compile(r'Guru Meditation|panic|stack overflow|assert failed|Backtrace:|Brownout|watchdog|abort\(\)|Loaded app from partition|esp_psram:|PSRAM test|companion:|sw_update:|voice pipeline|CO5300|CST820: Chip ID|ES8311|M5IOE1 initialized|Project name:|App version:|ESP-IDF:|heap_init:')
 selected = [s for s in lines if pattern.search(s)]
 for line in selected[-32:]:
     line = re.sub(r'(?:mgst_|eyJ|ghp_|github_pat_)[A-Za-z0-9_.-]+', '[redacted]', line)

@@ -561,10 +561,10 @@ static void health(void) {
     esp_restart();
   }
 }
-static void worker(void *arg) {
-  (void)arg;
-  health();
-  if (production_configured && storage_ready)
+/* Keep the TLS and resource frame out of the health-only development task's
+ * call stack, even when the compiler inlines the individual download steps. */
+static __attribute__((noinline)) void poll_updates(void) {
+  if (storage_ready)
     restore_resource();
   uint64_t last_wall = 0, last_check = 0, next_attempt = 0, online_since = 0;
   uint64_t resource_wall = 0, resource_due = 0;
@@ -588,12 +588,6 @@ static void worker(void *arg) {
     was_online = online;
     muse_power_t p = muse_state_power();
     bool user_check = atomic_exchange(&manual, false);
-    if (!production_configured || !manifest_url[0]) {
-      if (user_check)
-        state("unconfigured", "维护者尚未配置正式更新信任根");
-      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(30000));
-      continue;
-    }
     sw_update_conditions_t cond = {
         .now = now,
         .last_check = last_check,
@@ -681,6 +675,19 @@ static void worker(void *arg) {
     status.failures = failures;
     portEXIT_CRITICAL(&lock);
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(have_candidate ? 1000 : 30000));
+  }
+}
+static void worker(void *arg) {
+  (void)arg;
+  health();
+  ESP_LOGI(TAG, "Startup stack headroom: %u bytes",
+           (unsigned)uxTaskGetStackHighWaterMark(NULL));
+  if (production_configured && manifest_url[0])
+    poll_updates();
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if (atomic_exchange(&manual, false))
+      state("unconfigured", "维护者尚未配置正式更新信任根");
   }
 }
 void sw_update_start(bool storage_ok) {

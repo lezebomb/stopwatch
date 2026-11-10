@@ -12,3 +12,5 @@ bool sw_miao_validate_pack(const uint8_t *data, size_t size,
                            bool (*can_continue)(void));
 /* Transfer ownership to LVGL. NULL selects the embedded pack. */
 void sw_miao_offer_pack(uint8_t *data);
+unsigned sw_miao_verify_embedded(void);
+unsigned sw_miao_frames_drawn(void);

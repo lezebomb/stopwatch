@@ -2,6 +2,7 @@
 #include "cJSON.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "esp_random.h"
 #include "esp_spiffs.h"
 #include "esp_timer.h"
@@ -26,6 +27,7 @@
 #include "sw_model.h"
 #include "sw_setup_qr.h"
 #include "sw_sync.h"
+#include "sw_update_build.h"
 #include "sw_updater.h"
 #include <dirent.h>
 #include <stdatomic.h>
@@ -93,6 +95,7 @@ static album_t album, previous_album;
 static portMUX_TYPE device_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool album_writable, storage_mounted;
 static atomic_uint requested_photo = UINT32_MAX;
+static atomic_int diagnostic_view;
 static atomic_uint task_generation;
 static atomic_bool upload_busy;
 static FILE *upload_file;
@@ -645,6 +648,7 @@ static bool device_console_locked(const char *line) {
       if (album.entries[i].file[0])
         count++;
     muse_power_t power = muse_state_power();
+    const esp_partition_t *running = esp_ota_get_running_partition();
     printf(
         "@sw "
         "{\"id\":%d,\"ok\":true,\"protocol\":1,\"userPhotos\":%u,"
@@ -652,7 +656,8 @@ static bool device_console_locked(const char *line) {
         "\"psramFree\":%u,\"battery\":%d,\"usb\":%s,\"charging\":%s,\"wifi\":%"
         "s,\"received\":%u,\"uptimeMs\":%lu,\"photoSha256\":%s,\"codexOnline\":"
         "%s,\"codexPhase\":%u,\"serialStackMinimum\":%u,\"asleep\":%s,"
-        "\"brightnessSaved\":%d,\"brightnessPolicy\":%d,\"idleSeconds\":%u}\n",
+        "\"brightnessSaved\":%d,\"brightnessPolicy\":%d,\"idleSeconds\":%u,"
+        "\"bootOffset\":%lu,\"displayMode\":%u,\"miaoFramesDrawn\":%u}\n",
         id, count, hash, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), power.battery_pct,
@@ -664,10 +669,27 @@ static bool device_console_locked(const char *line) {
         muse_state_asleep()
             ? 0
             : sw_companion_brightness(muse_settings_brightness()),
-        (unsigned)muse_state_idle_secs());
+        (unsigned)muse_state_idle_secs(),
+        running ? (unsigned long)running->address : 0UL, display_settings.mode,
+        sw_miao_frames_drawn());
     fflush(stdout);
     cJSON_Delete(request);
     return true;
+  }
+  if (!SW_UPDATE_PRODUCTION && !strcmp(op, "diag.miao")) {
+    unsigned frames = sw_miao_verify_embedded();
+    printf("@sw {\"id\":%d,\"ok\":true,\"decoded\":%u}\n", id, frames);
+    fflush(stdout);
+    cJSON_Delete(request);
+    return true;
+  }
+  if (!SW_UPDATE_PRODUCTION && !strcmp(op, "diag.codex")) {
+    cJSON *enabled = cJSON_GetObjectItemCaseSensitive(request, "enabled");
+    if (!cJSON_IsBool(enabled) || atomic_load(&setup_active) || muse_voice_in_call())
+      goto done;
+    atomic_store(&diagnostic_view, cJSON_IsTrue(enabled) ? 1 : -1);
+    error = NULL;
+    goto done;
   }
   if (!strcmp(op, "setup.open") || !strcmp(op, "setup.close")) {
     atomic_store(&setup_requested, !strcmp(op, "setup.open") ? 1 : -1);
@@ -1194,6 +1216,11 @@ static void tick(lv_timer_t *timer) {
     close_phone_setup(NULL);
   tick_phone_setup(now, !external && power.battery_pct >= 0 &&
                             power.battery_pct <= 5);
+  int view = atomic_exchange(&diagnostic_view, 0);
+  if (view && !atomic_load(&setup_active) && !muse_voice_in_call()) {
+    screen = view > 0 ? SW_CODEX : SW_PHOTOS;
+    show();
+  }
   unsigned selection = atomic_exchange(&requested_photo, UINT32_MAX);
   if (selection != UINT32_MAX) {
     photo = selection;

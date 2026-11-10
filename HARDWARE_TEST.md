@@ -20,7 +20,7 @@
 
 实机私有报告：`.data/hardware-photo-test.json`、`.data/hardware-real-codex-report.json`、`.data/hardware-audio-report.json`、`.data/hardware-power-report.json`。这些报告、原始串口、SQLite和照片均不提交。
 
-日常实测改用 `./scripts/flash-app.ps1 -Port COM5`：检查原设备USB身份、原厂备份SHA256、首次布局指纹、实时安全状态及开发镜像签名，只写0x20000应用槽。镜像相同会核验并跳过写入。它不会消费可能仍含首次photos镜像的flash_args。不要日常运行初次安装的全量flash命令。
+日常实测用 `./scripts/flash-app.ps1 -Port COM5 -CaptureBoot`。脚本核对原设备、原厂备份、开发镜像签名和实时分区表，按设备 OTA 记录选择应用槽。待确认的 OTA 版本会阻止写入，相同镜像会跳过。实测设备当前从 `ota_0` 启动。原始串口日志保存在忽略目录。
 
 USB命令复用官方console hook，不改变黄键录音管线，也没有新增公网命令服务。照片用不可变文件、全量SHA256和NVS active/previous相册根；空间不足保留旧数据。根丢失时先恢复上一代；无法恢复则保留全部文件并禁写，不盲目回收私人图片。物理容量要同时容纳默认图、当前图、上一代和临时文件，12个逻辑槽不保证任意12张都能同时写入。
 

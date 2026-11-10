@@ -6,13 +6,15 @@
 
 1. 受控环境离线创建RSA-3072发布私钥，只提交SPKI PEM公钥到 release/trust/stable-public.pem。设备与Windows信任根必须来自可信首次交付。
 2. GitHub production-signing environment中设置 RELEASE_SIGNING_KEY_PEM secret，限制发布权限并按需审批。缺公钥/secret即失败关闭。
-3. 设置release/config.json.productionOrigin为固定HTTPS域名；当前null，生产控制台包拒绝构建。公开Pages仅演示。
+3. 固定 HTTPS 入口为 `https://fym.lezebomb.top`。首次部署时核对 DNS 和 HTTPS，公开 Pages 继续提供隔离演示。
 4. VPS 获授权后，在独立用户目录放置首个可信门户制品。结构为 `versions/<首版目录>/`、`current.json`（内容为 `{"release":"<首版目录>"}`）、制品自带的 `bootstrap/`、`release-public.pem` 和 `production.env`。门户只监听 127.0.0.1，使用单独的域名入口；部署前确认不会影响已有代理和端口。
 5. 在 `production.env` 中设置绝对 `STOPWATCH_DATA_DIR`，指向发布目录之外的持久目录。安装制品附带的用户级 `stopwatch.service` 和 `stopwatch-update.{service,timer}` 模板。先验证首版、持久数据和回滚，再启用 timer。`STOPWATCH_ENABLE_EXECUTION=0` 保持关闭，直到维护者明确授权。
 6. 首次设备初始化先备份，安装正式签名/公钥和rollback Bootloader。仅首次显式-FactoryAssets写内置照片，以后不重写默认SPIFFS。
 7. 收礼人只需配网/Muse官方授权、手机一次配对、Windows一次图形安装和工作区授权，不维护仓库或CI。
 
 信任根轮换需要双签名过渡和恢复计划，不能只改公钥文件或使用公开开发密钥，更不能盲目烧eFuse。
+
+首次手动部署可在 Windows 用 `node scripts/build.mjs --production` 和 `node scripts/package-portal.mjs --without-dependencies` 准备门户包。在独立的 Linux 版本目录用 Node 24 运行 `npm ci --omit=dev` 补齐本机依赖。服务就绪后，维护者在私有 VPS 终端加载 `production.env` 并从当前版本目录运行 `node scripts/pair.mjs` 领取首次配对链接。该链接只在终端显示，两分钟有效。
 
 ## 日常发布
 

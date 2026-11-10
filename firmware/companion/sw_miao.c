@@ -55,6 +55,7 @@ static int action = -1;
 static bool alternate, reaction;
 static lv_point_t touch_origin;
 static _Atomic(const uint8_t *) offered;
+static atomic_uint frames_drawn;
 static const uint8_t *selected = pack;
 
 const char *sw_miao_layout(void) { return MIAO_LAYOUT_SHA256; }
@@ -141,6 +142,13 @@ bool sw_miao_validate_pack(const uint8_t *data, size_t size,
   return ok;
 }
 
+unsigned sw_miao_verify_embedded(void) {
+  return sw_miao_validate_pack(pack, (size_t)(pack_end - pack), NULL)
+             ? MIAO_COUNT
+             : 0;
+}
+unsigned sw_miao_frames_drawn(void) { return atomic_load(&frames_drawn); }
+
 static void display(unsigned index) {
   if (shown == index)
     return;
@@ -166,6 +174,7 @@ static void display(unsigned index) {
   lv_image_cache_drop(&frame);
   lv_image_set_src(image, &frame);
   lv_obj_invalidate(image);
+  atomic_fetch_add(&frames_drawn, 1);
 }
 
 static unsigned between(unsigned min, unsigned max) {

@@ -1,4 +1,4 @@
-param([string]$Port = '-')
+param([string]$Port = '-', [switch]$CaptureBoot)
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 $python = (Resolve-Path '.tools/espressif/python_env/idf6.0_py3.12_env/Scripts/python.exe').Path
@@ -28,18 +28,29 @@ if ($LASTEXITCODE -ne 0) { throw 'Device identity check failed.' }
 # A development-only helper: production keys are never silently substituted.
 & $python -m espsecure verify-signature --version 2 --keyfile .deps/muse/esp32/dev_signing_key.pem $image *> .data/app-signature-check.log
 if ($LASTEXITCODE -ne 0) { throw 'Development image signature check failed.' }
-& $python -m esptool --chip esp32s3 --port $selectedPort --baud 921600 --after hard-reset get-security-info *> .data/app-security-check.log
-if ($LASTEXITCODE -ne 0) { throw 'Could not read device security state.' }
-$currentSecurity = Get-Content -LiteralPath .data/app-security-check.log -Raw
-if ($currentSecurity -notmatch 'Secure Boot: Disabled' -or $currentSecurity -notmatch 'Flash Encryption: Disabled') { throw 'Protected device: stop and assess the existing security configuration.' }
+& $python scripts/flash-slot.py $selectedPort firmware/build/partition_table/partition-table.bin $image *> .data/app-slot-check.log
+if ($LASTEXITCODE -ne 0) { throw 'Live safety checks failed; see .data/app-slot-check.log. No application was written.' }
+$slotLine = @(Get-Content -LiteralPath .data/app-slot-check.log | Where-Object { $_ -match '^@slot ' })
+if ($slotLine.Count -ne 1) { throw 'Could not identify the stable boot slot.' }
+$slot = $slotLine[0].Substring(6) | ConvertFrom-Json
+if ($slot.offset -notin @('0x20000', '0x420000')) { throw 'Invalid application offset.' }
+$offset = $slot.offset
 $digest = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash
-if ($session.lastFlashedSha256 -eq $digest) {
-    & $python -m esptool --chip esp32s3 --port $selectedPort --baud 921600 --after hard-reset verify-flash 0x20000 $image *> .data/app-verify-identical.log
-    if ($LASTEXITCODE -eq 0) { Write-Output 'Existing application verified identical; no Flash write performed.'; exit 0 }
+if ($slot.identical) {
+    Write-Output "Existing application at $offset verified identical; no Flash write performed."
+    exit 0
 }
 # Never consume flash_args here: it may still contain FIRST-install assets.
-& $python -m esptool --chip esp32s3 --port $selectedPort --baud 921600 --after hard-reset write-flash --flash-size keep 0x20000 $image *> .data/app-last-write.log
+$after = if ($CaptureBoot) { 'no-reset' } else { 'hard-reset' }
+& $python -m esptool --chip esp32s3 --port $selectedPort --baud 921600 --after $after write-flash --flash-size keep $offset $image *> .data/app-last-write.log
 if ($LASTEXITCODE -ne 0) { throw 'Application write failed; private log retained in .data.' }
 $session | Add-Member -NotePropertyName lastFlashedSha256 -NotePropertyValue $digest -Force
 [IO.File]::WriteAllText($sessionPath, ($session | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
-Write-Output ('Application written and verified on ' + $selectedPort + '; no NVS, photos, partition-table, Bootloader or eFuse writes.')
+Write-Output "Application written and verified on $selectedPort at $offset."
+if ($CaptureBoot) {
+    & $python scripts/serial-capture.py --port $selectedPort --reset --seconds 38 --log .data/app-last-boot.log
+    if ($LASTEXITCODE -ne 0) { throw 'Application verified, but boot capture failed.' }
+    if (-not (Select-String -LiteralPath .data/app-last-boot.log -Quiet -SimpleMatch "Loaded app from partition at offset $offset")) {
+        throw 'Application verified, but the expected slot was not confirmed in the boot log.'
+    }
+}
