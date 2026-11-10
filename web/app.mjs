@@ -172,11 +172,11 @@ async function boot() {
   }
 }
 function renderPair() {
-  root.innerHTML = `<main class="pair-page"><section class="pair-card"><div class="brand"><span class="brandmark"></span>StopWatch</div><div class="eyebrow">A LITTLE COMPANION, ALWAYS NEAR</div><h1>让陪伴，从这里开始。</h1><p>在启动服务的电脑上找到两分钟有效的配对链接，直接打开；也可以粘贴一次性配对码。</p><form id="pair-form"><label for="pair-code">一次性配对码</label><input id="pair-code" autocomplete="off" required placeholder="粘贴电脑显示的短时配对码"><button>连接我的 StopWatch</button></form><p class="small">当前为本地 MOCK 预览 · 无需 Muse / Codex 账号<br>二维码不会包含长期控制密钥。</p></section></main>`;
+  root.innerHTML = `<main class="pair-page"><section class="pair-card"><div class="brand"><span class="brandmark"></span>StopWatch</div><div class="eyebrow">A LITTLE COMPANION, ALWAYS NEAR</div><h1>让陪伴，从这里开始。</h1><p>打开两分钟有效的配对链接，或输入电脑显示的六位数字。</p><form id="pair-form"><label for="pair-code">一次性配对码</label><input id="pair-code" inputmode="numeric" autocomplete="one-time-code" required placeholder="输入六位数字"><button>连接我的 StopWatch</button></form><p class="small">当前为本地 MOCK 预览 · 无需 Muse / Codex 账号<br>二维码不会包含长期控制密钥。</p></section></main>`;
   if (WEB_MODE === "production" || state.mode === "production") {
     const paragraphs = root.querySelectorAll(".pair-card p");
     paragraphs[0].textContent =
-      "扫描设备或已授权控制台的短时二维码，完成一次性绑定。";
+      "输入电脑显示的六位数字，或扫描已授权控制台的二维码。";
     paragraphs[1].textContent =
       "受保护的正式控制台；长期密钥不会放在二维码中。";
   }
@@ -326,7 +326,10 @@ function quotaCard() {
     .join("")}</div></section>`;
 }
 function overview() {
-  return `<div class="dashboard">${watchCard()}<div class="right-stack">${taskCard()}${quotaCard()}</div></div><div class="bottom-grid"><section class="card"><div class="card-head"><h2>把喜欢的瞬间带在身边</h2><button class="text-button" data-page="photos">管理照片 ↗</button></div><div class="mini-photos">${[0, 1, 2].map((i) => `<img class="photo-thumb" src="${asset(`/photos/${i}.jpg`)}" alt="自制风景测试图片 ${i + 1}">`).join("")}${state.photos
+  const connectDevice = state.mode === "production" && state.session?.role === "operator" && !state.deviceOnline
+    ? '<section class="card"><h2>连接你的 StopWatch</h2><p>先在挂件上打开「手机配网」。已连上 Wi-Fi 后，用手机 Chrome 点击下方按钮。</p><div class="actions"><button id="device-ticket">绑定 StopWatch</button><a href="/setup/">还没联网？先配网</a></div></section>'
+    : "";
+  return `${connectDevice}<div class="dashboard">${watchCard()}<div class="right-stack">${taskCard()}${quotaCard()}</div></div><div class="bottom-grid"><section class="card"><div class="card-head"><h2>把喜欢的瞬间带在身边</h2><button class="text-button" data-page="photos">管理照片 ↗</button></div><div class="mini-photos">${[0, 1, 2].map((i) => `<img class="photo-thumb" src="${asset(`/photos/${i}.jpg`)}" alt="自制风景测试图片 ${i + 1}">`).join("")}${state.photos
     .slice(0, 2)
     .map(
       (p) =>
@@ -652,7 +655,9 @@ function bind() {
       link.textContent = "打开一次性配对链接";
       const note = document.createElement("p");
       note.className = "small muted";
-      note.textContent = "两分钟有效，使用一次后失效 · 本机地址";
+      note.textContent = result.manualCode
+        ? `手动配对码 ${result.manualCode} · 两分钟有效，仅限使用一次`
+        : "两分钟有效，使用一次后失效";
       el.append(img, document.createElement("br"), link, note);
     } catch (e) {
       toast(e.message);
@@ -660,19 +665,18 @@ function bind() {
   };
   on("ticket", "click", () => ticket("operator"));
   on("viewer-ticket", "click", () => ticket("viewer"));
-  on("device-ticket", "click", async () => {
+  on("device-ticket", "click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
     try {
       const { code } = await api("device/tickets", {});
-      const link = document.createElement("a");
       const url = new URL("/setup/", location.origin);
       url.hash = `device=${code}`;
-      link.href = url;
-      link.textContent = "打开手机蓝牙授权";
-      const note = document.createElement("p");
-      note.className = "small muted";
-      note.textContent = "先让挂件连上 Wi-Fi，然后打开挂件的「手机配网」。请在两分钟内打开此链接授权。";
-      document.querySelector("#ticket-result")?.replaceChildren(link, note);
-    } catch (error) { toast(error.message); }
+      location.assign(url);
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message);
+    }
   });
   document.querySelectorAll("[data-revoke]").forEach(
     (el) =>

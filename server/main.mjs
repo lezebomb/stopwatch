@@ -32,7 +32,10 @@ const app = await createRelay({
   allowExecution: process.env.STOPWATCH_ENABLE_EXECUTION === "1",
 });
 console.log(`StopWatch ${mode} relay: ${app.url}`);
-if (mode === "mock") console.log(`两分钟一次性配对链接: ${app.url}/#pair=${app.store.ticket().code}`);
+if (mode === "mock") {
+  const ticket = app.store.ticket();
+  console.log(`两分钟一次性配对码 ${ticket.manualCode}\n两分钟一次性配对链接: ${app.url}/#pair=${ticket.code}`);
+}
 for (const signal of ["SIGINT", "SIGTERM"])
   process.on(signal, async () => {
     await app.close();

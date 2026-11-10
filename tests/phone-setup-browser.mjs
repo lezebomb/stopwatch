@@ -3,7 +3,7 @@ import http from "node:http";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import assert from "node:assert/strict";
-const root = path.resolve("preview-dist");
+const root = path.resolve(process.env.SW_PHONE_SETUP_DIST || "preview-dist");
 const server = http.createServer(async (req, res) => {
   try {
     const file = path.resolve(root, "." + new URL(req.url, "http://localhost").pathname.replace(/\/$/, "/index.html"));
@@ -48,8 +48,7 @@ try {
   await page.addInitScript(() => { window.alreadyOnline = true; });
   const code = "P".repeat(32);
   await page.goto(`http://127.0.0.1:${server.address().port}/setup/?authorization=1#device=${code}`);
-  await page.getByRole("button", { name: "连接挂件", exact: true }).click();
-  await page.getByRole("button", { name: "授权这台挂件", exact: true }).click();
+  await page.getByRole("button", { name: "连接并授权", exact: true }).click();
   await page.getByRole("status").filter({ hasText: "挂件已获授权" }).waitFor();
   assert.equal(new URL(page.url()).hash, "");
   assert.deepEqual(await page.evaluate(() => window.setupWrites), [`sync.enroll=${code}`, "sync.status="]);

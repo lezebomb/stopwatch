@@ -128,6 +128,35 @@ test("production profile requires TLS origin, purpose-bound pairing, Secure sess
   }
 });
 
+test("six-digit browser code and QR share one use and do not authorize device or bridge roles", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "sw-short-pair-"));
+  const origin = "https://console.example.invalid";
+  const relay = await createRelay({ directory, port: 0, mode: "production", publicOrigin: origin });
+  const post = (route, value) => localFetch(`${relay.url}/api/${route}`, {
+    method: "POST", headers: { Host: "console.example.invalid", "X-Forwarded-Proto": "https", Origin: origin, "Content-Type": "application/json" },
+    body: JSON.stringify(value),
+  });
+  try {
+    const manual = relay.store.ticket();
+    assert.match(manual.manualCode, /^\d{6}$/);
+    assert.equal((await post("device/enroll", { code: manual.manualCode, hardware: deviceHardware })).status, 401);
+    assert.equal((await post("bridge/enroll", { code: manual.manualCode })).status, 401);
+    const paired = await post("pair", { code: manual.manualCode });
+    assert.equal((await paired.json()).role, "operator");
+    assert.match(paired.headers.get("set-cookie"), /Secure/);
+    assert.equal((await post("pair", { code: manual.code })).status, 401);
+    const qr = relay.store.ticket("viewer");
+    assert.equal((await (await post("pair", { code: qr.code })).json()).role, "viewer");
+    assert.equal((await post("pair", { code: qr.manualCode })).status, 401);
+    assert.equal(relay.store.ticket("device").manualCode, undefined);
+    const expired = relay.store.ticket("operator", Date.now() - 120001);
+    assert.equal((await post("pair", { code: expired.manualCode })).status, 401);
+  } finally {
+    await relay.close();
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
 test("device sync delivers uploaded RGB565 and prevents device credentials from controlling Codex", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "sw-device-relay-"));
   const origin = "https://console.example.invalid";

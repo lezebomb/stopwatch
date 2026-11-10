@@ -12,5 +12,5 @@ if (production && (!process.stdout.isTTY || !path.isAbsolute(directory) ||
 const store = new Store(directory);
 try {
   const ticket = store.ticket(process.argv.includes("--viewer") ? "viewer" : "operator");
-  console.log(`两分钟有效、一次性配对：\n${origin}/#pair=${ticket.code}`);
+  console.log(`两分钟有效、一次性配对码：${ticket.manualCode}\n${origin}/#pair=${ticket.code}`);
 } finally { store.close(); }

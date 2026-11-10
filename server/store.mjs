@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes, randomInt, createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import {
   defaultSettings,
@@ -14,6 +14,8 @@ export class Store {
     this.db = new DatabaseSync(`${directory}/relay.sqlite`);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=3000;
       CREATE TABLE IF NOT EXISTS tickets(hash TEXT PRIMARY KEY, expires INTEGER, role TEXT);
+      CREATE TABLE IF NOT EXISTS ticket_short(hash TEXT PRIMARY KEY,
+        ticket_hash TEXT NOT NULL UNIQUE REFERENCES tickets(hash) ON DELETE CASCADE);
       CREATE TABLE IF NOT EXISTS sessions(hash TEXT PRIMARY KEY, id TEXT, role TEXT, expires INTEGER, revoked INTEGER DEFAULT 0);
       CREATE TABLE IF NOT EXISTS settings(id INTEGER PRIMARY KEY CHECK(id=1), value TEXT);
       CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE, type TEXT, payload TEXT, time INTEGER);
@@ -28,18 +30,41 @@ export class Store {
   }
   ticket(role = "operator", now = Date.now()) {
     const code = secret();
-    this.db.prepare("DELETE FROM tickets WHERE expires < ?").run(now);
-    this.db
-      .prepare("INSERT INTO tickets VALUES (?, ?, ?)")
-      .run(digest(code), now + 120000, role);
-    return { code, expires: now + 120000 };
+    const hash = digest(code), expires = now + 120000;
+    let manualCode;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("DELETE FROM tickets WHERE expires <= ?").run(now);
+      this.db.prepare("INSERT INTO tickets VALUES (?, ?, ?)").run(hash, expires, role);
+      if (role === "operator" || role === "viewer") {
+        const insert = this.db.prepare("INSERT OR IGNORE INTO ticket_short VALUES (?, ?)");
+        for (let attempt = 0; attempt < 10; attempt++) {
+          const candidate = String(randomInt(1000000)).padStart(6, "0");
+          if (insert.run(digest(candidate), hash).changes) {
+            manualCode = candidate;
+            break;
+          }
+        }
+        if (!manualCode) throw new Error("无法生成可用配对码，请重试");
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return manualCode ? { code, manualCode, expires } : { code, expires };
   }
   pair(code, now = Date.now(), expected = null) {
+    const hash = digest(code);
+    const ticketHash = expected === "browser" && /^\d{6}$/.test(code)
+      ? this.db.prepare("SELECT ticket_hash FROM ticket_short WHERE hash=?").get(hash)?.ticket_hash
+      : hash;
+    if (!ticketHash) return null;
     const ticket = this.db
       .prepare(
         "DELETE FROM tickets WHERE hash=? AND expires>? AND (? IS NULL OR (?='browser' AND role IN ('operator','viewer')) OR role=?) RETURNING role",
       )
-      .get(digest(code), now, expected, expected, expected);
+      .get(ticketHash, now, expected, expected, expected);
     if (!ticket) return null;
     const token = secret(),
       id = randomBytes(8).toString("hex");

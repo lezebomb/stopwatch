@@ -5,11 +5,13 @@ let confirmAfter = 0;
 let ticket = /^#device=([A-Za-z0-9_-]{32})$/.exec(location.hash)?.[1] || "";
 const enrollment = !!ticket;
 let enrollmentDeadline = 0;
+let autoEnrollAttempted = false;
 if (enrollment) {
   history.replaceState(null, "", location.pathname);
   $("enrollment").hidden = false;
   $("form").hidden = true;
-  $("setup-step").textContent = "点击「授权这台挂件」，等待挂件通过 Wi-Fi 确认。";
+  $("connect").textContent = "连接并授权";
+  $("setup-step").textContent = "连接挂件后会自动提交授权，保持 Wi-Fi 和蓝牙开启。";
 }
 const say = text => { $("message").textContent = text; };
 const client = new PhoneSetup(navigator.bluetooth, () => {
@@ -49,12 +51,15 @@ $("connect").onclick = async () => {
   target = "";
   confirmAfter = 0;
   submitted = completed = false;
+  autoEnrollAttempted = false;
   busy = true; $("connect").disabled = true;
   say("选择你的 MuseGadget 设备。手机要求配对时，输入挂件屏幕显示的六位码。");
   try {
-    render(await client.connect());
+    const status = await client.connect();
+    render(status);
     $("network").disabled = false; $("disconnect").disabled = false;
     if (!enrollment && !$("wifi-status").textContent.includes("已连接")) say("蓝牙安全连接已建立，可以在下面输入 Wi-Fi 或手机热点。");
+    await authorizeWhenOnline(status);
   } catch {
     say("未能完成连接。请打开手机蓝牙及浏览器的附近设备权限，确认挂件处于手机配网页，重试并输入屏幕配对码。没有完成配对不会发送密码。");
     $("connect").disabled = false;
@@ -65,9 +70,7 @@ $("disconnect").onclick = () => {
   $("enroll").disabled = true;
   $("disconnect").disabled = true; say("已断开蓝牙，设备保存的网络和授权保持不变。");
 };
-$("enroll").onclick = async () => {
-  if (busy || !ticket) return;
-  busy = true;
+async function submitEnrollment() {
   $("enroll").disabled = true;
   try {
     await client.enroll(ticket);
@@ -77,7 +80,18 @@ $("enroll").onclick = async () => {
   } catch (error) {
     say(error.message);
     $("enroll").disabled = !client.connected;
-  } finally { busy = false; }
+  }
+}
+async function authorizeWhenOnline(status) {
+  if (!ticket || autoEnrollAttempted || status.wifi.state !== "connected") return;
+  autoEnrollAttempted = true;
+  await submitEnrollment();
+}
+$("enroll").onclick = async () => {
+  if (busy || !ticket) return;
+  busy = true;
+  try { await submitEnrollment(); }
+  finally { busy = false; }
 };
 $("open-network").onchange = () => {
   $("password").disabled = $("open-network").checked;
@@ -118,7 +132,9 @@ setInterval(async () => {
         say("挂件未确认授权。请检查网络并在手机控制台生成新的授权链接。");
       }
     } else if (!enrollment || ticket) {
-      render(await client.status());
+      const status = await client.status();
+      render(status);
+      await authorizeWhenOnline(status);
     }
   }
   catch { say("暂时读不到设备状态，请检查蓝牙连接，必要时重新连接。"); }

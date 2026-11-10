@@ -78,7 +78,7 @@ if (!production && process.env.SW_DEVICE_RELAY_CA) {
   if (!ca.ca) throw new Error("SW_DEVICE_RELAY_CA must be a public CA certificate");
   relayCa = ca.toString();
 }
-await writeChanged(`${component}/sw_setup_qr.h`, setupQrHeader(production && relayOrigin ? `${relayOrigin}/setup/` : undefined));
+await writeChanged(`${component}/sw_setup_qr.h`, setupQrHeader(relayOrigin ? `${relayOrigin}/setup/` : undefined));
 await writeChanged(`${component}/sw_sync_build.h`,
   `#pragma once\n#define SW_RELAY_ORIGIN ${JSON.stringify(relayOrigin)}\n#define SW_RELAY_HARDWARE ${JSON.stringify(releaseConfig.hardware)}\n#define SW_RELAY_CA ${JSON.stringify(relayCa)}\n`);
 if (!production) await import("./update-dev-key.mjs");

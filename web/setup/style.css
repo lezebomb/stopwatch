@@ -3,6 +3,7 @@
 body { margin: 0; }
 main { max-width: 540px; margin: auto; padding: 28px 20px 48px; }
 h1 { font-size: 28px; line-height: 1.3; margin: 12px 0; }
+a { color: #d7e8b7; }
 h2, legend { font-size: 19px; font-weight: 650; }
 .eyebrow { font-size: 12px; letter-spacing: .1em; color: #b9cbb2; }
 section, form, details { margin: 22px 0; background: #1c3830; border: 1px solid #446251; border-radius: 18px; padding: 20px; }

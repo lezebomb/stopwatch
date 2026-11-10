@@ -16,6 +16,8 @@
 
 首次手动部署可在 Windows 用 `node scripts/build.mjs --production` 和 `node scripts/package-portal.mjs --without-dependencies` 准备门户包。在独立的 Linux 版本目录用 Node 24 运行 `npm ci --omit=dev` 补齐本机依赖。服务就绪后，维护者在私有 VPS 终端加载 `production.env` 并从当前版本目录运行 `node scripts/pair.mjs` 领取首次配对链接。该链接只在终端显示，两分钟有效。
 
+手机控制台可以输入六位数字，也可以扫描二维码。两者共用同一张一次性票据，任意一种成功后另一种立即失效，仍受两分钟过期和服务端尝试次数限制。挂件和电脑授权使用各自独立的令牌。
+
 当前 VPS 门户以 `stopwatch` 用户运行，版本和持久数据分别位于 `/srv/stopwatch/versions` 与 `/srv/stopwatch/data`。该用户的 `stopwatch.service` 只监听 `127.0.0.1:8787`。独立系统服务 `stopwatch-tunnel.service` 只为 `fym.lezebomb.top` 提供公网入口；两项服务可分别停止。隧道凭据由 VPS 本机权限保护，门户发布包不携带凭据。正式更新 timer 和远程执行尚未启用。
 
 ## 日常发布
