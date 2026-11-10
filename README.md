@@ -21,7 +21,7 @@
 
 main push → Windows 测试 + ESP-IDF v6.0.3 构建 → 成功后部署 Pages 隔离演示。
 
-正式 vX.Y.Z Release → 再验证 → production-signing 环境 → 签名固件/清单、Windows 安装包/自动更新、生产控制台制品。版本来自 `release/config.json`，tag 必须匹配。缺生产公钥或 secret 就失败关闭，不使用公开开发密钥代替。Actions 固定 SHA，PR 不接触发布 secret。[交付配置](docs/DELIVERY.md)。
+同一提交通过 `main` CI 后，推送与 `release/config.json` 匹配的附注标签 `vX.Y.Z`。Actions 在草稿中备齐固件、Miao、Windows 桥接和门户，验签及核对上传后一次发布。正式域名和签名配置完成后，设备、Windows 和门户各自验证并拉取新版。公开 Pages 继续提供隔离演示。[交付配置](docs/DELIVERY.md)。
 
 ## OTA 与数据保留
 
@@ -99,4 +99,4 @@ npm.cmd audit
 
 照片页低亮常显是默认模式。在手机设置可切换智能省电或续航优先，也可选择一张已上传照片作为隐藏彩蛋。隐藏照从封面和轮播中移出，照片页连点五次或到指定日期会打开。充电时封面保持常亮。
 
-Codex 页的妙妙来自固定的 [Miao 源版本](https://github.com/lezebomb/Miao/tree/e96c93f471b9beb68b538b17b8eeecd6daa6fce4)。`node scripts/miao-assets.mjs` 从源帧生成应用内动画包和网页 WebP，并记录字节数、SHA-256 和存储预算。`--candidate <版本> <序号> <HTTPS资源URL>` 可生成供现有签名工具使用的资源候选清单。设备目前离线读取内置包，独立签名资源下发与激活尚未启用。
+Codex 页的妙妙来自固定的 [Miao 源版本](https://github.com/lezebomb/Miao/tree/e96c93f471b9beb68b538b17b8eeecd6daa6fce4)。`node scripts/miao-assets.mjs` 生成内置动画包、网页 WebP 和布局摘要。正式设备可独立验证并切换兼容的签名 Miao 包，离线或外部包不可用时仍能播放内置动画。

@@ -24,14 +24,21 @@ if (!args.binary || !args.url || !args.output)
 const bytes = await readFile(args.binary);
 const publishedAt =
   process.env.RELEASE_PUBLISHED_AT || new Date().toISOString();
+const [major, minor, patch] = version.split(".").map(Number);
+// Ordered by stable version even if a tag is built again on a later day.
+const sequence = 1_000_000_000_000_000 + major * 10_000_000_000 + minor * 100_000 + patch;
+const resource = kind === "miao" ? JSON.parse(await readFile(".deps/miao-pack/manifest.json", "utf8")) : null;
+if (!['firmware', 'bridge', 'portal', 'miao'].includes(kind)) throw new Error("Unknown stable artifact");
+if (resource && (resource.bytes !== bytes.length || resource.sha256 !== sha256(bytes)))
+  throw new Error("Generated Miao manifest does not match the staged pack");
 const payload = {
   schema: 1,
   kind,
   channel: "stable",
   version,
-  sequence: Date.parse(publishedAt),
-  hardware: kind === "firmware" ? config.hardware : "windows-x64",
-  buildId: process.env.GITHUB_SHA || "local-release-build",
+  sequence,
+  hardware: kind === "bridge" ? "windows-x64" : kind === "portal" ? "linux-x64" : config.hardware,
+  buildId: process.env.SW_BUILD_ID || process.env.GITHUB_SHA || "local-release-build",
   size: bytes.length,
   sha256: sha256(bytes),
   url: args.url,
@@ -44,7 +51,11 @@ const payload = {
           idf: "6.0.3",
           initialBootloaderRollback: true,
         }
-      : { protocol: 1, nodeMajor: 24 },
+      : kind === "miao"
+        ? { dataSchema: config.dataSchema, encoding: "MIA1", layoutSha256: resource.layoutSha256 }
+        : kind === "portal"
+          ? { dataSchema: config.dataSchema, nodeMajor: 24, origin: config.productionOrigin }
+          : { protocol: 1, nodeMajor: 24 },
 };
 validateManifest(payload, { kind, currentVersion: "0.0.0" });
 const key = await readFile(

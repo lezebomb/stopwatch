@@ -1,15 +1,37 @@
 name: Signed stable release
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
+concurrency:
+  group: stopwatch-stable-publisher
+  cancel-in-progress: false
 jobs:
-  validate:
-    uses: ./.github/workflows/ci.yml
-  firmware-release:
-    needs: validate
-    if: "!github.event.release.prerelease"
+  preflight:
+    if: startsWith(github.ref, 'refs/tags/v') && github.event.deleted != true
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+      build: ${{ steps.identity.outputs.build }}
+      published: ${{ steps.identity.outputs.published }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24.13.0"
+      - id: identity
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/stable-preflight.mjs
+  firmware:
+    needs: preflight
     runs-on: ubuntu-24.04
     container: espressif/idf:v6.0.3
     environment: production-signing
@@ -17,12 +39,13 @@ jobs:
     env:
       SW_PRODUCTION: "1"
       SW_SIGNING_KEY_PATH: .secrets/release.pem
-      RELEASE_TAG: ${{ github.event.release.tag_name }}
-      RELEASE_PUBLISHED_AT: ${{ github.event.release.published_at }}
+      RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+      RELEASE_PUBLISHED_AT: ${{ needs.preflight.outputs.published }}
+      SW_BUILD_ID: ${{ needs.preflight.outputs.build }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ needs.preflight.outputs.build }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "24.13.0"
@@ -42,74 +65,117 @@ jobs:
           idf.py -B "$GITHUB_WORKSPACE/firmware/build" -DIDF_TARGET=esp32s3 -DPROJECT_VER="$VERSION" -DSW_FACTORY_ASSETS=OFF '-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-stopwatch;sdkconfig.companion;sdkconfig.release' build
           python -m espsecure verify-signature --version 2 --keyfile "$GITHUB_WORKSPACE/release/trust/stable-public.pem" "$GITHUB_WORKSPACE/firmware/build/muse-gadget.bin"
       - run: node scripts/check-firmware-config.mjs firmware/build
-      - name: Package signed manifest
+      - name: Stage firmware and Miao separately
         shell: bash
         run: |
-          mkdir -p release-output
-          cp firmware/build/muse-gadget.bin release-output/stopwatch-firmware.bin
-          node scripts/release-manifest.mjs --kind firmware --binary release-output/stopwatch-firmware.bin --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/stopwatch-firmware.bin" --output release-output/firmware-manifest.json
+          mkdir -p release-output/assets
+          cp firmware/build/muse-gadget.bin release-output/assets/stopwatch-firmware.bin
+          cp .deps/miao-pack/miao.pack release-output/assets/miao.pack
+          BASE="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"
+          node scripts/release-manifest.mjs --kind firmware --binary release-output/assets/stopwatch-firmware.bin --url "$BASE/stopwatch-firmware.bin" --output release-output/assets/firmware-manifest.json
+          node scripts/release-manifest.mjs --kind miao --binary release-output/assets/miao.pack --url "$BASE/miao.pack" --output release-output/assets/miao-manifest.json
           node scripts/package-firmware-notices.mjs
-          tar -czf release-output/firmware-notices.tar.gz -C release-output firmware-notices
-      - name: Publish binary before discovery manifest
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/publish-release.mjs release-output/firmware-notices.tar.gz release-output/stopwatch-firmware.bin release-output/firmware-manifest.json
-      - name: Remove ephemeral private signing key
-        if: always()
-        run: node -e 'require("fs").rmSync(".secrets",{recursive:true,force:true})'
-  windows-release:
-    needs: validate
-    if: "!github.event.release.prerelease"
+          tar -czf release-output/assets/firmware-notices.tar.gz -C release-output firmware-notices
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: stable-device
+          path: release-output/assets
+          if-no-files-found: error
+      - if: always()
+        run: node -e 'require("fs").rmSync(".secrets/release.pem",{force:true})'
+  windows:
+    needs: preflight
     runs-on: windows-latest
     environment: production-signing
     env:
       SW_SIGNING_KEY_PATH: .secrets/release.pem
-      RELEASE_TAG: ${{ github.event.release.tag_name }}
-      RELEASE_PUBLISHED_AT: ${{ github.event.release.published_at }}
+      RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+      RELEASE_PUBLISHED_AT: ${{ needs.preflight.outputs.published }}
+      SW_BUILD_ID: ${{ needs.preflight.outputs.build }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ needs.preflight.outputs.build }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "24.13.0"
-      - run: npm ci --no-fund
-      - name: Require production identity
+      - name: Require reviewed production identity
         env:
           RELEASE_SIGNING_KEY_PEM: ${{ secrets.RELEASE_SIGNING_KEY_PEM }}
         run: node scripts/provision-release.mjs
+      - run: npm ci --no-fund
       - run: node scripts/package-windows.mjs
-      - name: Package first-install archive and signed automatic app update
+      - name: Stage installer and bridge update
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force release-output | Out-Null
-          Compress-Archive -Path windows/package/* -DestinationPath release-output/StopWatch-Windows.zip
-          Copy-Item windows/package/app/bridge.mjs release-output/stopwatch-bridge.mjs
-          node scripts/release-manifest.mjs --kind bridge --binary release-output/stopwatch-bridge.mjs --url "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:RELEASE_TAG/stopwatch-bridge.mjs" --output release-output/bridge-manifest.json
-      - name: Publish installer and authenticated update
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/publish-release.mjs release-output/StopWatch-Windows.zip release-output/stopwatch-bridge.mjs release-output/bridge-manifest.json
-      - name: Clean ephemeral key
-        if: always()
-        run: node -e 'require("fs").rmSync(".secrets",{recursive:true,force:true})'
-  portal-package:
-    needs: validate
-    if: "!github.event.release.prerelease"
+          New-Item -ItemType Directory -Force release-output/assets | Out-Null
+          Compress-Archive -Path windows/package/* -DestinationPath release-output/assets/StopWatch-Windows.zip
+          Copy-Item windows/package/app/bridge.mjs release-output/assets/stopwatch-bridge.mjs
+          node scripts/release-manifest.mjs --kind bridge --binary release-output/assets/stopwatch-bridge.mjs --url "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:RELEASE_TAG/stopwatch-bridge.mjs" --output release-output/assets/bridge-manifest.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: stable-windows
+          path: release-output/assets
+          if-no-files-found: error
+      - if: always()
+        run: node -e 'require("fs").rmSync(".secrets/release.pem",{force:true})'
+  portal:
+    needs: preflight
     runs-on: ubuntu-24.04
+    environment: production-signing
+    env:
+      SW_SIGNING_KEY_PATH: .secrets/release.pem
+      RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+      RELEASE_PUBLISHED_AT: ${{ needs.preflight.outputs.published }}
+      SW_BUILD_ID: ${{ needs.preflight.outputs.build }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ needs.preflight.outputs.build }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "24.13.0"
+      - name: Require reviewed production identity
+        env:
+          RELEASE_SIGNING_KEY_PEM: ${{ secrets.RELEASE_SIGNING_KEY_PEM }}
+        run: node scripts/provision-release.mjs
       - run: npm ci --no-fund
       - run: node scripts/build.mjs --production
       - run: npm prune --omit=dev
       - run: node scripts/package-portal.mjs
+      - run: node scripts/portal-update.mjs --check release-output/portal
+      - name: Stage production portal
+        run: |
+          mkdir -p release-output/assets
+          tar -czf release-output/assets/stopwatch-portal.tar.gz -C release-output/portal .
+          node scripts/release-manifest.mjs --kind portal --binary release-output/assets/stopwatch-portal.tar.gz --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/stopwatch-portal.tar.gz" --output release-output/assets/portal-manifest.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: production-portal-ready-for-approved-deployment
-          path: release-output/portal
-          retention-days: 14
+          name: stable-portal
+          path: release-output/assets
+          if-no-files-found: error
+      - if: always()
+        run: node -e 'require("fs").rmSync(".secrets/release.pem",{force:true})'
+  publish:
+    needs: [preflight, firmware, windows, portal]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.preflight.outputs.build }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24.13.0"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: stable-*
+          path: release-output/assets
+          merge-multiple: true
+      - name: Verify all channels then publish one stable release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          SW_BUILD_ID: ${{ needs.preflight.outputs.build }}
+        run: node scripts/publish-release.mjs release-output/assets

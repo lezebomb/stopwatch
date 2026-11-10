@@ -515,7 +515,7 @@ export async function createRelay({
             : file.endsWith(".webp") ? "image/webp"
             : file.endsWith(".json") ? "application/json"
             : "application/javascript",
-        "Cache-Control": "no-cache",
+        "Cache-Control": filename === "version.json" || filename.endsWith(".html") ? "no-store" : "no-cache",
       });
       res.end(req.method === "HEAD" ? undefined : content);
     } catch (error) {

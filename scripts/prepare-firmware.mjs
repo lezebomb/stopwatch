@@ -100,7 +100,7 @@ await writeChanged(
 );
 await writeChanged(
   `${component}/sw_update_build.h`,
-  `#pragma once\n#define SW_UPDATE_VERSION ${JSON.stringify(releaseConfig.version)}\n#define SW_UPDATE_PRODUCTION ${production ? 1 : 0}\n#define SW_UPDATE_MANIFEST_URL ${JSON.stringify(production ? releaseConfig.manifestUrl : "")}\n`,
+  `#pragma once\n#define SW_UPDATE_VERSION ${JSON.stringify(releaseConfig.version)}\n#define SW_UPDATE_PRODUCTION ${production ? 1 : 0}\n#define SW_UPDATE_MANIFEST_URL ${JSON.stringify(production ? releaseConfig.manifestUrl : "")}\n#define SW_RESOURCE_MANIFEST_URL ${JSON.stringify(production ? releaseConfig.resourceManifestUrl : "")}\n`,
 );
 await writeChanged(`${component}/CMakeLists.txt`, cmake);
 let ui = git(["show", "HEAD:esp32/components/muse/muse_ui.c"]);

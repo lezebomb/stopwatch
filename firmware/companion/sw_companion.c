@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -386,6 +387,47 @@ bool sw_companion_sync_allowed(void) {
 
 bool sw_companion_pairing_open(void) { return atomic_load(&setup_active); }
 
+bool sw_companion_resource_reserve(size_t bytes, size_t reclaim) {
+  if (!storage_mounted || !album_writable || !transfer_lock ||
+      xSemaphoreTake(transfer_lock, 0) != pdTRUE)
+    return false;
+  size_t total = 0, used = 0;
+  if (esp_spiffs_info("photos", &total, &used) != ESP_OK ||
+      used - (reclaim < used ? reclaim : used) + bytes + 65536 > total * 85 / 100) {
+    xSemaphoreGive(transfer_lock);
+    return false;
+  }
+  return true;
+}
+
+void sw_companion_resource_release(void) { xSemaphoreGive(transfer_lock); }
+
+/* The caller owns transfer_lock. Only these re-downloadable caches may be
+ * reclaimed here. The player already owns its current frames in PSRAM. */
+static bool photo_space(size_t bytes) {
+  size_t total = 0, used = 0;
+  if (esp_spiffs_info("photos", &total, &used) != ESP_OK)
+    return false;
+  size_t needed = used + bytes + 65536, budget = total * 85 / 100;
+  if (needed <= budget)
+    return true;
+  const char *const caches[] = {SW_MIAO_SLOT_A, SW_MIAO_SLOT_B};
+  size_t reclaim = 0;
+  for (unsigned i = 0; i < 2; i++) {
+    struct stat st;
+    if (stat(caches[i], &st) == 0 && st.st_size > 0)
+      reclaim += (size_t)st.st_size;
+  }
+  if (reclaim < needed - budget)
+    return false;
+  for (unsigned i = 0; i < 2; i++) {
+    if (unlink(caches[i]) == 0 && esp_spiffs_info("photos", &total, &used) == ESP_OK &&
+        used + bytes + 65536 <= total * 85 / 100)
+      return true;
+  }
+  return false;
+}
+
 static bool photo_wanted(const sw_sync_album_t *desired,
                          const uint8_t sha[32]) {
   for (unsigned i = 0; i < desired->count; i++) {
@@ -463,9 +505,7 @@ sw_sync_album_result_t sw_companion_sync_album(const sw_sync_album_t *desired,
 
   if (missing) {
     collect_photos();
-    size_t total = 0, used = 0;
-    if (esp_spiffs_info("photos", &total, &used) != ESP_OK ||
-        used + missing * PHOTO_BYTES + 65536 > total * 85 / 100) {
+    if (!photo_space(missing * PHOTO_BYTES)) {
       result = SW_SYNC_ALBUM_FULL;
       goto done;
     }
@@ -690,9 +730,7 @@ static bool device_console_locked(const char *line) {
     }
     upload_abort();
     collect_photos();
-    size_t total = 0, used = 0;
-    if (esp_spiffs_info("photos", &total, &used) != ESP_OK ||
-        used + PHOTO_BYTES + 65536 > total * 85 / 100) {
+    if (!photo_space(PHOTO_BYTES)) {
       error = "photo-space-full";
       goto done;
     }

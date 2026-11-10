@@ -86,12 +86,11 @@ async function token() {
 }
 async function boot() {
   if (stopped) return;
-  const selection = await manager.selectForBoot();
-  const script = selection.active || path.join(root, "app", "bridge.mjs");
   let credential;
   try {
     credential = await token();
   } catch {
+    stopped = true;
     await report({
       state: "authorization-required",
       online: false,
@@ -99,15 +98,19 @@ async function boot() {
     });
     return;
   }
+  const selection = await manager.selectForBoot();
+  const script = selection.active || path.join(root, "app", "bridge.mjs");
+  childBusy = false;
   const node = path.join(root, "runtime", "node.exe");
   child = spawn(node, [script], {
     cwd: root,
     stdio: ["pipe", "pipe", "pipe", "ipc"],
     windowsHide: true,
   });
-  child.stdin.end(JSON.stringify({ config, token: credential, root }) + "\n");
+  const version = selection.pending?.version || selection.currentVersion;
+  child.stdin.end(JSON.stringify({ config: { ...config, version }, token: credential, root }) + "\n");
   credential = null;
-  await report({ state: "starting", online: false });
+  await report({ state: "starting", online: false, version, updateState: selection.lastResult || "idle" });
   lastHealth = 0;
   healthyTimer = setTimeout(() => {
     if (!lastHealth || Date.now() - lastHealth > 10000) stopChild();
@@ -129,8 +132,9 @@ async function boot() {
         stopped = true;
         clearTimeout(retry);
         clearTimeout(updateTimer);
-        stopChild();
+        if (child?.exitCode === null) stopChild();
       }
+      if (!pending) await report({ updateState: result.state, updateDetail: "" });
     }
   });
   // Never forward raw child output or credentials into persistent logs.
@@ -176,7 +180,7 @@ async function update() {
     if (!stopped)
       updateTimer = setTimeout(
         update,
-        pending
+        pending || childBusy
           ? 60000
           : Math.min(
               21600000,
@@ -201,7 +205,7 @@ async function stop() {
 }
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, stop);
 await boot();
-updateTimer = setTimeout(update, 60000);
+if (!stopped) updateTimer = setTimeout(update, 60000);
 setInterval(async () => {
   try {
     await readFile(path.join(root, "stop.request"));

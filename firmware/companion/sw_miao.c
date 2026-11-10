@@ -4,6 +4,7 @@
 #include "muse_state.h"
 #include "muse_voice.h"
 #include "src/misc/cache/instance/lv_image_cache.h"
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <zlib.h>
@@ -53,7 +54,19 @@ static unsigned step, repetition, shown = UINT32_MAX;
 static int action = -1;
 static bool alternate, reaction;
 static lv_point_t touch_origin;
-static size_t scratch_used;
+static _Atomic(const uint8_t *) offered;
+static const uint8_t *selected = pack;
+
+const char *sw_miao_layout(void) { return MIAO_LAYOUT_SHA256; }
+const char *sw_miao_embedded_hash(void) { return MIAO_EMBEDDED_SHA256; }
+
+static void release_pack(const uint8_t *data) {
+  if (data && data != pack)
+    free((void *)data);
+}
+void sw_miao_offer_pack(uint8_t *data) {
+  release_pack(atomic_exchange(&offered, data ? data : pack));
+}
 
 static uint32_t le(const uint8_t *p, unsigned bytes) {
   uint32_t value = 0;
@@ -62,8 +75,6 @@ static uint32_t le(const uint8_t *p, unsigned bytes) {
   return value;
 }
 
-/* Signed resource activation can reuse this layout gate before selecting a
- * pack. Only the application-embedded pack is opened by this firmware. */
 static bool valid_pack(const uint8_t *data, size_t size) {
   const size_t table = 12 + MIAO_COUNT * 8;
   if (size < table || size > MIAO_BUDGET - FRAME_BYTES ||
@@ -81,15 +92,15 @@ static bool valid_pack(const uint8_t *data, size_t size) {
   return offset == size;
 }
 
-static voidpf scratch_alloc(voidpf ignored, uInt items, uInt size) {
-  (void)ignored;
-  if (!size || items > (SCRATCH_LIMIT - scratch_used) / size)
+static voidpf scratch_alloc(voidpf context, uInt items, uInt size) {
+  size_t *used = context;
+  if (!size || items > (SCRATCH_LIMIT - *used) / size)
     return NULL;
   size_t bytes = (size_t)items * size;
   void *memory =
       heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (memory)
-    scratch_used += bytes;
+    *used += bytes;
   return memory;
 }
 static void scratch_free(voidpf ignored, voidpf memory) {
@@ -97,11 +108,44 @@ static void scratch_free(voidpf ignored, voidpf memory) {
   free(memory);
 }
 
+static bool decode(const uint8_t *data, unsigned index, uint8_t *output) {
+  size_t used = 0;
+  const uint8_t *entry = data + 12 + index * 8;
+  z_stream stream = {.zalloc = scratch_alloc,
+                     .zfree = scratch_free,
+                     .opaque = &used,
+                     .next_in = (Bytef *)(data + le(entry, 4)),
+                     .avail_in = le(entry + 4, 4),
+                     .next_out = output,
+                     .avail_out = FRAME_BYTES};
+  if (inflateInit(&stream) != Z_OK)
+    return false;
+  bool ok = inflate(&stream, Z_FINISH) == Z_STREAM_END &&
+            stream.total_out == FRAME_BYTES && !stream.avail_in;
+  inflateEnd(&stream);
+  return ok;
+}
+
+bool sw_miao_validate_pack(const uint8_t *data, size_t size,
+                           bool (*can_continue)(void)) {
+  if (!valid_pack(data, size))
+    return false;
+  uint8_t *output =
+      heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!output)
+    return false;
+  bool ok = true;
+  for (unsigned i = 0; ok && i < MIAO_COUNT; i++)
+    ok = (!can_continue || can_continue()) && decode(data, i, output);
+  free(output);
+  return ok;
+}
+
 static void display(unsigned index) {
   if (shown == index)
     return;
   shown = index;
-  if (!index || !pack_ok) {
+  if ((!index && selected == pack) || !pack_ok) {
     lv_image_set_src(image, &still);
     return;
   }
@@ -112,21 +156,7 @@ static void display(unsigned index) {
     lv_image_set_src(image, &still);
     return;
   }
-  const uint8_t *entry = pack + 12 + index * 8;
-  z_stream stream = {.zalloc = scratch_alloc,
-                     .zfree = scratch_free,
-                     .next_in = (Bytef *)(pack + le(entry, 4)),
-                     .avail_in = le(entry + 4, 4),
-                     .next_out = pixels,
-                     .avail_out = FRAME_BYTES};
-  scratch_used = 0;
-  if (inflateInit(&stream) != Z_OK) {
-    pack_ok = false;
-  } else {
-    pack_ok = inflate(&stream, Z_FINISH) == Z_STREAM_END &&
-              stream.total_out == FRAME_BYTES && !stream.avail_in;
-    inflateEnd(&stream);
-  }
+  pack_ok = decode(selected, index, pixels);
   if (!pack_ok) {
     lv_image_set_src(image, &still);
     return;
@@ -270,10 +300,17 @@ void sw_miao_state(sw_task_t next, uint32_t key) {
 }
 void sw_miao_play(bool enabled, bool external) {
   charging = external;
-  if (active == enabled)
-    return;
+  bool changed = active != enabled;
   active = enabled;
-  if (timer) {
+  const uint8_t *next = can_draw() ? atomic_exchange(&offered, NULL) : NULL;
+  if (next) {
+    release_pack(selected);
+    selected = next;
+    pack_ok = true;
+    shown = UINT32_MAX;
+    display(action < 0 ? 0 : actions[action].steps[step ? step - 1 : 0].frame);
+  }
+  if (changed && timer) {
     if (active)
       lv_timer_resume(timer);
     else

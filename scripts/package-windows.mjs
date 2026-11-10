@@ -61,6 +61,8 @@ await writeFile(
   JSON.stringify({
     production: !development,
     version: config.version,
+    origin: config.productionOrigin,
+    updateManifestUrl: config.bridgeManifestUrl,
     runtime: process.version,
     scope: "CurrentUser",
   }),

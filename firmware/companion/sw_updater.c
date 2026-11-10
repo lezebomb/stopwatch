@@ -19,13 +19,17 @@
 #include "muse_wifi.h"
 #include "nvs.h"
 #include "psa/crypto.h"
+#include "sw_companion.h"
+#include "sw_miao.h"
 #include "sw_update_build.h"
 #include "sw_update_core.h"
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 #if !CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE ||                                  \
     !CONFIG_SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT
 #error StopWatch updater requires rollback and software signed-image verification
@@ -48,7 +52,7 @@ static const char *TAG = "sw_update";
 /* Keep the complete OTA path linked in development builds, while failing
  * closed. */
 static volatile bool production_configured = SW_UPDATE_PRODUCTION;
-static char manifest_url[768];
+static char manifest_url[768], resource_url[768];
 static TaskHandle_t update_task;
 typedef struct {
   char version[32], url[768], build[65];
@@ -56,6 +60,16 @@ typedef struct {
   size_t size;
   uint64_t sequence;
 } manifest_t;
+#define MIAO_MAX_BYTES 950000u
+typedef struct {
+  uint64_t sequence;
+  uint32_t size;
+  uint8_t slot;
+  uint8_t hash[32];
+  char version[32], layout[65];
+} resource_record_t;
+static resource_record_t resource;
+static const char *const resource_files[] = {SW_MIAO_SLOT_A, SW_MIAO_SLOT_B};
 static uint64_t seconds(void) {
   return (uint64_t)(esp_timer_get_time() / 1000000);
 }
@@ -113,7 +127,7 @@ static esp_http_client_handle_t http_open(const char *url, size_t max) {
       break;
     int64_t length = esp_http_client_fetch_headers(h);
     int code = esp_http_client_get_status_code(h);
-    if (code == 200 && (length < 0 || (uint64_t)length <= max))
+    if (code == 200 && length >= 0 && (uint64_t)length <= max)
       return h;
     if (code != 301 && code != 302 && code != 303 && code != 307 && code != 308)
       break;
@@ -140,7 +154,20 @@ static double number(cJSON *o, const char *key) {
   cJSON *v = cJSON_GetObjectItemCaseSensitive(o, key);
   return cJSON_IsNumber(v) ? v->valuedouble : -1;
 }
-static int parse_manifest(const char *json, manifest_t *out) {
+static bool hash_from_hex(const char *sha, uint8_t hash[32]) {
+  if (!sha || strlen(sha) != 64)
+    return false;
+  for (unsigned i = 0; i < 32; i++) {
+    char a = sha[i * 2], b = sha[i * 2 + 1];
+    if (!((a >= '0' && a <= '9') || (a >= 'a' && a <= 'f')) ||
+        !((b >= '0' && b <= '9') || (b >= 'a' && b <= 'f')))
+      return false;
+    hash[i] = (uint8_t)((a <= '9' ? a - '0' : a - 'a' + 10) * 16 +
+                        (b <= '9' ? b - '0' : b - 'a' + 10));
+  }
+  return true;
+}
+static int parse_manifest(const char *json, manifest_t *out, bool miao) {
   cJSON *envelope = cJSON_Parse(json), *payload = NULL;
   int ok = -1;
   uint8_t *bytes = NULL, *signature = NULL;
@@ -190,27 +217,36 @@ static int parse_manifest(const char *json, manifest_t *out) {
   const char *version = str(payload, "version"), *url = str(payload, "url"),
              *sha = str(payload, "sha256"), *build = str(payload, "buildId");
   double size = number(payload, "size"), seq = number(payload, "sequence");
-  uint64_t highest = 0, failed = 0;
-  nvs_get_u64(nvs, "highest", &highest);
-  nvs_get_u64(nvs, "failed_seq", &failed);
-  if (number(payload, "schema") != 1 || !eq(payload, "kind", "firmware") ||
+  uint64_t highest = resource.sequence, failed = 0;
+  if (!miao) {
+    nvs_get_u64(nvs, "highest", &highest);
+    nvs_get_u64(nvs, "failed_seq", &failed);
+  }
+  if (number(payload, "schema") != 1 ||
+      !eq(payload, "kind", miao ? "miao" : "firmware") ||
       !eq(payload, "channel", "stable") ||
       !eq(payload, "hardware", "m5stack-stopwatch-c152") || !compat ||
-      !eq(compat, "partitionLayout", "c152-16m-dual4m-photos7m-v1") ||
-      number(compat, "dataSchema") != 1 || !eq(compat, "idf", "6.0.3"))
+      number(compat, "dataSchema") != 1)
+    goto done;
+  if (miao ? !eq(compat, "encoding", "MIA1")
+           : (!eq(compat, "partitionLayout", "c152-16m-dual4m-photos7m-v1") ||
+              !eq(compat, "idf", "6.0.3")))
     goto done;
   if (!version || strlen(version) >= 32 ||
       sw_update_version(version, SW_UPDATE_VERSION) == -2 || !https_url(url) ||
-      !sha || strlen(sha) != 64 || !build || strlen(build) < 7 ||
-      strlen(build) > 64 || size <= 0 || size > 0x400000 ||
-      size != (size_t)size || seq <= 0 || seq > 9007199254740991.0 ||
-      seq != (uint64_t)seq || !str(payload, "publishedAt"))
+      !build || strlen(build) < 7 || strlen(build) > 64 || size <= 0 ||
+      size > (miao ? MIAO_MAX_BYTES : 0x400000) || size != (size_t)size ||
+      seq <= 0 || seq > 9007199254740991.0 || seq != (uint64_t)seq ||
+      !str(payload, "publishedAt"))
     goto done;
-  portENTER_CRITICAL(&lock);
-  snprintf(status.latest, sizeof(status.latest), "%s", version);
-  portEXIT_CRITICAL(&lock);
+  if (!miao) {
+    portENTER_CRITICAL(&lock);
+    snprintf(status.latest, sizeof(status.latest), "%s", version);
+    portEXIT_CRITICAL(&lock);
+  }
   if (sw_update_version(version, SW_UPDATE_VERSION) <= 0 || seq <= highest ||
-      seq <= failed) {
+      seq <= failed ||
+      (miao && !eq(compat, "layoutSha256", sw_miao_layout()))) {
     ok = 0;
     goto done;
   }
@@ -220,15 +256,7 @@ static int parse_manifest(const char *json, manifest_t *out) {
   snprintf(out->build, sizeof(out->build), "%s", build);
   out->size = (size_t)size;
   out->sequence = (uint64_t)seq;
-  for (unsigned i = 0; i < 32; i++) {
-    char a = sha[i * 2], b = sha[i * 2 + 1];
-    if (!((a >= '0' && a <= '9') || (a >= 'a' && a <= 'f')) ||
-        !((b >= '0' && b <= '9') || (b >= 'a' && b <= 'f')))
-      goto done;
-    out->hash[i] = (uint8_t)((a <= '9' ? a - '0' : a - 'a' + 10) * 16 +
-                             (b <= '9' ? b - '0' : b - 'a' + 10));
-  }
-  ok = 1;
+  ok = hash_from_hex(sha, out->hash) ? 1 : -1;
 done:
   psa_destroy_key(psa_key);
   psa_reset_key_attributes(&attributes);
@@ -237,6 +265,156 @@ done:
   free(signature);
   cJSON_Delete(payload);
   cJSON_Delete(envelope);
+  return ok;
+}
+static bool read_http(const char *url, uint8_t *data, size_t limit,
+                      size_t *used, bool (*can_continue)(void)) {
+  esp_http_client_handle_t h = http_open(url, limit);
+  if (!h)
+    return false;
+  *used = 0;
+  bool ok = false;
+  while (*used <= limit && (!can_continue || can_continue())) {
+    size_t room = limit + 1 - *used;
+    int count = esp_http_client_read(h, (char *)data + *used,
+                                     room > 4096 ? 4096 : room);
+    if (count <= 0) {
+      ok = count == 0 && esp_http_client_is_complete_data_received(h);
+      break;
+    }
+    *used += (size_t)count;
+  }
+  esp_http_client_cleanup(h);
+  return ok;
+}
+static int fetch_manifest(const char *url, manifest_t *out, bool miao) {
+  size_t used;
+  uint8_t *json = heap_caps_malloc(16386, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  int result = -1;
+  if (json && read_http(url, json, 16384, &used, NULL)) {
+    json[used] = 0;
+    result = parse_manifest((const char *)json, out, miao);
+  }
+  free(json);
+  return result;
+}
+static bool install_allowed(void) {
+  muse_power_t power = muse_state_power();
+  return (power.usb || power.charging) &&
+         power.battery_pct >= policy.min_battery && muse_wifi_connected() &&
+         !busy();
+}
+static bool matches_hash(const uint8_t *data, size_t size,
+                         const uint8_t expected[32]) {
+  uint8_t actual[32];
+  size_t length;
+  return psa_hash_compute(PSA_ALG_SHA_256, data, size, actual, sizeof(actual),
+                          &length) == PSA_SUCCESS &&
+         length == sizeof(actual) && !memcmp(actual, expected, sizeof(actual));
+}
+static bool save_resource(resource_record_t *next) {
+  if (nvs_set_blob(nvs, "miao", next, sizeof(*next)) != ESP_OK ||
+      nvs_commit(nvs) != ESP_OK)
+    return false;
+  resource = *next;
+  return true;
+}
+static void restore_resource(void) {
+  size_t size = sizeof(resource);
+  if (nvs_get_blob(nvs, "miao", &resource, &size) != ESP_OK ||
+      size != sizeof(resource)) {
+    memset(&resource, 0, sizeof(resource));
+    return;
+  }
+  if (!resource.size || resource.size > MIAO_MAX_BYTES || resource.slot > 1 ||
+      resource.version[31] || resource.layout[64] ||
+      strcmp(resource.layout, sw_miao_layout()) ||
+      sw_update_version(resource.version, SW_UPDATE_VERSION) <= 0)
+    return;
+  uint8_t *data =
+      heap_caps_malloc(resource.size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  FILE *file = data ? fopen(resource_files[resource.slot], "rb") : NULL;
+  bool ok = file && fread(data, 1, resource.size, file) == resource.size &&
+            fgetc(file) == EOF && !ferror(file) &&
+            matches_hash(data, resource.size, resource.hash);
+  if (file)
+    fclose(file);
+  if (ok)
+    sw_miao_offer_pack(data);
+  else {
+    free(data);
+    ESP_LOGW(TAG, "Stored Miao pack unreadable; using embedded pack");
+  }
+}
+static bool write_resource(const char *path, const uint8_t *data, size_t size) {
+  FILE *file = fopen(path, "wb");
+  if (!file)
+    return false;
+  bool ok = true;
+  for (size_t offset = 0; ok && offset < size;) {
+    size_t count = size - offset > 4096 ? 4096 : size - offset;
+    ok = install_allowed() && fwrite(data + offset, 1, count, file) == count;
+    offset += count;
+    vTaskDelay(1);
+  }
+  ok = ok && !fflush(file) && !fsync(fileno(file));
+  if (fclose(file) || !ok)
+    return false;
+  file = fopen(path, "rb");
+  if (!file)
+    return false;
+  uint8_t block[1024];
+  for (size_t offset = 0; ok && offset < size;) {
+    size_t count =
+        size - offset > sizeof(block) ? sizeof(block) : size - offset;
+    ok = install_allowed() && fread(block, 1, count, file) == count &&
+         !memcmp(data + offset, block, count);
+    offset += count;
+  }
+  ok = ok && fgetc(file) == EOF && !ferror(file);
+  return fclose(file) == 0 && ok;
+}
+static bool check_resource(void) {
+  manifest_t m;
+  int result = fetch_manifest(resource_url, &m, true);
+  if (result <= 0)
+    return result == 0;
+  resource_record_t next = {.sequence = m.sequence,
+                            .slot = resource.slot == 0 ? 1 : 0};
+  snprintf(next.version, sizeof(next.version), "%s", m.version);
+  snprintf(next.layout, sizeof(next.layout), "%s", sw_miao_layout());
+  memcpy(next.hash, m.hash, sizeof(next.hash));
+  uint8_t embedded[32];
+  if (hash_from_hex(sw_miao_embedded_hash(), embedded) &&
+      !memcmp(embedded, m.hash, sizeof(embedded))) {
+    if (!save_resource(&next))
+      return false;
+    sw_miao_offer_pack(NULL);
+    return true;
+  }
+  if (!install_allowed())
+    return false;
+  uint8_t *data =
+      heap_caps_malloc(m.size + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  size_t used = 0;
+  bool ok = false;
+  const char *path = resource_files[next.slot];
+  struct stat st;
+  size_t reclaim =
+      stat(path, &st) == 0 && st.st_size > 0 ? (size_t)st.st_size : 0;
+  if (data && read_http(m.url, data, m.size, &used, install_allowed) &&
+      used == m.size && matches_hash(data, used, m.hash) &&
+      sw_miao_validate_pack(data, used, install_allowed) &&
+      sw_companion_resource_reserve(used, reclaim)) {
+    next.size = used;
+    ok = write_resource(path, data, used) && save_resource(&next);
+    sw_companion_resource_release();
+  }
+  if (ok) {
+    sw_miao_offer_pack(data);
+    ESP_LOGI(TAG, "Activated signed Miao pack %s", m.version);
+  } else
+    free(data);
   return ok;
 }
 typedef struct {
@@ -302,10 +480,7 @@ static bool install(const manifest_t *m) {
       sw_update_stream_begin(&stream, ops, m->size, part->size))
     goto done;
   for (;;) {
-    muse_power_t power = muse_state_power();
-    if (!(power.usb || power.charging) ||
-        power.battery_pct < policy.min_battery || busy() ||
-        !muse_wifi_connected())
+    if (!install_allowed())
       goto done;
     int count = esp_http_client_read(h, (char *)buffer, 4096);
     if (count < 0)
@@ -389,21 +564,23 @@ static void health(void) {
 static void worker(void *arg) {
   (void)arg;
   health();
-  uint64_t last_check = 0, next_attempt = 0, online_since = 0;
-  nvs_get_u64(nvs, "last_check", &last_check);
+  if (production_configured && storage_ready)
+    restore_resource();
+  uint64_t last_wall = 0, last_check = 0, next_attempt = 0, online_since = 0;
+  uint64_t resource_wall = 0, resource_due = 0;
+  nvs_get_u64(nvs, "last_check", &last_wall);
+  nvs_get_u64(nvs, "miao_check", &resource_wall);
   bool was_online = false, reconnect_due = false;
-  unsigned failures = 0;
+  unsigned failures = 0, resource_failures = 0;
   manifest_t candidate = {0};
   bool have_candidate = false;
   for (;;) {
     bool online = muse_wifi_connected();
-    uint64_t monotonic = seconds();
+    uint64_t now = seconds();
     time_t wall = time(NULL);
-    uint64_t now = wall > 1700000000 ? (uint64_t)wall : monotonic;
-    if (wall <= 1700000000 || last_check > now)
-      last_check = 0;
+    uint64_t utc = wall > 1700000000 ? (uint64_t)wall : 0;
     if (online && !was_online) {
-      online_since = monotonic;
+      online_since = now;
       reconnect_due = true;
     }
     if (!online)
@@ -427,64 +604,42 @@ static void worker(void *arg) {
         .manual = user_check,
         .reconnected = reconnect_due,
         .battery = p.battery_pct,
-        .stable_s = online_since ? (uint32_t)(monotonic - online_since) : 0,
+        .stable_s = online_since ? (uint32_t)(now - online_since) : 0,
         .idle_s = (uint32_t)muse_state_idle_secs()};
     sw_update_action_t action = sw_update_decide(policy, cond);
+    if (!last_check && !user_check && utc >= last_wall && last_wall &&
+        utc - last_wall < (reconnect_due ? policy.reconnect_s : policy.check_s))
+      action = SW_UP_WAIT;
     if (have_candidate && cond.online && cond.charging && !cond.busy &&
         cond.battery >= policy.min_battery && cond.idle_s >= policy.idle_s &&
         cond.stable_s >= policy.stable_s && now >= next_attempt)
       action = SW_UP_INSTALL;
-    if (action == SW_UP_WAIT) {
+    bool check_miao =
+        storage_ready && resource_url[0] && cond.stable_s >= policy.stable_s &&
+        cond.idle_s >= policy.idle_s && now >= resource_due &&
+        install_allowed() &&
+        (user_check || resource_due || !resource_wall || utc < resource_wall ||
+         utc - resource_wall >= policy.check_s);
+    if (action == SW_UP_WAIT && !check_miao) {
       if (user_check)
         state("deferred", "等待稳定网络、空闲或重试间隔");
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(have_candidate ? 1000 : 30000));
       continue;
     }
     bool ok = true;
-    if (!have_candidate) {
+    if (!have_candidate && action != SW_UP_WAIT) {
       state("checking", "正在检查签名版本清单");
       last_check = now;
-      if (wall > 1700000000) {
-        nvs_set_u64(nvs, "last_check", now);
+      if (utc) {
+        nvs_set_u64(nvs, "last_check", utc);
         nvs_commit(nvs);
       }
       reconnect_due = false;
-      esp_http_client_handle_t h = http_open(manifest_url, 16384);
-      char *json = calloc(1, 16385);
-      size_t used = 0;
-      if (!h || !json)
-        ok = false;
-      else {
-        while (used < 16384) {
-          int count = esp_http_client_read(h, json + used, (int)(16384 - used));
-          if (count < 0) {
-            ok = false;
-            break;
-          }
-          if (!count)
-            break;
-          used += (size_t)count;
-        }
-        if (used >= 16384 || !esp_http_client_is_complete_data_received(h))
-          ok = false;
-      }
-      if (ok) {
-        int result = parse_manifest(json, &candidate);
-        ok = result >= 0;
-        have_candidate = result == 1;
-        if (have_candidate) {
-          portENTER_CRITICAL(&lock);
-          snprintf(status.latest, sizeof(status.latest), "%s",
-                   candidate.version);
-          portEXIT_CRITICAL(&lock);
-        } else if (result == 0)
-          state("up-to-date", "已是当前可用版本，或失败版本已隔离");
-        else
-          state("rejected", "清单签名或兼容性验证失败");
-      }
-      if (h)
-        esp_http_client_cleanup(h);
-      free(json);
+      int result = fetch_manifest(manifest_url, &candidate, false);
+      ok = result >= 0;
+      have_candidate = result == 1;
+      if (!have_candidate && ok)
+        state("up-to-date", "已是当前可用版本，或失败版本已隔离");
     }
     if (ok && have_candidate && action == SW_UP_INSTALL) {
       state("downloading", "充电空闲中，下载到备用应用分区");
@@ -500,11 +655,27 @@ static void worker(void *arg) {
       failures++;
       next_attempt = now + sw_update_backoff(policy, failures, esp_random());
       state("retry-wait", "更新失败，保留当前固件并退避重试");
-    } else {
+    } else if (action != SW_UP_WAIT) {
       failures = 0;
       next_attempt = 0;
       if (have_candidate)
         state("deferred", "新版本就绪，等待充电与空闲");
+    }
+    if (check_miao && install_allowed()) {
+      if (check_resource()) {
+        resource_failures = 0;
+        resource_due = seconds() + policy.check_s;
+        if (utc) {
+          nvs_set_u64(nvs, "miao_check", utc);
+          nvs_commit(nvs);
+        }
+      } else {
+        resource_due =
+            seconds() +
+            sw_update_backoff(policy, ++resource_failures, esp_random());
+        ESP_LOGW(TAG,
+                 "Miao update deferred or rejected; retaining current pack");
+      }
     }
     portENTER_CRITICAL(&lock);
     status.failures = failures;
@@ -516,6 +687,7 @@ void sw_update_start(bool storage_ok) {
   storage_ready = storage_ok;
   policy = sw_update_defaults();
   snprintf(manifest_url, sizeof(manifest_url), "%s", SW_UPDATE_MANIFEST_URL);
+  snprintf(resource_url, sizeof(resource_url), "%s", SW_RESOURCE_MANIFEST_URL);
   psa_crypto_init();
   snprintf(status.current, sizeof(status.current), "%s", SW_UPDATE_VERSION);
   ESP_LOGI(TAG, "Updater started; production trust configured: %d",

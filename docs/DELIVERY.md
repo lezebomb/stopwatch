@@ -7,8 +7,8 @@
 1. 受控环境离线创建RSA-3072发布私钥，只提交SPKI PEM公钥到 release/trust/stable-public.pem。设备与Windows信任根必须来自可信首次交付。
 2. GitHub production-signing environment中设置 RELEASE_SIGNING_KEY_PEM secret，限制发布权限并按需审批。缺公钥/secret即失败关闭。
 3. 设置release/config.json.productionOrigin为固定HTTPS域名；当前null，生产控制台包拒绝构建。公开Pages仅演示。
-4. 后续获VPS部署授权后先检查已有服务、端口和TLS入口，不覆盖代理配置，不停止代理，不假定443空闲。中转只监听127.0.0.1。
-5. 持久data置于代码版本目录之外，使用用户级服务和固定Origin；STOPWATCH_ENABLE_EXECUTION=0默认不执行，绑定验收后由维护者明确启用。
+4. VPS 获授权后，在独立用户目录放置首个可信门户制品。结构为 `versions/<首版目录>/`、`current.json`（内容为 `{"release":"<首版目录>"}`）、制品自带的 `bootstrap/`、`release-public.pem` 和 `production.env`。门户只监听 127.0.0.1，使用单独的域名入口；部署前确认不会影响已有代理和端口。
+5. 在 `production.env` 中设置绝对 `STOPWATCH_DATA_DIR`，指向发布目录之外的持久目录。安装制品附带的用户级 `stopwatch.service` 和 `stopwatch-update.{service,timer}` 模板。先验证首版、持久数据和回滚，再启用 timer。`STOPWATCH_ENABLE_EXECUTION=0` 保持关闭，直到维护者明确授权。
 6. 首次设备初始化先备份，安装正式签名/公钥和rollback Bootloader。仅首次显式-FactoryAssets写内置照片，以后不重写默认SPIFFS。
 7. 收礼人只需配网/Muse官方授权、手机一次配对、Windows一次图形安装和工作区授权，不维护仓库或CI。
 
@@ -16,13 +16,13 @@
 
 ## 日常发布
 
-main push自动测试和构建，成功后部署隔离Pages；PR没有发布secret。更新版本并发布匹配vX.Y.Z的正式Release；pre-release不发布稳定更新。
+`main` 自动测试和构建，Pages 继续部署隔离预览。更新 `release/config.json` 的版本，等待同一提交的 `main` CI 成功，再推送匹配的附注标签 `vX.Y.Z`。由 Actions 创建 Release。部分上传失败时，用原 Actions 制品重跑发布作业；已公开版本采用新版本号修复。
 
-Signed stable release复跑验证后生成固件、Windows和生产控制台制品；先上传二进制再上传签名清单，失败不降级无签名。当前没有创建正式Release。
+Actions 从同一个提交生成固件、Miao、Windows 桥接和门户。门户先用临时数据启动。发布作业校验四份签名、版本和构建号、所有受签名制品的大小及 SHA-256，再核对草稿上的上传结果。全部通过后一次公开为 `latest`。
 
-发现入口为仓库releases/latest/download下的firmware-manifest.json和bridge-manifest.json。构建期间或缺资产404时保留旧版本并退避，不把Release存在当作可安装。
+四个入口为仓库 `releases/latest/download/` 下的 `firmware-manifest.json`、`miao-manifest.json`、`bridge-manifest.json` 和 `portal-manifest.json`。客户端验签后才下载并验证对应二进制。
 
-生产控制台仅打包为Actions制品，本轮没有SSH、DNS或VPS执行步骤。后续获授权可增加受保护部署job：独立版本目录、健康检查、切current、失败回previous，持久data不进入版本目录。现有代理不属于可修改范围。
+门户由 VPS 用户级 timer 拉取签名版本。候选在临时数据库上启动成功后切换 `current.json`，重启 StopWatch 用户服务并检查确切构建。失败或上次切换未确认时恢复旧版本，失败序号隔离。自动下载的版本保留当前版和回滚版。网页在同域收到新构建号后刷新，保留登录状态，输入或上传时延后。GitHub 流水线无需 SSH 凭据。
 
 ## 信任与清单
 
@@ -36,7 +36,9 @@ Payload含schema/kind/channel/version/sequence、hardware/buildId、完整size/S
 
 程序、系统资源、个人数据生命周期分开。个人照片不进入公开Release。新增sw_updates命名空间只管理更新信息，不重设既有亮度/休眠偏好。
 
-ResourceStore只接受签名system命名空间：逐文件大小/哈希、临时下载、不可变对象、previous/active指针和恢复；拒绝路径穿越、重复文件、私人命名空间与不足的写时复制空间。7MiB不可能同时存两份6MiB相册，必须推迟而非擦除。设备资源网络传输接线仍待实现，事务机制当前在电脑端执行测试。
+设备在充电、联网、空闲时独立检查 Miao。签名清单需匹配当前播放器帧和动作布局。下载包通过大小、SHA-256 和逐帧解码验证后，才写入照片分区内专用的 `miao0.pack` 或 `miao1.pack`，刷盘并读回校验，最后提交 NVS 指针。旧包在提交前仍可用。相册空间不足时可回收 Miao 缓存；所选包缺失或损坏时回退内置动画。固件内置版本相同或更新时直接使用内置包。变更帧或动作布局需由新版固件提供对应播放器。
+
+授权照片、封面、彩蛋和显示设置继续使用私有 HTTPS 设备同步及现有相册事务。Windows 凭据和 VPS 持久数据库在发布目录之外。OTA 和稳定制品都不承载私人数据。
 
 ## Windows 后台
 

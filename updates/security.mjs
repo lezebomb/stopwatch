@@ -30,6 +30,7 @@ export function validateManifest(
     hardware = config.hardware,
     now = Date.now(),
     allowLoopback = false,
+    portalOrigin = config.productionOrigin,
   } = {},
 ) {
   if (
@@ -51,7 +52,7 @@ export function validateManifest(
     m.size >
       (kind === "firmware"
         ? 0x400000
-        : kind === "resources"
+        : kind === "resources" || kind === "miao"
           ? 6 * 1024 * 1024
           : 200 * 1024 * 1024)
   )
@@ -79,9 +80,16 @@ export function validateManifest(
     throw new Error("Incompatible device/layout/schema");
   if (
     kind === "bridge" &&
-    (m.hardware !== "windows-x64" || m.compatibility?.protocol !== 1)
+    (m.hardware !== "windows-x64" || m.compatibility?.protocol !== 1 || m.compatibility?.nodeMajor !== 24)
   )
     throw new Error("Incompatible bridge");
+  if (kind === "portal" && (m.hardware !== "linux-x64" || m.compatibility?.nodeMajor !== 24 ||
+      m.compatibility?.dataSchema !== config.dataSchema || !portalOrigin || m.compatibility?.origin !== portalOrigin))
+    throw new Error("Incompatible portal");
+  if (kind === "miao" && (m.hardware !== hardware || m.size > 950000 ||
+      m.compatibility?.dataSchema !== config.dataSchema || m.compatibility?.encoding !== "MIA1" ||
+      !/^[a-f0-9]{64}$/.test(m.compatibility?.layoutSha256 || "")))
+    throw new Error("Incompatible Miao pack");
   if (
     kind === "resources" &&
     (!Array.isArray(m.files) ||

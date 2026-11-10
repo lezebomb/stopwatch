@@ -63,6 +63,7 @@ test("Windows staged app update rolls back without health and commits only on he
         "user configuration",
       );
       assert.equal((await manager.state()).lastResult, "healthy");
+      assert.equal((await manager.check()).state, "up-to-date");
       nextVersion = "0.2.3";
       sequenceOffset = 2;
       await manager.check();

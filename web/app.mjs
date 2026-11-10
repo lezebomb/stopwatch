@@ -11,9 +11,7 @@ const VERSION = releaseConfig.version;
 import { installDemo } from "./demo.mjs";
 import { watchVersion } from "./version-watch.mjs";
 import { MiaoPlayer } from "./miao-player.mjs";
-watchVersion(
-  typeof __SW_BUILD_ID__ === "undefined" ? "local" : __SW_BUILD_ID__,
-);
+const WEB_MODE = typeof __SW_WEB_MODE__ === "undefined" ? "local" : __SW_WEB_MODE__;
 const PREVIEW = typeof __SW_PREVIEW__ !== "undefined" && __SW_PREVIEW__;
 const demo = PREVIEW ? await installDemo() : null;
 const asset = (p) => new URL(p.replace(/^\//, ""), import.meta.url).href;
@@ -23,6 +21,9 @@ const photoUrl = (id) =>
   PREVIEW ? demo.photoUrl(id) : `/api/photos/${id}.jpg`;
 const root = document.querySelector("#app");
 let photoUploadActive = false;
+let apiWrites = 0;
+watchVersion(typeof __SW_BUILD_ID__ === "undefined" ? "local" : __SW_BUILD_ID__, WEB_MODE,
+  () => !photoUploadActive && !apiWrites);
 const state = {
   paired: false,
   mode: "mock",
@@ -101,19 +102,18 @@ function toast(message) {
   setTimeout(() => el.remove(), 4500);
 }
 async function api(route, data, method = "POST") {
-  const response = await fetch(
-    `/api/${route}`,
-    data === undefined
-      ? {}
-      : {
-          method,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(data),
-        },
-  );
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "请求失败");
-  return result;
+  const writing = data !== undefined;
+  if (writing) apiWrites++;
+  try {
+    const response = await fetch(`/api/${route}`, writing ? {
+      method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+    } : {});
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "请求失败");
+    return result;
+  } finally {
+    if (writing) apiWrites--;
+  }
 }
 function merge(snapshot) {
   const cover = state.settings.defaultPhoto;
@@ -173,7 +173,7 @@ async function boot() {
 }
 function renderPair() {
   root.innerHTML = `<main class="pair-page"><section class="pair-card"><div class="brand"><span class="brandmark"></span>StopWatch</div><div class="eyebrow">A LITTLE COMPANION, ALWAYS NEAR</div><h1>让陪伴，从这里开始。</h1><p>在启动服务的电脑上找到两分钟有效的配对链接，直接打开；也可以粘贴一次性配对码。</p><form id="pair-form"><label for="pair-code">一次性配对码</label><input id="pair-code" autocomplete="off" required placeholder="粘贴电脑显示的短时配对码"><button>连接我的 StopWatch</button></form><p class="small">当前为本地 MOCK 预览 · 无需 Muse / Codex 账号<br>二维码不会包含长期控制密钥。</p></section></main>`;
-  if (state.mode === "production") {
+  if (WEB_MODE === "production" || state.mode === "production") {
     const paragraphs = root.querySelectorAll(".pair-card p");
     paragraphs[0].textContent =
       "扫描设备或已授权控制台的短时二维码，完成一次性绑定。";
@@ -632,6 +632,7 @@ function bind() {
         eggPhoto: document.querySelector("#egg-photo").value || null,
         utcOffset: -new Date().getTimezoneOffset(),
       });
+      render();
       toast("设置已保存");
     } catch (e) {
       toast(e.message);

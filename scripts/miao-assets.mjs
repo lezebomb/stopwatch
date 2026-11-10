@@ -19,7 +19,7 @@ const git = (...args) => execFileSync("git", ["-c", `safe.directory=${source.rep
 const name = value => value.replaceAll("-", "_").toUpperCase();
 async function available(file) { try { await access(file); return true; } catch { return false; } }
 
-function cMetadata(meta) {
+function cMetadata(meta, manifest) {
   const actions = Object.keys(meta.actions);
   const a = value => `MIAO_${name(value)}`;
   const rows = actions.map(key => {
@@ -36,6 +36,7 @@ function cMetadata(meta) {
   rows.push(`static const miao_weight_t idle_choices[] = {${weights(meta.micro)}};`);
   rows.push(`static const miao_weight_t touch_choices[] = {${weights(meta.touch)}};`);
   rows.push(`#define MIAO_WIDTH ${lock.width}\n#define MIAO_HEIGHT ${lock.height}\n#define MIAO_COUNT ${meta.count}\n#define MIAO_BUDGET ${lock.budgetBytes}`);
+  rows.push(`#define MIAO_LAYOUT_SHA256 "${manifest.layoutSha256}"\n#define MIAO_EMBEDDED_SHA256 "${manifest.sha256}"`);
   rows.push(`#define MIAO_IDLE_MIN ${meta.idleMs[0]}\n#define MIAO_IDLE_MAX ${meta.idleMs[1]}\n#define MIAO_WASH_MIN ${meta.specialMs[0]}\n#define MIAO_WASH_MAX ${meta.specialMs[1]}\n#define MIAO_WASH_CHANCE ${Math.round(meta.washChance * 100)}\n#define MIAO_TAP_COOLDOWN ${meta.cooldown}`);
   return `/* Generated from ${lock.repo}/commit/${lock.commit} */\n#pragma once\n${rows.join("\n")}\n`;
 }
@@ -130,7 +131,7 @@ export async function miaoAssets() {
     rawFrameBytes: pixels * 3, originalBytes, resizedPngBytes, webBytes,
   };
   await writeFile(path.join(miaoOutput, "miao.pack"), pack);
-  await writeFile(path.join(miaoOutput, "miao_data.h"), cMetadata(meta));
+  await writeFile(path.join(miaoOutput, "miao_data.h"), cMetadata(meta, manifest));
   await writeFile(path.join(miaoOutput, "web.json"), JSON.stringify({ ...meta, assetVersion: manifest.version }));
   await writeFile(marker, JSON.stringify(manifest, null, 2) + "\n");
   return manifest;

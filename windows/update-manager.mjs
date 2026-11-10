@@ -1,7 +1,7 @@
 import { mkdir, readFile, unlink, stat } from "node:fs/promises";
 import path from "node:path";
 import { fetchEnvelope, downloadVerified } from "../updates/download.mjs";
-import { verifyManifest, sha256 } from "../updates/security.mjs";
+import { compareVersion, verifyManifest, sha256 } from "../updates/security.mjs";
 import { atomicJson, readJson } from "../updates/atomic.mjs";
 export class BridgeUpdateManager {
   constructor(
@@ -31,17 +31,12 @@ export class BridgeUpdateManager {
     const envelope = await fetchEnvelope(this.manifestUrl, { ca: this.ca });
     const m = verifyManifest(envelope, this.publicKey, {
       kind: "bridge",
-      currentVersion: current.currentVersion,
-      highestSequence: Math.max(
-        current.highestSequence,
-        current.failedSequence || 0,
-      ),
       allowLoopback: !!this.ca,
     });
-    if (m.compatibility.nodeMajor !== 24)
-      throw new Error(
-        "Runtime migration requires an explicit compatible installer",
-      );
+    if (compareVersion(m.version, current.currentVersion) <= 0)
+      return { state: "up-to-date", version: current.currentVersion };
+    if (m.sequence <= Math.max(current.highestSequence, current.failedSequence || 0))
+      throw new Error("Update sequence replay");
     const directory = path.join(this.root, "apps", `${m.version}-${m.buildId}`);
     await mkdir(directory, { recursive: true });
     const file = path.join(directory, "bridge.mjs");

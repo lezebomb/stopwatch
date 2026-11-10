@@ -4,9 +4,10 @@ After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/stopwatch/current
+WorkingDirectory=%h/stopwatch
 EnvironmentFile=%h/stopwatch/production.env
-ExecStart=/usr/bin/env node server/main.mjs
+Environment=STOPWATCH_HOME=%h/stopwatch
+ExecStart=/usr/bin/env node bootstrap/scripts/portal-service.mjs
 Restart=on-failure
 RestartSec=5
 UMask=0077

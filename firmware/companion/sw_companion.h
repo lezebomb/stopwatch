@@ -1,5 +1,10 @@
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
+#define SW_MIAO_SLOT_A "/photos/miao0.pack"
+#define SW_MIAO_SLOT_B "/photos/miao1.pack"
+bool sw_companion_resource_reserve(size_t bytes, size_t reclaim);
+void sw_companion_resource_release(void);
 /* Called with the LVGL lock held; physical Muse input remains upstream-owned.
  */
 void sw_companion_init(void);

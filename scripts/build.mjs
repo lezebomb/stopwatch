@@ -22,6 +22,7 @@ const output = preview
     ? "production-dist"
     : "dist";
 const buildId = process.env.SW_BUILD_ID || process.env.GITHUB_SHA || "local";
+const mode = preview ? "isolated-demo" : production ? "production" : "local";
 await mkdir(output, { recursive: true });
 await build({
   entryPoints: ["web/app.mjs"],
@@ -33,6 +34,7 @@ await build({
   define: {
     __SW_PREVIEW__: String(preview),
     __SW_BUILD_ID__: JSON.stringify(buildId),
+    __SW_WEB_MODE__: JSON.stringify(mode),
   },
   target: "es2022",
 });
@@ -67,7 +69,7 @@ await writeFile(
   `${output}/version.json`,
   JSON.stringify({
     version,
-    mode: preview ? "isolated-demo" : production ? "production" : "local",
+    mode,
     build: buildId,
   }),
 );

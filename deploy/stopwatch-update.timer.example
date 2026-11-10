@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for verified StopWatch portal releases
+
+[Timer]
+OnStartupSec=5min
+OnUnitActiveSec=15min
+RandomizedDelaySec=1min
+
+[Install]
+WantedBy=timers.target
