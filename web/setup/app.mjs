@@ -127,5 +127,5 @@ setInterval(async () => {
 addEventListener("pagehide", () => { ticket = ""; $("password").value = ""; client.disconnect(); });
 if (!isSecureContext || !navigator.bluetooth) {
   $("connect").disabled = true;
-  say("此浏览器不支持网页蓝牙。请复制当前 HTTPS 地址到 Android Chrome；也可尝试支持网页蓝牙的 Edge。不要在微信内置浏览器中打开。");
+  say("请用 Android Chrome 或支持网页蓝牙的 Edge 打开。如果手机无法使用网页蓝牙，可在挂件的「设置 → Wi-Fi」直接联网。");
 }

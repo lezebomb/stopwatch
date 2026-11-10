@@ -80,9 +80,9 @@ export class Store {
       this.db
         .prepare("UPDATE settings SET value=? WHERE id=1")
         .run(JSON.stringify({ ...this.settings(), ...patch }));
-    return JSON.parse(
+    return { ...defaultSettings, ...JSON.parse(
       this.db.prepare("SELECT value FROM settings WHERE id=1").get().value,
-    );
+    ) };
   }
   event(event) {
     const result = this.db

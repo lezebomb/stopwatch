@@ -203,6 +203,55 @@ static bool uuid(const char *id) {
   return true;
 }
 
+static bool parse_display(cJSON *root, sw_sync_album_t *out) {
+  cJSON *obj = cJSON_GetObjectItemCaseSensitive(root, "display");
+  sw_display_settings_t *display = &out->display;
+  display->sleep_after = 180;
+  display->utc_offset = 480;
+  display->month = 12;
+  display->day = 25;
+  if (!obj)
+    return true; /* an older relay's album still works */
+  out->has_display = true;
+  const char *mode = string(obj, "mode"), *date = string(obj, "eggDate");
+  const char *message = string(obj, "eggMessage"),
+             *photo = string(obj, "eggPhoto");
+  unsigned after, offset;
+  int month, day;
+  if (!mode || !date || strlen(date) != 5 ||
+      sscanf(date, "%2d-%2d", &month, &day) != 2 || month < 1 || month > 12 ||
+      day < 1 || day > 31 || !integer(obj, "sleepAfter", 0, 3600, &after) ||
+      !integer(obj, "utcOffset", -720, 840, &offset))
+    return false;
+  display->mode = !strcmp(mode, "endurance") ? 2
+                  : !strcmp(mode, "smart")   ? 1
+                                             : 0;
+  display->sleep_after = after;
+  display->utc_offset = (int16_t)offset;
+  display->month = month;
+  display->day = day;
+  if (message) {
+    size_t n = strnlen(message, sizeof(display->message) - 1);
+    while (n && ((uint8_t)message[n] & 0xc0) == 0x80)
+      n--;
+    memcpy(display->message, message, n);
+  }
+  if (photo) {
+    if (!uuid(photo))
+      return false;
+    for (unsigned i = 0; i < out->count; i++) {
+      if (strcmp(photo, out->photos[i].id))
+        continue;
+      memcpy(display->egg_hash, out->photos[i].sha256,
+             sizeof(display->egg_hash));
+      display->has_egg = true;
+      return true;
+    }
+    return false;
+  }
+  return true;
+}
+
 static bool parse_album(cJSON *root, sw_sync_album_t *out) {
   cJSON *list = cJSON_GetObjectItemCaseSensitive(root, "photos");
   cJSON *cover = cJSON_GetObjectItemCaseSensitive(root, "cover");
@@ -244,7 +293,7 @@ static bool parse_album(cJSON *root, sw_sync_album_t *out) {
   strlcpy(out->cover, selected, sizeof(out->cover));
   out->slideshow = cJSON_IsTrue(slideshow);
   out->border = !strcmp(border, "gold") ? 2 : !strcmp(border, "mint") ? 1 : 0;
-  return true;
+  return parse_display(root, out);
 }
 
 static sw_sync_album_result_t fetch_photo(const sw_sync_photo_t *photo,
@@ -301,7 +350,8 @@ static void save_task(cJSON *root) {
     return;
   sw_companion_sync_task(cJSON_IsTrue(online), string(task, "state"),
                          string(task, "title"), string(task, "project"),
-                         remaining, time);
+                         string(task, "id"), string(task, "error"), remaining,
+                         time);
 }
 
 static bool enroll(credential_t *credentials, const char *code) {
@@ -387,7 +437,7 @@ static void sync_worker(void *arg) {
         mbedtls_platform_zeroize(&credentials, sizeof(credentials));
         nvs_erase_key(nvs, "credential");
         nvs_commit(nvs);
-        sw_companion_sync_task(false, NULL, NULL, NULL, -1, 0);
+        sw_companion_sync_task(false, NULL, NULL, NULL, NULL, NULL, -1, 0);
         atomic_store(&state, REAUTHORIZE);
       } else if (result == SW_SYNC_ALBUM_OK || result == SW_SYNC_ALBUM_FULL) {
         atomic_store(&state, result == SW_SYNC_ALBUM_OK ? ONLINE : PHOTO_FULL);

@@ -166,10 +166,16 @@ test("device sync delivers uploaded RGB565 and prevents device credentials from 
     assert.deepEqual(snapshot.photos, [{ id, size: 466 * 466 * 2, sha256: createHash("sha256").update(bytes).digest("hex") }]);
     assert.deepEqual(snapshot.codex, { online: false, task: null, quota: null });
     assert.equal((await (await call("state", { headers: operator })).json()).deviceOnline, true);
+    const settings = await post("settings", { displayMode: "smart", sleepAfter: 0, eggPhoto: id, eggDate: "02-29", utcOffset: -300 }, operator);
+    assert.equal(settings.status, 200);
+    const hidden = await (await call("device/sync", { headers: device })).json();
+    assert.equal(hidden.cover.defaultPhoto, "builtin-0");
+    assert.deepEqual(hidden.display, { mode: "smart", sleepAfter: 0, utcOffset: -300, eggDate: "02-29", eggMessage: snapshot.display.eggMessage, eggPhoto: id });
     assert.equal((await call(`photos/${id}`, { method: "DELETE", headers: { Origin: origin, ...operator } })).status, 200);
     const deleted = await (await call("device/sync", { headers: device })).json();
     assert.deepEqual(deleted.photos, []);
     assert.equal(deleted.cover.defaultPhoto, "builtin-0");
+    assert.equal(deleted.display.eggPhoto, null);
     assert.equal((await call(`device/photos/${id}`, { headers: device })).status, 404);
     assert.equal((await post("revoke", { id: deviceId }, operator)).status, 200);
     assert.equal((await call("device/sync", { headers: device })).status, 401);

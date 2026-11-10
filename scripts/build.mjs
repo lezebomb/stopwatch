@@ -2,7 +2,8 @@ import { build } from "esbuild";
 import { cp, mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { assets } from "./assets.mjs";
-await assets();
+import { miaoAssets, copyMiaoWeb } from "./miao-assets.mjs";
+const [, miao] = await Promise.all([assets(), miaoAssets()]);
 const preview = process.argv.includes("--preview");
 const production = process.argv.includes("--production");
 if (production) {
@@ -58,6 +59,7 @@ await writeFile(
   ),
 );
 await cp("assets/photos", `${output}/photos`, { recursive: true });
+await copyMiaoWeb(output, miao);
 const version = JSON.parse(
   await readFile("release/config.json", "utf8"),
 ).version;

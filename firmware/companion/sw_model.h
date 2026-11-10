@@ -21,12 +21,19 @@ typedef enum {
   SW_INTERRUPTED,
   SW_TASK_COUNT
 } sw_task_t;
+typedef enum {
+  SW_POWER_PHOTO,
+  SW_POWER_SMART,
+  SW_POWER_ENDURANCE
+} sw_power_mode_t;
 typedef struct {
   bool charging;
   int battery;
   sw_screen_t screen;
   unsigned idle_s;
   int brightness;
+  sw_power_mode_t mode;
+  unsigned sleep_after;
 } sw_power_input_t;
 typedef struct {
   bool display;

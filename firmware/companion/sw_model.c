@@ -1,8 +1,13 @@
 #include "sw_model.h"
 #include <stddef.h>
 sw_power_policy_t sw_power_policy(sw_power_input_t in) {
-  bool asleep = !in.charging &&
-                ((in.battery >= 0 && in.battery <= 5) || in.idle_s >= 180);
+  unsigned sleep_after = in.sleep_after;
+  if (in.mode == SW_POWER_ENDURANCE && (!sleep_after || sleep_after > 90))
+    sleep_after = 90;
+  bool asleep =
+      !in.charging &&
+      ((in.battery >= 0 && in.battery <= 5) ||
+       (in.mode != SW_POWER_PHOTO && sleep_after && in.idle_s >= sleep_after));
   int brightness = in.brightness < 10   ? 10
                    : in.brightness > 80 ? 80
                                         : in.brightness;
@@ -10,6 +15,13 @@ sw_power_policy_t sw_power_policy(sw_power_input_t in) {
     brightness = 20;
   if (!in.charging && in.battery >= 0 && in.battery <= 15 && brightness > 15)
     brightness = 15;
+  if (!in.charging && in.mode == SW_POWER_SMART && in.idle_s >= 30) {
+    int cap = in.idle_s >= 60 ? 10 : 14;
+    if (brightness > cap)
+      brightness = cap;
+  }
+  if (!in.charging && in.mode == SW_POWER_ENDURANCE && brightness > 12)
+    brightness = 12;
   return (sw_power_policy_t){
       .display = !asleep,
       .wifi = !asleep && (in.screen == SW_MUSE || in.screen == SW_CODEX),

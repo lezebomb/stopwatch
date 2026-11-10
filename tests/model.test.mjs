@@ -28,7 +28,10 @@ test("critical power, low brightness, charging and unknown battery", () => {
   assert.equal(powerPolicy({ battery: 3, charging: true }).display, true);
   assert.equal(powerPolicy({ battery: -1 }).display, true);
   assert.equal(powerPolicy({ screen: "muse" }).wifi, true);
-  assert.equal(powerPolicy({ idleSeconds: 180 }).display, false);
+  assert.equal(powerPolicy({ idleSeconds: 180 }).display, true);
+  assert.equal(powerPolicy({ displayMode: "smart", idleSeconds: 180 }).display, false);
+  assert.equal(powerPolicy({ displayMode: "smart", idleSeconds: 75, sleepAfter: 0 }).brightness, 10);
+  assert.equal(powerPolicy({ displayMode: "endurance", idleSeconds: 90 }).display, false);
 });
 test("screen navigation and protocol reject malformed envelopes", () => {
   assert.equal(nextScreen("guide"), "photos");

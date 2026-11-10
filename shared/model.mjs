@@ -33,6 +33,10 @@ export const defaultSettings = {
   defaultPhoto: "builtin-0",
   eggMessage: "今天也要记得给自己放个小假。",
   eggDate: "12-25",
+  eggPhoto: null,
+  displayMode: "photo",
+  sleepAfter: 180,
+  utcOffset: 480,
   firstRun: true,
   realtimeVoice: false,
 };
@@ -42,11 +46,16 @@ export function powerPolicy({
   screen = "photos",
   idleSeconds = 0,
   brightness = 30,
+  displayMode = "photo",
+  sleepAfter = 180,
 }) {
   const low = battery >= 0 && battery <= 15;
   const critical = battery >= 0 && battery <= 5;
-  const asleep = !charging && (critical || idleSeconds >= 180);
+  const timeout = displayMode === "endurance" ? Math.min(sleepAfter || 90, 90) : sleepAfter;
+  const asleep = !charging && (critical || (displayMode !== "photo" && timeout > 0 && idleSeconds >= timeout));
   const desired = Math.max(10, Math.min(80, brightness));
+  const batteryCap = displayMode === "endurance" ? 12 : displayMode === "smart" && idleSeconds >= 30
+    ? idleSeconds >= 60 ? 10 : 14 : low ? 15 : 20;
   return {
     state: asleep
       ? "screen-off-light-sleep"
@@ -58,11 +67,9 @@ export function powerPolicy({
     display: !asleep,
     brightness: asleep
       ? 0
-      : low && !charging
-        ? Math.min(15, desired)
-        : charging
+      : charging
           ? desired
-          : Math.min(20, desired),
+          : Math.min(batteryCap, desired),
     wifi: !asleep && (screen === "muse" || screen === "codex"),
     refreshHz: screen === "photos" ? 1 : 12,
     pixelShift: charging,

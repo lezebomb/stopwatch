@@ -22,6 +22,7 @@
 #include "nvs.h"
 #include "psa/crypto.h"
 #include "src/misc/cache/instance/lv_image_cache.h"
+#include "sw_miao.h"
 #include "sw_model.h"
 #include "sw_setup_qr.h"
 #include "sw_sync.h"
@@ -56,7 +57,7 @@ static QueueHandle_t sync_results;
 static sw_screen_t screen;
 static unsigned photo, taps, phase;
 static uint32_t last_tap, last_slide, last_power;
-static bool egg, slideshow;
+static bool egg, slideshow, displaying_egg;
 static unsigned slide_seconds = 20;
 typedef struct {
   char id[37];
@@ -65,12 +66,15 @@ typedef struct {
 } cover_settings_t;
 typedef struct {
   cover_settings_t settings;
+  sw_display_settings_t display;
   unsigned index;
-  bool changed_album;
+  bool changed_album, has_display;
 } cover_sync_t;
 static cover_settings_t last_cover;
 static bool last_cover_valid;
-static char message[192] = "今天也要记得给自己放个小假。";
+static sw_display_settings_t display_settings = {
+    .sleep_after = 180, .utc_offset = 480, .month = 12, .day = 25};
+static unsigned egg_day_seen;
 static nvs_handle_t config;
 static bool nvs_ok;
 static atomic_bool external_power_seen, previous_external_power;
@@ -97,9 +101,11 @@ static size_t upload_bytes;
 static unsigned upload_slot;
 static uint8_t upload_hash[32];
 static psa_hash_operation_t upload_digest = PSA_HASH_OPERATION_INIT;
-static char displayed_hash[65], task_title[152], task_project[80];
+static char displayed_hash[65], task_title[152], task_project[80],
+    task_error[96];
 static int task_quota = -1;
 static uint64_t task_synced_ms;
+static uint32_t task_key;
 static atomic_bool task_wireless;
 static atomic_bool codex_online;
 static atomic_uint task_seen;
@@ -120,9 +126,12 @@ int sw_companion_brightness(int requested) {
                              .idle_s = atomic_load(&setup_active)
                                            ? 0
                                            : (unsigned)muse_state_idle_secs(),
-                             .brightness = requested})
+                             .brightness = requested,
+                             .mode = display_settings.mode,
+                             .sleep_after = display_settings.sleep_after})
       .brightness;
 }
+bool sw_companion_controls_sleep(void) { return root && screen != SW_MUSE; }
 bool sw_companion_keep_awake(void) {
   muse_power_t power = muse_state_power();
   /* Bridge the short interval until the UI consumes an unplug edge and
@@ -187,10 +196,24 @@ static unsigned next_photo(unsigned current) {
     unsigned value = (current + n) % (3 + USER_SLOTS);
     char path[48];
     photo_entry_t entry;
-    if (photo_path(value, path, &entry))
+    if (photo_path(value, path, &entry) &&
+        !(value >= 3 && display_settings.has_egg &&
+          !memcmp(entry.hash, display_settings.egg_hash, 32)))
       return value;
   }
   return 0;
+}
+static unsigned egg_index(void) {
+  if (!egg || !display_settings.has_egg)
+    return UINT32_MAX;
+  for (unsigned i = 3; i < 3 + USER_SLOTS; i++) {
+    char path[48];
+    photo_entry_t entry;
+    if (photo_path(i, path, &entry) &&
+        !memcmp(entry.hash, display_settings.egg_hash, 32))
+      return i;
+  }
+  return UINT32_MAX;
 }
 static bool photo_file_valid(const char *path, const uint8_t expected[32]) {
   FILE *file = fopen(path, "rb");
@@ -401,6 +424,8 @@ sw_sync_album_result_t sw_companion_sync_album(const sw_sync_album_t *desired,
     occupied[i] = entry->file[0] != 0;
   }
   cover_sync_t cover = {0};
+  cover.display = desired->display;
+  cover.has_display = desired->has_display;
   strlcpy(cover.settings.id, desired->cover, sizeof(cover.settings.id));
   cover.settings.brightness = desired->brightness;
   cover.settings.border = desired->border;
@@ -430,7 +455,9 @@ sw_sync_album_result_t sw_companion_sync_album(const sw_sync_album_t *desired,
       memcpy(next.entries[slot].hash, item->sha256, 32);
       missing++;
     }
-    if (!strcmp(desired->cover, item->id))
+    if (!strcmp(desired->cover, item->id) &&
+        (!desired->display.has_egg ||
+         memcmp(item->sha256, desired->display.egg_hash, 32)))
       cover.index = slot + 3;
   }
 
@@ -511,16 +538,21 @@ static void copy_caption(char *out, size_t size, const char *text) {
 }
 
 static void update_task(bool wireless, bool online, const char *state,
-                        const char *title, const char *project, int quota,
-                        uint64_t synced_ms) {
+                        const char *title, const char *project, const char *id,
+                        const char *error, int quota, uint64_t synced_ms) {
   unsigned next = task_phase(state);
+  uint32_t key = 2166136261u;
+  for (const char *p = id ? id : title; p && *p; p++)
+    key = (key ^ (uint8_t)*p) * 16777619u;
   portENTER_CRITICAL(&device_lock);
   if (!wireless || synced_ms) {
     phase = next == UINT32_MAX ? 0 : next;
     copy_caption(task_title, sizeof(task_title), title);
     copy_caption(task_project, sizeof(task_project), project);
+    copy_caption(task_error, sizeof(task_error), error);
     task_seen = lv_tick_get();
     task_synced_ms = synced_ms;
+    task_key = key;
   }
   task_wireless = wireless;
   task_quota = quota;
@@ -530,9 +562,9 @@ static void update_task(bool wireless, bool online, const char *state,
 }
 
 void sw_companion_sync_task(bool online, const char *state, const char *title,
-                            const char *project, int quota,
-                            uint64_t synced_ms) {
-  update_task(true, online, state, title, project, quota, synced_ms);
+                            const char *project, const char *id,
+                            const char *error, int quota, uint64_t synced_ms) {
+  update_task(true, online, state, title, project, id, error, quota, synced_ms);
 }
 static void device_reply(int id, const char *error) {
   printf("@sw {\"id\":%d,\"ok\":%s,\"error\":\"%s\",\"received\":%u}\n", id,
@@ -614,7 +646,7 @@ static bool device_console_locked(const char *line) {
         task_phase(state->valuestring) == UINT32_MAX)
       goto done;
     update_task(false, cJSON_IsTrue(online), state->valuestring,
-                title->valuestring, NULL, -1, 0);
+                title->valuestring, NULL, NULL, NULL, -1, 0);
     error = NULL;
     goto done;
   }
@@ -780,9 +812,20 @@ static void apply_synced_cover(const cover_sync_t *sync) {
                  last_cover.seconds != prefs->seconds ||
                  last_cover.brightness != prefs->brightness ||
                  last_cover.border != prefs->border;
+  bool display_changed =
+      sync->has_display &&
+      memcmp(&display_settings, &sync->display, sizeof(display_settings)) != 0;
+  if (display_changed) {
+    display_settings = sync->display;
+    if (nvs_ok)
+      nvs_set_blob(config, "display_cfg", &display_settings,
+                   sizeof(display_settings));
+  }
   char path[48];
   photo_entry_t entry;
-  bool reselect = select || !photo_path(photo, path, &entry);
+  bool reselect = select || !photo_path(photo, path, &entry) ||
+                  (photo >= 3 && display_settings.has_egg &&
+                   !memcmp(entry.hash, display_settings.egg_hash, 32));
   if (reselect)
     photo = sync->index;
   if (first || last_cover.slideshow != prefs->slideshow)
@@ -795,7 +838,7 @@ static void apply_synced_cover(const cover_sync_t *sync) {
     set_frame(prefs->border);
   if (changed && nvs_ok)
     nvs_set_blob(config, "relay_cover", prefs, sizeof(*prefs));
-  if (changed || reselect)
+  if (changed || reselect || display_changed)
     save();
   if (changed || reselect)
     last_slide = lv_tick_get();
@@ -803,6 +846,8 @@ static void apply_synced_cover(const cover_sync_t *sync) {
   last_cover_valid = true;
   if (reselect || sync->changed_album)
     load_photo();
+  if (display_changed && egg)
+    show();
 }
 static void photo_worker(void *arg) {
   (void)arg;
@@ -849,8 +894,11 @@ static void photo_worker(void *arg) {
   }
 }
 static void load_photo(void) {
+  unsigned index = egg_index();
+  if (index == UINT32_MAX)
+    index = photo;
   if (photo_requests)
-    xQueueOverwrite(photo_requests, &photo);
+    xQueueOverwrite(photo_requests, &index);
 }
 static void touch(lv_event_t *event) {
   muse_state_poke();
@@ -1008,38 +1056,51 @@ static void tick_phone_setup(uint32_t now, bool critical_battery) {
 }
 static void show(void) {
   sw_sync_focus(screen == SW_CODEX);
+  muse_power_t power = muse_state_power();
+  sw_miao_play(screen == SW_CODEX && !egg && !atomic_load(&setup_active) &&
+                   !muse_state_asleep(),
+               power.usb || power.charging);
   lv_obj_set_flag(root, LV_OBJ_FLAG_HIDDEN, screen == SW_MUSE);
   lv_obj_set_flag(menu, LV_OBJ_FLAG_HIDDEN, screen != SW_MUSE);
   if (screen == SW_MUSE)
     return;
-  lv_obj_set_flag(photo_obj, LV_OBJ_FLAG_HIDDEN, screen != SW_PHOTOS || egg);
+  unsigned hidden = egg_index();
+  lv_obj_set_flag(photo_obj, LV_OBJ_FLAG_HIDDEN,
+                  screen != SW_PHOTOS || egg || displaying_egg);
   lv_obj_set_flag(cover_frame, LV_OBJ_FLAG_HIDDEN, screen != SW_PHOTOS || egg);
-  lv_obj_set_flag(pet_face, LV_OBJ_FLAG_HIDDEN, screen != SW_CODEX && !egg);
+  lv_obj_set_flag(pet_face, LV_OBJ_FLAG_HIDDEN,
+                  screen != SW_CODEX && (!egg || hidden != UINT32_MAX));
+  lv_obj_set_style_bg_opa(caption, egg ? LV_OPA_70 : LV_OPA_TRANSP, 0);
   if (egg) {
-    lv_label_set_text(pet_face, "^ . ^");
-    lv_label_set_text(caption, message);
+    sw_miao_still();
+    lv_label_set_text(caption, display_settings.message[0]
+                                   ? display_settings.message
+                                   : "今天也要记得给自己放个小假。");
+    if (hidden != UINT32_MAX)
+      load_photo();
   } else if (screen == SW_PHOTOS) {
     lv_label_set_text(caption, "轻点换照片 · 左右滑动切换");
     load_photo();
   } else if (screen == SW_CODEX) {
-    static const char *const faces[] = {"^ . ^", "o . o", "= . =", "^ ? ^",
-                                        "o ! o", "^ v ^", "T . T", "- . -"};
-    char title[sizeof(task_title)], project[sizeof(task_project)];
+    char title[sizeof(task_title)], project[sizeof(task_project)],
+        error[sizeof(task_error)];
     char connection[88], quota_text[32];
     bool online, synced;
     int quota;
     unsigned p;
-    uint32_t seen;
+    uint32_t seen, key;
     portENTER_CRITICAL(&device_lock);
     memcpy(title, task_title, sizeof(title));
     memcpy(project, task_project, sizeof(project));
+    memcpy(error, task_error, sizeof(error));
     online = codex_online;
     p = phase;
     seen = task_seen;
     synced = task_synced_ms != 0;
     quota = task_quota;
+    key = task_key;
     portEXIT_CRITICAL(&device_lock);
-    lv_label_set_text(pet_face, faces[p]);
+    sw_miao_state(online ? (sw_task_t)(p + SW_IDLE) : SW_OFFLINE, key);
     if (online && quota >= 0)
       snprintf(quota_text, sizeof(quota_text), "额度剩余 %d%%", quota);
     else
@@ -1057,9 +1118,10 @@ static void show(void) {
     else
       strlcpy(connection, online ? quota_text : "尚未同步 · 额度不可用",
               sizeof(connection));
-    lv_label_set_text_fmt(caption, "%s\n%s%s%s\n%s",
-                          online ? phases[p] : "Codex 离线", project,
-                          *project ? " · " : "", title, connection);
+    lv_label_set_text_fmt(
+        caption, "%s\n%s%s%s%s%s\n%s", online ? phases[p] : "Codex 离线",
+        project, *project ? " · " : "", title, p == 6 && *error ? "\n" : "",
+        p == 6 ? error : "", connection);
   } else
     lv_label_set_text(
         caption,
@@ -1139,11 +1201,13 @@ static void tick(lv_timer_t *timer) {
                         atomic_load(&setup_active));
   photo_result_t result;
   if (photo_results && xQueueReceive(photo_results, &result, 0) == pdTRUE) {
-    bool matches = result.index == photo;
-    if (matches && photo >= 3) {
+    unsigned hidden = egg_index(),
+             index = hidden == UINT32_MAX ? photo : hidden;
+    bool matches = result.index == index;
+    if (matches && index >= 3) {
       char path[48], expected[65];
       photo_entry_t entry;
-      matches = photo_path(photo, path, &entry);
+      matches = photo_path(index, path, &entry);
       if (matches) {
         hash_hex(entry.hash, expected);
         matches = !strcmp(expected, result.hash);
@@ -1159,26 +1223,36 @@ static void tick(lv_timer_t *timer) {
       image.data = pixels;
       lv_image_set_src(photo_obj, &image);
       lv_obj_invalidate(photo_obj);
+      displaying_egg = hidden != UINT32_MAX;
+      if (screen == SW_PHOTOS && (!egg || displaying_egg)) {
+        lv_obj_remove_flag(photo_obj, LV_OBJ_FLAG_HIDDEN);
+        if (displaying_egg)
+          lv_obj_fade_in(photo_obj, 450, 0);
+        else
+          lv_obj_set_style_opa(photo_obj, LV_OPA_COVER, 0);
+      }
       free(old);
     } else
       free(result.data);
   }
-  if (screen == SW_CODEX || egg)
-    lv_obj_align(pet_face, LV_ALIGN_CENTER, 0,
-                 (screen == SW_CODEX ? -65 : 0) + ((now / 750) % 2 ? -3 : 3));
+  sw_miao_play(screen == SW_CODEX && !egg && !atomic_load(&setup_active) &&
+                   !muse_state_asleep() && !muse_voice_in_call(),
+               external);
   sw_power_policy_t policy = sw_power_policy((sw_power_input_t){
       .charging = power.usb || power.charging,
       .battery = power.battery_pct,
       .screen = screen,
       .idle_s =
           atomic_load(&setup_active) ? 0 : (unsigned)muse_state_idle_secs(),
-      .brightness = muse_settings_brightness()});
+      .brightness = muse_settings_brightness(),
+      .mode = display_settings.mode,
+      .sleep_after = display_settings.sleep_after});
   if (now - last_power >= 1000) {
     last_power = now;
     if (screen == SW_CODEX && !egg && !codex_online)
       show();
     if (screen != SW_MUSE) {
-      if (!policy.display)
+      if (!policy.display && !muse_state_asleep())
         muse_state_set_asleep(true);
     }
     /* Muse owns the saved Wi-Fi switch, reconnect backoff and screen-off nap.
@@ -1196,11 +1270,14 @@ static void tick(lv_timer_t *timer) {
       lv_obj_align(status_label, LV_ALIGN_TOP_MID, -40 + shift_x, 55 + shift_y);
       lv_obj_align(photo_obj, LV_ALIGN_CENTER, shift_x, shift_y);
     }
-    time_t wall = time(NULL);
+    time_t wall = time(NULL) + (int)display_settings.utc_offset * 60;
     struct tm local;
-    localtime_r(&wall, &local);
-    if (local.tm_year >= 126 && local.tm_mon == 11 && local.tm_mday == 25 &&
-        !egg) {
+    gmtime_r(&wall, &local);
+    unsigned day = local.tm_year * 366 + local.tm_yday;
+    if (screen == SW_PHOTOS && !egg && !muse_state_asleep() &&
+        local.tm_year >= 126 && local.tm_mon + 1 == display_settings.month &&
+        local.tm_mday == display_settings.day && day != egg_day_seen) {
+      egg_day_seen = day;
       egg = true;
       show();
     }
@@ -1238,6 +1315,15 @@ void sw_companion_init(void) {
     uint8_t slide = 0;
     nvs_get_u32(config, "photo", &selected);
     nvs_get_u8(config, "slide", &slide);
+    sw_display_settings_t saved;
+    size_t cfg_size = sizeof(saved);
+    if (nvs_get_blob(config, "display_cfg", &saved, &cfg_size) == ESP_OK &&
+        cfg_size == sizeof(saved) && saved.mode <= SW_POWER_ENDURANCE &&
+        saved.sleep_after <= 3600 && saved.utc_offset >= -720 &&
+        saved.utc_offset <= 840 && saved.month >= 1 && saved.month <= 12 &&
+        saved.day >= 1 && saved.day <= 31 &&
+        !saved.message[sizeof(saved.message) - 1])
+      display_settings = saved;
     photo = selected < 3 + USER_SLOTS ? selected : 0;
     slideshow = slide;
     size_t bytes = sizeof(last_cover);
@@ -1252,7 +1338,9 @@ void sw_companion_init(void) {
   transfer_lock = xSemaphoreCreateMutex();
   char initial_path[48];
   photo_entry_t initial_entry;
-  if (!photo_path(photo, initial_path, &initial_entry))
+  if (!photo_path(photo, initial_path, &initial_entry) ||
+      (photo >= 3 && display_settings.has_egg &&
+       !memcmp(initial_entry.hash, display_settings.egg_hash, 32)))
     photo = 0;
   if (storage_mounted)
     unlink(TEMP_PHOTO);
@@ -1304,12 +1392,12 @@ void sw_companion_init(void) {
   lv_obj_set_style_text_font(status_label, &companion_font, 0);
   lv_obj_set_style_text_color(status_label, lv_color_hex(0xe1e9ce), 0);
   lv_obj_align(status_label, LV_ALIGN_TOP_MID, -40, 55);
-  pet_face = lv_label_create(root);
-  lv_obj_set_style_text_font(pet_face, &lv_font_montserrat_28, 0);
-  lv_obj_set_style_text_color(pet_face, lv_color_hex(0xe3e6d0), 0);
-  lv_obj_center(pet_face);
+  pet_face = sw_miao_init(root);
+  lv_obj_align(pet_face, LV_ALIGN_CENTER, 0, -50);
   caption = lv_label_create(root);
   lv_obj_set_width(caption, 300);
+  lv_obj_set_style_bg_color(caption, lv_color_hex(0x122521), 0);
+  lv_obj_set_style_radius(caption, 12, 0);
   lv_obj_set_style_text_align(caption, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_font(caption, &companion_font, 0);
   lv_obj_set_style_text_color(caption, lv_color_hex(0xe5e9d3), 0);

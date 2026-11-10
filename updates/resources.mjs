@@ -29,8 +29,10 @@ export class ResourceStore {
     const names = new Set();
     let bytes = 0;
     for (const file of m.files) {
+      const miao = file.name === "miao.pack" && file.size <= 950000 &&
+        /^[a-f0-9]{64}$/.test(m.compatibility?.miaoLayoutSha256 || "");
       if (
-        !/^[A-Za-z0-9_-]{1,40}\.(rgb|jpg|png|wav|json)$/.test(file.name) ||
+        (!miao && !/^[A-Za-z0-9_-]{1,40}\.(rgb|jpg|png|wav|json)$/.test(file.name)) ||
         names.has(file.name) ||
         !/^[a-f0-9]{64}$/.test(file.sha256) ||
         !Number.isSafeInteger(file.size) ||

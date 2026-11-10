@@ -35,7 +35,8 @@ export function createDeviceSync(store, directory, bridgeOnline) {
   }
   async function snapshot() {
     const entries = store.photos();
-    const { defaultPhoto, slideshow, slideSeconds, border, brightness } = store.settings();
+    const { defaultPhoto, slideshow, slideSeconds, border, brightness, displayMode,
+      sleepAfter, utcOffset, eggDate, eggMessage, eggPhoto } = store.settings();
     const ids = new Set(entries.map(photo => photo.id));
     for (const cached of hashes.keys()) {
       if (!ids.has(cached)) hashes.delete(cached);
@@ -61,6 +62,7 @@ export function createDeviceSync(store, directory, bridgeOnline) {
       syncedAt: Date.now(),
       photos,
       cover: { defaultPhoto, slideshow, slideSeconds, border, brightness },
+      display: { mode: displayMode, sleepAfter, utcOffset, eggDate, eggMessage, eggPhoto },
       codex: {
         online,
         task: task ? {
@@ -68,6 +70,7 @@ export function createDeviceSync(store, directory, bridgeOnline) {
           state: task.state,
           title: String(task.title || "").slice(0, 150),
           project: String(task.project || "").slice(0, 60),
+          ...(task.state === "failed" ? { error: String(task.operation || task.result || "执行失败").slice(0, 60) } : {}),
           updated: task.updated || task.created || null,
         } : null,
         quota: quota?.mode === "production" ? { primary: usage(quota.primary), secondary: usage(quota.secondary) } : null,

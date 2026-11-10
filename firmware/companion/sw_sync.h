@@ -12,9 +12,19 @@ typedef struct {
 } sw_sync_photo_t;
 
 typedef struct {
+  char message[192];
+  uint8_t egg_hash[32];
+  uint16_t sleep_after;
+  int16_t utc_offset;
+  uint8_t mode, month, day, has_egg;
+} sw_display_settings_t;
+
+typedef struct {
   unsigned count;
   sw_sync_photo_t photos[SW_SYNC_PHOTO_LIMIT];
   char cover[37];
+  sw_display_settings_t display;
+  bool has_display;
   unsigned slide_seconds, brightness;
   bool slideshow;
   uint8_t border; /* 0: none, 1: mint, 2: gold */
@@ -33,7 +43,8 @@ sw_sync_album_result_t sw_companion_sync_album(const sw_sync_album_t *album,
                                                sw_sync_fetch_photo fetch,
                                                void *ctx);
 void sw_companion_sync_task(bool online, const char *state, const char *title,
-                            const char *project, int quota, uint64_t synced_ms);
+                            const char *project, const char *id,
+                            const char *error, int quota, uint64_t synced_ms);
 bool sw_companion_sync_allowed(void);
 bool sw_companion_pairing_open(void);
 void sw_sync_start(void);

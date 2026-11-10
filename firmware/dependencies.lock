@@ -273,7 +273,7 @@ dependencies:
       require: private
       version: '>=5.1'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 1.3.2~2
   idf:
@@ -294,8 +294,9 @@ direct_dependencies:
 - espressif/esp_lvgl_adapter
 - espressif/esp_websocket_client
 - espressif/led_strip
+- espressif/zlib
 - idf
 - lvgl/lvgl
-manifest_hash: 8e4378567abdd17f0b40eaaf36e34b5ac11d0d911cd15bc2202cfa832c153373
+manifest_hash: fac4b46944f8a3d2438ade0848a1c3d1665723a223062c05aa8af82f665531fe
 target: esp32s3
 version: 3.0.0

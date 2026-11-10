@@ -14,6 +14,11 @@ import {
   PHOTO_LIMIT,
 } from "../shared/model.mjs";
 const allowedCommands = ["start", "continue", "steer", "interrupt", "approve"];
+function validEggDate(value) {
+  if (typeof value !== "string" || !/^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(value)) return false;
+  const [month, day] = value.split("-").map(Number);
+  return day <= [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+}
 const json = (res, code, body) => {
   const content = Buffer.from(JSON.stringify(body));
   res.writeHead(code, {
@@ -298,12 +303,18 @@ export async function createRelay({
           }
           if (["mint", "gold", "none"].includes(data.border))
             patch.border = data.border;
+          if (["photo", "smart", "endurance"].includes(data.displayMode))
+            patch.displayMode = data.displayMode;
+          if (Number.isInteger(data.sleepAfter) && (data.sleepAfter === 0 || (data.sleepAfter >= 30 && data.sleepAfter <= 3600)))
+            patch.sleepAfter = data.sleepAfter;
+          if (Number.isInteger(data.utcOffset) && data.utcOffset >= -720 && data.utcOffset <= 840)
+            patch.utcOffset = data.utcOffset;
+          const previous = store.settings();
+          if (data.eggPhoto === null || (typeof data.eggPhoto === "string" && store.photos().some(p => p.id === data.eggPhoto)))
+            patch.eggPhoto = data.eggPhoto;
           if (typeof data.eggMessage === "string")
             patch.eggMessage = data.eggMessage.slice(0, 150);
-          if (
-            typeof data.eggDate === "string" &&
-            /^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(data.eggDate)
-          )
+          if (validEggDate(data.eggDate))
             patch.eggDate = data.eggDate;
           if (
             typeof data.defaultPhoto === "string" &&
@@ -311,6 +322,9 @@ export async function createRelay({
               store.photos().some((p) => p.id === data.defaultPhoto))
           )
             patch.defaultPhoto = data.defaultPhoto;
+          const hidden = "eggPhoto" in patch ? patch.eggPhoto : previous.eggPhoto;
+          if (hidden && (patch.defaultPhoto ?? previous.defaultPhoto) === hidden)
+            patch.defaultPhoto = "builtin-0";
           store.settings(patch);
           store.audit(session.id, "settings.updated");
           publish({
@@ -446,8 +460,11 @@ export async function createRelay({
             store.db.exec("BEGIN IMMEDIATE");
             try {
               store.db.prepare("DELETE FROM photos WHERE id=?").run(id);
-              if (store.settings().defaultPhoto === id)
-                store.settings({ defaultPhoto: "builtin-0" });
+              const { defaultPhoto, eggPhoto } = store.settings();
+              const patch = {};
+              if (defaultPhoto === id) patch.defaultPhoto = "builtin-0";
+              if (eggPhoto === id) patch.eggPhoto = null;
+              if (Object.keys(patch).length) store.settings(patch);
               store.db.exec("COMMIT");
             } catch (error) {
               store.db.exec("ROLLBACK");
@@ -495,6 +512,8 @@ export async function createRelay({
           ? "text/html; charset=utf-8"
           : file.endsWith(".css")
             ? "text/css"
+            : file.endsWith(".webp") ? "image/webp"
+            : file.endsWith(".json") ? "application/json"
             : "application/javascript",
         "Cache-Control": "no-cache",
       });

@@ -10,12 +10,15 @@ import releaseConfig from "../release/config.json" with { type: "json" };
 const VERSION = releaseConfig.version;
 import { installDemo } from "./demo.mjs";
 import { watchVersion } from "./version-watch.mjs";
+import { MiaoPlayer } from "./miao-player.mjs";
 watchVersion(
   typeof __SW_BUILD_ID__ === "undefined" ? "local" : __SW_BUILD_ID__,
 );
 const PREVIEW = typeof __SW_PREVIEW__ !== "undefined" && __SW_PREVIEW__;
 const demo = PREVIEW ? await installDemo() : null;
 const asset = (p) => new URL(p.replace(/^\//, ""), import.meta.url).href;
+const miao = new MiaoPlayer(asset);
+let watchInteraction = performance.now();
 const photoUrl = (id) =>
   PREVIEW ? demo.photoUrl(id) : `/api/photos/${id}.jpg`;
 const root = document.querySelector("#app");
@@ -302,10 +305,10 @@ function taskCard() {
   const stage = ["thinking", "working", "testing", "completed"].indexOf(
     task?.state,
   );
-  return `<section class="card"><div class="card-head"><h2>Codex 正在做什么</h2><span class="tag">MOCK</span></div>${task ? `<div class="task-project">${escape(task.project)}</div><h3 class="task-title">${escape(task.title)}</h3><span class="task-status"><i class="dot"></i>${labels[task.state] || task.state}</span><p class="task-operation">${escape(task.operation)}</p><div class="progress-path" aria-label="任务阶段，不表示百分比">${[0, 1, 2, 3].map((i) => `<i class="${i <= stage ? "on" : ""}"></i>`).join("")}</div><div class="actions"><button data-page="tasks">查看任务详情 ↗</button>${["thinking", "working", "testing", "approval"].includes(task.state) ? '<button class="quiet" id="quick-interrupt">中断</button>' : ""}</div>` : `<h3 class="task-title">小伙伴准备好开工了。</h3><p class="task-operation">从手机发一条指令，在这里看它思考、测试与庆祝。</p><div class="actions"><button data-page="tasks">创建第一个任务 ↗</button><span class="task-status">${state.bridgeOnline ? "Mock 桥接在线" : "等待桥接连接"}</span></div>`}</section>`;
+  return `<section class="card"><div class="card-head"><h2>Codex 正在做什么</h2><span class="tag">MOCK</span></div>${task ? `<div class="task-project">${escape(task.project)}</div><h3 class="task-title">${escape(task.title)}</h3><span class="task-status"><i class="dot"></i>${labels[task.state] || task.state}</span><p class="task-operation">${escape(task.operation)}</p><div class="progress-path" aria-label="任务阶段，不表示百分比">${[0, 1, 2, 3].map((i) => `<i class="${i <= stage ? "on" : ""}"></i>`).join("")}</div><div class="actions"><button data-page="tasks">查看任务详情 ↗</button>${["thinking", "working", "testing", "approval"].includes(task.state) ? '<button class="quiet" id="quick-interrupt">中断</button>' : ""}</div>` : `<h3 class="task-title">小伙伴准备好开工了。</h3><p class="task-operation">从手机发一条指令，在这里看它思考、测试与庆祝。</p><div class="actions"><button data-page="tasks">创建第一个任务 ↗</button><span class="task-status">${state.bridgeOnline ? (state.mode === "production" ? "电脑已连接" : "Mock 桥接在线") : "等待桥接连接"}</span></div>`}</section>`;
 }
 function quotaCard() {
-  return `<section class="card"><div class="card-head"><h2>额度小看板</h2><span class="tag">模拟额度</span></div><div class="quota-row">${[
+  return `<section class="card"><div class="card-head"><h2>额度小看板</h2><span class="tag">${state.mode === "production" ? "账户额度" : "模拟额度"}</span></div><div class="quota-row">${[
     ["primary", "5 小时窗口"],
     ["secondary", "每周窗口"],
   ]
@@ -346,7 +349,7 @@ function tasks() {
       .join("") || '<p class="empty">还没有会话</p>'
   }</div></div><section class="card"><div class="card-head"><h2>任务详情</h2><span class="task-status">${task ? labels[task.state] : "等待第一条指令"}</span></div>${
     task
-      ? `<h3 class="task-title">${escape(task.title)}</h3><p class="muted small">${escape(task.operation)}</p>${task.state === "approval" ? `<div class="approval"><strong>请确认本次模拟操作</strong><code>${escape(task.approval?.command)}</code><p class="small">${escape(task.approval?.reason)}</p><div class="actions"><button data-decision="accept">批准本次</button><button class="danger" data-decision="decline">拒绝</button></div></div>` : ""}${task.result ? `<div class="result">${escape(task.result)}</div>` : ""}<div class="timeline">${taskEvents()
+      ? `<h3 class="task-title">${escape(task.title)}</h3><p class="muted small">${escape(task.operation)}</p>${task.state === "approval" ? `<div class="approval"><strong>${state.mode === "production" ? "请确认本次操作" : "请确认本次模拟操作"}</strong><code>${escape(task.approval?.command)}</code><p class="small">${escape(task.approval?.reason)}</p><div class="actions"><button data-decision="accept">批准本次</button><button class="danger" data-decision="decline">拒绝</button></div></div>` : ""}${task.result ? `<div class="result">${escape(task.result)}</div>` : ""}<div class="timeline">${taskEvents()
           .filter((e) => e.payload.id === task.id)
           .slice(0, 8)
           .map(
@@ -373,7 +376,7 @@ function photos() {
     .concat(state.photos)
     .map(
       (p) =>
-        `<article class="photo-tile"><img src="${p.builtin ? asset(`/photos/${p.id.slice(-1)}.jpg`) : photoUrl(p.id)}" alt="${escape(p.name)}"><p>${escape(p.name)} ${state.settings.defaultPhoto === p.id ? "· 当前封面" : ""}</p><div class="actions"><button class="secondary" data-cover="${p.id}">设为封面</button>${!p.builtin ? `<button class="danger" data-delete="${p.id}">删除</button>` : ""}</div></article>`,
+        `<article class="photo-tile">${p.id === state.settings.eggPhoto ? '<p class="small muted">隐藏彩蛋</p>' : `<img src="${p.builtin ? asset(`/photos/${p.id.slice(-1)}.jpg`) : photoUrl(p.id)}" alt="${escape(p.name)}">`}<p>${escape(p.name)} ${state.settings.defaultPhoto === p.id ? "· 当前封面" : ""}</p><div class="actions">${p.id === state.settings.eggPhoto ? "" : `<button class="secondary" data-cover="${p.id}">设为封面</button>`}${!p.builtin ? `<button class="danger" data-delete="${p.id}">删除</button>` : ""}</div></article>`,
     )
     .join("")}</div>`;
 }
@@ -381,7 +384,15 @@ function settings() {
   const production = state.mode === "production";
   const canPair = production && state.session?.role === "operator";
   const roleName = { operator: "可控制", viewer: "只读", bridge: "Windows 桥接", device: "StopWatch 挂件" };
-  return `<div class="panel-grid"><section class="card"><h2>让陪伴，刚刚好。</h2><div class="setting-row"><span>${production ? "挂件亮度" : "模拟屏幕亮度"} <strong id="brightness-value">${state.settings.brightness}%</strong></span><input id="brightness" type="range" min="10" max="80" step="5" value="${state.settings.brightness}" aria-label="亮度"></div><div class="setting-row"><span>照片自动轮播</span><input id="slideshow" type="checkbox" ${state.settings.slideshow ? "checked" : ""}></div><label for="slide-seconds">轮播间隔（秒）</label><input id="slide-seconds" type="number" min="5" max="300" value="${state.settings.slideSeconds}"><label for="border">封面装饰边框</label><select id="border"><option value="mint" ${state.settings.border === "mint" ? "selected" : ""}>薄荷绿</option><option value="gold" ${state.settings.border === "gold" ? "selected" : ""}>暖金色</option><option value="none" ${state.settings.border === "none" ? "selected" : ""}>无边框</option></select><label for="egg-message">留给 TA 的彩蛋留言</label><textarea id="egg-message" maxlength="150">${escape(state.settings.eggMessage)}</textarea><label for="egg-date">纪念日（MM-DD）</label><input id="egg-date" value="${escape(state.settings.eggDate)}" maxlength="5"><button id="save-settings">保存设置</button></section><div class="right-stack"><section class="card"><h2>配对与设备授权</h2><p class="small muted">授权链接两分钟有效，使用一次后失效。</p><div class="actions"><button id="ticket">新建控制端二维码</button><button class="secondary" id="viewer-ticket">新建只读端</button>${canPair ? '<button class="secondary" id="device-ticket">绑定 StopWatch</button>' : ""}</div><div id="ticket-result"></div><h3 class="list-heading">已授权设备与浏览器</h3>${state.sessions
+  const displayOptions = `<label for="display-mode">显示模式</label><select id="display-mode">${[
+    ["photo", "照片展示 · 低亮常显"], ["smart", "智能省电 · 逐步变暗"], ["endurance", "续航优先 · 尽早熄屏"],
+  ].map(([id, title]) => `<option value="${id}" ${state.settings.displayMode === id ? "selected" : ""}>${title}</option>`).join("")}</select>
+  <label for="sleep-after">闲置熄屏（秒，智能模式可填 0 保持低亮）</label>
+  <input id="sleep-after" type="number" min="0" max="3600" value="${state.settings.sleepAfter ?? 180}">
+  <label for="egg-photo">隐藏彩蛋照片</label><select id="egg-photo"><option value="">仅显示留言</option>${state.photos.map(p =>
+    `<option value="${escape(p.id)}" ${p.id === state.settings.eggPhoto ? "selected" : ""}>${escape(p.name)}</option>`).join("")}</select>
+  <p class="small muted">彩蛋照片会从日常轮播隐藏，可用五次轻点或指定日期打开。</p>`;
+  return `<div class="panel-grid"><section class="card"><h2>让陪伴，刚刚好。</h2><div class="setting-row"><span>${production ? "挂件亮度" : "模拟屏幕亮度"} <strong id="brightness-value">${state.settings.brightness}%</strong></span><input id="brightness" type="range" min="10" max="80" step="5" value="${state.settings.brightness}" aria-label="亮度"></div><div class="setting-row"><span>照片自动轮播</span><input id="slideshow" type="checkbox" ${state.settings.slideshow ? "checked" : ""}></div><label for="slide-seconds">轮播间隔（秒）</label><input id="slide-seconds" type="number" min="5" max="300" value="${state.settings.slideSeconds}"><label for="border">封面装饰边框</label><select id="border"><option value="mint" ${state.settings.border === "mint" ? "selected" : ""}>薄荷绿</option><option value="gold" ${state.settings.border === "gold" ? "selected" : ""}>暖金色</option><option value="none" ${state.settings.border === "none" ? "selected" : ""}>无边框</option></select>${displayOptions}<label for="egg-message">留给 TA 的彩蛋留言</label><textarea id="egg-message" maxlength="150">${escape(state.settings.eggMessage)}</textarea><label for="egg-date">纪念日（MM-DD）</label><input id="egg-date" value="${escape(state.settings.eggDate)}" maxlength="5"><button id="save-settings">保存设置</button></section><div class="right-stack"><section class="card"><h2>配对与设备授权</h2><p class="small muted">授权链接两分钟有效，使用一次后失效。</p><div class="actions"><button id="ticket">新建控制端二维码</button><button class="secondary" id="viewer-ticket">新建只读端</button>${canPair ? '<button class="secondary" id="device-ticket">绑定 StopWatch</button>' : ""}</div><div id="ticket-result"></div><h3 class="list-heading">已授权设备与浏览器</h3>${state.sessions
     .filter((s) => !s.revoked)
     .map(
       (s) =>
@@ -417,9 +428,7 @@ function render() {
   root.innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand"><span class="brandmark"></span>StopWatch</div><div class="brand-note">小小挂件 · 长长陪伴</div><nav class="nav" aria-label="主导航">${nav.map(([key, icon, title]) => `<button data-page="${key}" class="${state.page === key ? "active" : ""}"><span class="nav-icon">${icon}</span>${title}${key === "tasks" && state.unread ? `<span class="unread">${state.unread}</span>` : ""}</button>`).join("")}</nav><div class="side-bottom"><strong>MADE FOR SOMEONE SPECIAL</strong>把日常的一点温柔，<br>装进 466 像素的圆里。<p class="small muted">v${VERSION}</p></div></aside><main class="main"><header class="topbar"><span class="muted">WORKSPACE / 我的小小陪伴</span><div class="top-actions"><span><i class="dot ${state.bridgeOnline ? "" : "off"}"></i> ${state.bridgeOnline ? "Mock 桥接在线" : "桥接离线"}</span><span class="tag">MOCK PREVIEW</span><span class="avatar">S</span></div></header><div class="pagehead"><div><div class="eyebrow">${new Date().toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "long" })} · A LITTLE MOMENT</div><h1>${titles[state.page][0]}</h1><p>${titles[state.page][1]}</p></div><button class="quiet" data-page="guide">快速上手 ↗</button></div>${!state.connected ? '<div class="offline-banner">事件连接已断开，正在自动重连。任务历史仍保留在电脑上。</div>' : ""}${{ overview, tasks, photos, settings, guide: guidePage }[state.page]()}<footer class="footer"><span>StopWatch Companion · 为日常留一点温柔</span><span>本地模拟 · 未连接真实硬件与账号</span></footer></main></div>`;
   if (state.mode === "production") {
     root.querySelectorAll(".tag").forEach((el) => {
-      el.textContent = el.textContent.includes("额度")
-        ? "实际额度接口"
-        : "远程控制";
+      if (el.textContent.startsWith("MOCK")) el.textContent = "远程控制";
     });
     const bridgeLabel = root.querySelector(".top-actions > span");
     if (bridgeLabel)
@@ -488,7 +497,7 @@ async function command(action, extra = {}) {
       taskId: active()?.id,
       ...extra,
     });
-    toast(state.bridgeOnline ? "已发送到 Mock 桥接" : "已排队，桥接恢复后发送");
+    toast(state.bridgeOnline ? (state.mode === "production" ? "已发给电脑" : "已发送到 Mock 桥接") : "已排队，桥接恢复后发送");
   } catch (e) {
     toast(e.message);
   }
@@ -618,6 +627,10 @@ function bind() {
         border: document.querySelector("#border").value,
         eggMessage: document.querySelector("#egg-message").value,
         eggDate: document.querySelector("#egg-date").value,
+        displayMode: document.querySelector("#display-mode").value,
+        sleepAfter: Number(document.querySelector("#sleep-after").value),
+        eggPhoto: document.querySelector("#egg-photo").value || null,
+        utcOffset: -new Date().getTimezoneOffset(),
       });
       toast("设置已保存");
     } catch (e) {
@@ -685,9 +698,14 @@ function bind() {
 function allPhotos() {
   return [0, 1, 2]
     .map((i) => ({ id: `builtin-${i}`, url: asset(`/photos/${i}.jpg`) }))
-    .concat(state.photos.map((p) => ({ ...p, url: photoUrl(p.id) })));
+    .concat(state.photos.filter(p => p.id !== state.settings.eggPhoto).map((p) => ({ ...p, url: photoUrl(p.id) })));
+}
+function revealEgg() {
+  state.egg = true;
+  state.eggOpenedAt = performance.now();
 }
 function switchScreen(screen) {
+  watchInteraction = performance.now();
   state.screen = screen;
   state.egg = false;
   render();
@@ -699,6 +717,7 @@ function bindWatch() {
   let startX = 0,
     startY = 0;
   canvas.onpointerdown = (e) => {
+    watchInteraction = performance.now();
     startX = e.clientX;
     startY = e.clientY;
     canvas.setPointerCapture(e.pointerId);
@@ -711,6 +730,13 @@ function bindWatch() {
       return;
     }
     if (Math.abs(dy) > 35) return;
+    if (state.screen === "codex" && Math.abs(dx) <= 12 && Math.abs(dy) <= 12) {
+      const bounds = canvas.getBoundingClientRect();
+      const x = (e.clientX - bounds.left) / bounds.width * 466;
+      const y = (e.clientY - bounds.top) / bounds.height * 466;
+      if (x >= 131 && x <= 335 && y >= 106 && y <= 327) miao.tap(performance.now());
+      return;
+    }
     if (state.egg) {
       state.egg = false;
       return;
@@ -721,15 +747,19 @@ function bindWatch() {
       state.taps = now - state.tapTime < 600 ? state.taps + 1 : 1;
       state.tapTime = now;
       if (state.taps >= 5) {
-        state.egg = true;
+        revealEgg();
         state.taps = 0;
-        beep();
+        if (state.mode !== "production") beep();
       }
     }
   };
   const yellow = document.querySelector("#yellow");
   yellow.onpointerdown = (e) => {
     yellow.setPointerCapture(e.pointerId);
+    if (state.mode === "production") {
+      switchScreen("muse");
+      return;
+    }
     state.listening = true;
     state.screen = "muse";
     state.muse = "MOCK · 正在听你说话…";
@@ -756,7 +786,7 @@ function bindWatch() {
   yellow.onpointercancel = release;
   yellow.onlostpointercapture = release;
   document.querySelector("#blue").onclick = () =>
-    toast("Mock：已切换语音静音状态");
+    toast(state.mode === "production" ? "音量请在挂件上调整" : "Mock：已切换语音静音状态");
   document.querySelector("#charging").onchange = (e) => {
     state.charging = e.target.checked;
   };
@@ -800,83 +830,32 @@ function wrap(value, x, y, width, size = 20, color = "#eff3e5") {
   }
   text(line, x, y + row * size * 1.6, size, color);
 }
-function pet(status) {
-  const t = state.tick,
-    bounce =
-      status === "completed" ? Math.sin(t * 0.12) * 8 : Math.sin(t * 0.04) * 3;
-  ctx.save();
-  ctx.translate(233, 218 + bounce);
-  ctx.fillStyle = "#e3e6d0";
-  ctx.beginPath();
-  ctx.ellipse(0, 8, 79, 65, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(-67, -23);
-  ctx.lineTo(-58, -80);
-  ctx.lineTo(-19, -51);
-  ctx.moveTo(20, -51);
-  ctx.lineTo(59, -80);
-  ctx.lineTo(68, -23);
-  ctx.fill();
-  ctx.fillStyle = "#263d37";
-  const blink = t % 100 < 5 ? 2 : 9;
-  for (const x of [-29, 29]) {
-    ctx.beginPath();
-    ctx.ellipse(x, 2, 6, blink, 0, 0, Math.PI * 2);
-    ctx.fill();
+function cachedPhoto(url) {
+  let image = photoImages.get(url);
+  if (!image) {
+    image = new Image();
+    image.src = url;
+    photoImages.set(url, image);
   }
-  ctx.strokeStyle = "#263d37";
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.arc(0, 19, 9, 0, Math.PI);
-  ctx.stroke();
-  ctx.fillStyle = "#e6aa83";
-  for (const x of [-49, 49]) {
-    ctx.beginPath();
-    ctx.ellipse(x, 20, 10, 5, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.fillStyle = "#adc79c";
-  ctx.beginPath();
-  ctx.ellipse(-68, 75, 20, 12, -0.3, 0, Math.PI * 2);
-  ctx.ellipse(68, 75, 20, 12, 0.3, 0, Math.PI * 2);
-  ctx.fill();
-  if (["working", "testing", "thinking"].includes(status)) {
-    ctx.fillStyle = "#8da08b";
-    ctx.fillRect(-64, 52, 128, 61);
-    ctx.fillStyle = "#bbceaa";
-    ctx.fillRect(-54, 60, 108, 40);
-    text(
-      status === "testing"
-        ? "✓ _ ✓"
-        : status === "thinking"
-          ? "· · ·"
-          : "{   }",
-      0,
-      90,
-      23,
-      "#425d47",
-    );
-    ctx.fillStyle = "#567058";
-    ctx.fillRect(-78, 110, 156, 8);
-  }
-  if (status === "approval" || status === "failed")
-    text("!", 80, -45, 39, "#edc46f");
-  if (status === "completed") {
-    text("✦", -98, -40, 36, "#e9c879");
-    text("✦", 99, -21, 28, "#e9c879");
-  }
-  ctx.restore();
+  return image;
+}
+function drawMiaoStill() {
+  const still = miao.image(0);
+  if (still.complete && still.naturalWidth) ctx.drawImage(still, 131, 106, 204, 221);
 }
 function draw() {
   requestAnimationFrame(draw);
   state.tick++;
   if (!ctx || !canvas?.isConnected) return;
+  const now = performance.now();
   const policy = powerPolicy({
     charging: state.charging,
     battery: state.battery,
     screen: state.screen,
     brightness: state.settings.brightness,
+    displayMode: state.settings.displayMode,
+    sleepAfter: state.settings.sleepAfter,
+    idleSeconds: (now - watchInteraction) / 1000,
   });
   const label = !policy.display
     ? "屏幕已休眠"
@@ -885,13 +864,12 @@ function draw() {
       : state.screen === "muse"
         ? state.muse
         : state.screen === "codex"
-          ? `Codex Mock：${labels[active()?.state || "idle"]}`
+          ? `Codex：${labels[active()?.state || "idle"]}`
           : state.screen === "photos"
             ? `照片封面 ${state.photo + 1}`
             : "中文使用指南";
   if (canvas.getAttribute("aria-label") !== label)
     canvas.setAttribute("aria-label", label);
-  const now = performance.now();
   if (now - lastDraw < 1000 / (state.charging ? 12 : policy.refreshHz)) return;
   lastDraw = now;
   ctx.clearRect(0, 0, 466, 466);
@@ -910,11 +888,19 @@ function draw() {
     );
   }
   if (state.egg) {
+    const hidden = state.settings.eggPhoto && cachedPhoto(photoUrl(state.settings.eggPhoto));
+    if (hidden?.complete && hidden.naturalWidth) {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, (now - state.eggOpenedAt) / 450);
+      ctx.drawImage(hidden, 0, 0, 466, 466);
+      ctx.fillStyle = "#11252166";
+      ctx.fillRect(0, 0, 466, 466);
+      ctx.restore();
+    } else drawMiaoStill();
     text("给特别的你", 233, 120, 26, "#ebd28a");
-    pet("completed");
     ctx.font = "19px sans-serif";
     wrap(state.settings.eggMessage, 233, 350, 285, 19, "#e5e9cf");
-    text("轻点返回 · 彩蛋演示", 233, 420, 13, "#7d9b86");
+    text("轻点返回", 233, 420, 13, "#bfd4bf");
   } else if (state.screen === "photos") {
     const photos = allPhotos();
     if (
@@ -925,12 +911,7 @@ function draw() {
       lastSlide = Date.now();
     }
     const photo = photos[(state.photo + photos.length) % photos.length];
-    let img = photoImages.get(photo.url);
-    if (!img) {
-      img = new Image();
-      img.src = photo.url;
-      photoImages.set(photo.url, img);
-    }
+    const img = cachedPhoto(photo.url);
     if (img.complete && img.naturalWidth) ctx.drawImage(img, 0, 0, 466, 466);
     const shade = ctx.createLinearGradient(0, 250, 0, 466);
     shade.addColorStop(0, "#0000");
@@ -955,12 +936,13 @@ function draw() {
   } else if (state.screen === "codex") {
     const task = active(),
       status =
-        !state.wifi || !state.bridgeOnline ? "offline" : task?.state || "idle";
+        !state.wifi || !state.bridgeOnline || (state.mode === "production" && !state.codex?.online)
+          ? "offline" : task?.state || "idle";
     text("CODEX COMPANION", 233, 85, 14, "#96b29b");
-    pet(status);
+    miao.draw(ctx, 131, 106, 204, status, task?.id, state.charging, now);
     text(labels[status], 233, 365, 25);
     text(
-      "MOCK · " + (task?.title.slice(0, 18) || "随时准备接住你的灵感"),
+      task?.title.slice(0, 18) || "随时准备接住你的灵感",
       233,
       402,
       14,
@@ -968,16 +950,16 @@ function draw() {
     );
   } else if (state.screen === "muse") {
     text("MUSE", 233, 87, 20, "#c0cdb0");
-    pet(state.listening ? "working" : "idle");
+    drawMiaoStill();
     ctx.font = "20px sans-serif";
     wrap(
-      !state.wifi ? "Wi-Fi 离线 · Mock 对话暂停" : state.muse,
+      !state.wifi ? "Wi-Fi 离线" : state.mode === "production" ? "请在挂件上操作 Muse" : state.muse,
       233,
       360,
       290,
       20,
     );
-    text("未授权真实账号 · MOCK", 233, 420, 12, "#809b83");
+    text(state.mode === "production" ? "账号状态请查看挂件设置" : "未授权真实账号 · MOCK", 233, 420, 12, "#809b83");
   } else {
     text("使用小指南", 233, 95, 28, "#e1d89b");
     [
@@ -1009,10 +991,11 @@ function draw() {
   const todayDate = new Date();
   const today = `${String(todayDate.getMonth() + 1).padStart(2, "0")}-${String(todayDate.getDate()).padStart(2, "0")}`;
   if (
+    state.screen === "photos" &&
     today === state.settings.eggDate &&
     !sessionStorage.getItem("sw-date-egg")
   ) {
-    state.egg = true;
+    revealEgg();
     sessionStorage.setItem("sw-date-egg", "1");
   }
 }

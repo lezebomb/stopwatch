@@ -6,6 +6,7 @@ import { assets } from "./assets.mjs";
 import releaseConfig from "../release/config.json" with { type: "json" };
 import { createPublicKey, X509Certificate } from "node:crypto";
 import { setupQrHeader } from "./setup-qr.mjs";
+import { miaoAssets, miaoOutput } from "./miao-assets.mjs";
 const lock = JSON.parse(await readFile("upstream.lock.json", "utf8"));
 const sdk = path.resolve(".deps/muse/esp32"),
   muse = path.resolve(".deps/muse");
@@ -24,7 +25,13 @@ const git = (args) =>
 if (git(["rev-parse", "HEAD"]).trim() !== lock.muse.commit)
   throw new Error("Muse commit differs from upstream.lock.json");
 await assets();
+await miaoAssets();
 const component = `${sdk}/components/muse`;
+for (const [src, dest] of [["miao_data.h", "miao_data.h"], ["miao.pack", "sw_miao_pack.bin"], ["idle.bin", "sw_miao_idle.bin"]]) {
+  const bytes = await readFile(path.join(miaoOutput, src));
+  const existing = await readFile(`${component}/${dest}`).catch(() => null);
+  if (!existing || !bytes.equals(existing)) await writeFile(`${component}/${dest}`, bytes);
+}
 for (const file of [
   "sw_companion.c",
   "sw_companion.h",
@@ -37,6 +44,8 @@ for (const file of [
   "sw_updater_ui.c",
   "sw_sync.c",
   "sw_sync.h",
+  "sw_miao.c",
+  "sw_miao.h",
 ])
   await writeChanged(
     `${component}/${file}`,
@@ -46,12 +55,15 @@ for (const file of [
 let cmake = git(["show", "HEAD:esp32/components/muse/CMakeLists.txt"]);
 cmake = cmake.replace(
   '"muse_app.c"',
-  '"muse_app.c"\n        "sw_companion.c"\n        "sw_model.c"\n        "sw_update_core.c"\n        "sw_updater.c"\n        "sw_updater_ui.c"\n        "sw_sync.c"',
+  '"muse_app.c"\n        "sw_companion.c"\n        "sw_model.c"\n        "sw_update_core.c"\n        "sw_updater.c"\n        "sw_updater_ui.c"\n        "sw_sync.c"\n        "sw_miao.c"',
 );
 cmake = cmake.replace(
   "idf_component_register(",
-  'list(APPEND muse_priv_requires spiffs app_update)\nlist(APPEND embed "update_public.pem")\nidf_component_register(',
+  'list(APPEND muse_priv_requires spiffs app_update)\nlist(APPEND embed "update_public.pem" "sw_miao_pack.bin" "sw_miao_idle.bin")\nidf_component_register(',
 );
+const museManifest = git(["show", "HEAD:esp32/components/muse/idf_component.yml"]);
+if (!museManifest.includes("dependencies:\n")) throw new Error("Upstream Muse dependency manifest changed");
+await writeChanged(`${component}/idf_component.yml`, museManifest.replace("dependencies:\n", 'dependencies:\n  espressif/zlib: "1.3.2~2"\n'));
 const production = process.env.SW_PRODUCTION === "1";
 const relayOrigin = production ? releaseConfig.productionOrigin || "" : process.env.SW_DEVICE_RELAY_ORIGIN || "";
 if (relayOrigin) {
@@ -144,7 +156,7 @@ input =
   '#include "sw_companion.h"\n' +
   input.replace(
     sleepHook,
-    '    if (sw_companion_keep_awake()) {\n        if (muse_state_asleep()) set_asleep(false, "charging cover");\n        return;\n    }\n' +
+    '    if (sw_companion_keep_awake()) {\n        if (muse_state_asleep()) set_asleep(false, "charging cover");\n        return;\n    }\n    if (sw_companion_controls_sleep()) return;\n' +
       sleepHook,
   );
 await writeChanged(`${component}/muse_input.c`, input);

@@ -94,3 +94,9 @@ npm.cmd audit
 挂件先扫码连上 Wi-Fi。正式控制台的操作者进入「设置 → 绑定 StopWatch」，再打开挂件的「手机配网」，用手机在蓝牙授权页选择设备并确认。两分钟授权码只用一次，之后通过 HTTPS 自动获取相册、默认封面、轮播、边框和 Codex 摘要。设备使用独立只读授权，可在控制台撤销。离线时继续显示已存照片。
 
 固件默认不启用中转。正式构建使用 `release/config.json` 的固定 HTTPS 来源。本地开发可在构建前设置 `SW_DEVICE_RELAY_ORIGIN`，内网自建 CA 时可另用 `SW_DEVICE_RELAY_CA` 指向公开 CA 证书。中转用 `STOPWATCH_MODE=production` 和同一 HTTPS `STOPWATCH_PUBLIC_ORIGIN`，通过受信反代访问。手机浏览器也需要信任该证书。功能代码已编译，实际无线链路待集中实机验收。
+
+## 妙妙与显示模式
+
+照片页低亮常显是默认模式。在手机设置可切换智能省电或续航优先，也可选择一张已上传照片作为隐藏彩蛋。隐藏照从封面和轮播中移出，照片页连点五次或到指定日期会打开。充电时封面保持常亮。
+
+Codex 页的妙妙来自固定的 [Miao 源版本](https://github.com/lezebomb/Miao/tree/e96c93f471b9beb68b538b17b8eeecd6daa6fce4)。`node scripts/miao-assets.mjs` 从源帧生成应用内动画包和网页 WebP，并记录字节数、SHA-256 和存储预算。`--candidate <版本> <序号> <HTTPS资源URL>` 可生成供现有签名工具使用的资源候选清单。设备目前离线读取内置包，独立签名资源下发与激活尚未启用。

@@ -1,0 +1,11 @@
+{
+  "offline": ["idle"],
+  "idle": ["idle"],
+  "thinking": ["look-aside", "ear-twitch"],
+  "working": ["knead"],
+  "testing": ["running-right", "running-left"],
+  "approval": ["idle"],
+  "completed": ["roll"],
+  "failed": ["wash-face"],
+  "interrupted": ["idle"]
+}
