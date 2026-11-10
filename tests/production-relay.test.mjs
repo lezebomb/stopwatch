@@ -151,6 +151,8 @@ test("six-digit browser code and QR share one use and do not authorize device or
     assert.equal(relay.store.ticket("device").manualCode, undefined);
     const expired = relay.store.ticket("operator", Date.now() - 120001);
     assert.equal((await post("pair", { code: expired.manualCode })).status, 401);
+    assert.equal(relay.store.pruneTickets(), 1);
+    assert.equal(relay.store.db.prepare("SELECT count(*) AS total FROM ticket_short").get().total, 0);
   } finally {
     await relay.close();
     await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

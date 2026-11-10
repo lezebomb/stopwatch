@@ -28,13 +28,16 @@ export class Store {
       .prepare("INSERT OR IGNORE INTO settings VALUES (1, ?)")
       .run(JSON.stringify(defaultSettings));
   }
+  pruneTickets(now = Date.now()) {
+    return this.db.prepare("DELETE FROM tickets WHERE expires <= ?").run(now).changes;
+  }
   ticket(role = "operator", now = Date.now()) {
     const code = secret();
     const hash = digest(code), expires = now + 120000;
     let manualCode;
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      this.db.prepare("DELETE FROM tickets WHERE expires <= ?").run(now);
+      this.pruneTickets(now);
       this.db.prepare("INSERT INTO tickets VALUES (?, ?, ?)").run(hash, expires, role);
       if (role === "operator" || role === "viewer") {
         const insert = this.db.prepare("INSERT OR IGNORE INTO ticket_short VALUES (?, ?)");

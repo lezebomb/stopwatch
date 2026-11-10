@@ -24,6 +24,8 @@
 
 联调公网中转时，构建前显式设置 `$env:SW_DEVICE_RELAY_ORIGIN='https://fym.lezebomb.top'`。这会将挂件配网二维码和同步客户端指向同一 HTTPS 来源。测试固件的正式 OTA 仍关闭。串口 `info` 的 `wifi` 和 `relayState` 分别用于确认联网与同步授权。
 
+首次安装正式信任根时，从核对过的 `firmware/build-release` 使用 `./scripts/flash-app.ps1 -Port COM5 -Release -CaptureBoot`。该路径核对正式公钥、原厂备份、实时分区表和当前启动槽。后续 OTA 用串口 `update.check` 请求检查，并用 `info` 的 `version`、`otaState` 和 `bootOffset` 确认版本、健康状态及换槽。
+
 USB命令复用官方console hook，不改变黄键录音管线，也没有新增公网命令服务。照片用不可变文件、全量SHA256和NVS active/previous相册根；空间不足保留旧数据。根丢失时先恢复上一代；无法恢复则保留全部文件并禁写，不盲目回收私人图片。物理容量要同时容纳默认图、当前图、上一代和临时文件，12个逻辑槽不保证任意12张都能同时写入。
 
 以下为首次阶段记录和操作手册，旧“待硬件”条目以上表具体结果为准。

@@ -649,6 +649,8 @@ static bool device_console_locked(const char *line) {
         count++;
     muse_power_t power = muse_state_power();
     const esp_partition_t *running = esp_ota_get_running_partition();
+    sw_update_status_t update;
+    sw_update_status(&update);
     printf(
         "@sw "
         "{\"id\":%d,\"ok\":true,\"protocol\":1,\"userPhotos\":%u,"
@@ -658,7 +660,7 @@ static bool device_console_locked(const char *line) {
         "%s,\"codexPhase\":%u,\"serialStackMinimum\":%u,\"asleep\":%s,"
         "\"brightnessSaved\":%d,\"brightnessPolicy\":%d,\"idleSeconds\":%u,"
         "\"bootOffset\":%lu,\"displayMode\":%u,\"miaoFramesDrawn\":%u,"
-        "\"relayState\":\"%s\"}\n",
+        "\"relayState\":\"%s\",\"version\":\"%s\",\"otaState\":\"%s\"}\n",
         id, count, hash, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), power.battery_pct,
@@ -672,7 +674,7 @@ static bool device_console_locked(const char *line) {
             : sw_companion_brightness(muse_settings_brightness()),
         (unsigned)muse_state_idle_secs(),
         running ? (unsigned long)running->address : 0UL, display_settings.mode,
-        sw_miao_frames_drawn(), sw_sync_state());
+        sw_miao_frames_drawn(), sw_sync_state(), SW_UPDATE_VERSION, update.state);
     fflush(stdout);
     cJSON_Delete(request);
     return true;
@@ -694,6 +696,11 @@ static bool device_console_locked(const char *line) {
   }
   if (!strcmp(op, "setup.open") || !strcmp(op, "setup.close")) {
     atomic_store(&setup_requested, !strcmp(op, "setup.open") ? 1 : -1);
+    error = NULL;
+    goto done;
+  }
+  if (!strcmp(op, "update.check")) {
+    sw_update_request_check();
     error = NULL;
     goto done;
   }

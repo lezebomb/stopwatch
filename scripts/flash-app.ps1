@@ -1,4 +1,4 @@
-param([string]$Port = '-', [switch]$CaptureBoot)
+param([string]$Port = '-', [switch]$CaptureBoot, [switch]$Release)
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 $python = (Resolve-Path '.tools/espressif/python_env/idf6.0_py3.12_env/Scripts/python.exe').Path
@@ -10,8 +10,10 @@ $expectedHash = (Get-Content -LiteralPath (Join-Path $session.backup 'sha256.txt
 if ((Get-Item -LiteralPath $backup).Length -ne 16777216 -or (Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash -ne $expectedHash) { throw 'Original backup is missing or damaged.' }
 $plan = Get-Content -LiteralPath $session.firstInstallPlan -Raw | ConvertFrom-Json
 $partition = $plan | Where-Object file -EQ 'partition_table/partition-table.bin'
-if ((Get-FileHash -LiteralPath 'firmware/build/partition_table/partition-table.bin' -Algorithm SHA256).Hash -ne $partition.sha256) { throw 'Partition layout changed; migration assessment required.' }
-$image = (Resolve-Path 'firmware/build/muse-gadget.bin').Path
+$build = if ($Release) { 'firmware/build-release' } else { 'firmware/build' }
+$table = Join-Path $build 'partition_table/partition-table.bin'
+if ((Get-FileHash -LiteralPath $table -Algorithm SHA256).Hash -ne $partition.sha256) { throw 'Partition layout changed; migration assessment required.' }
+$image = (Resolve-Path (Join-Path $build 'muse-gadget.bin')).Path
 if ((Get-Item -LiteralPath $image).Length -gt 4194304) { throw 'Application exceeds 4MiB OTA slot.' }
 $security = Get-Content -LiteralPath (Join-Path $session.backup 'device-security.log') -Raw
 $identity = [regex]::Match($security, '(?m)^MAC:\s+([0-9a-fA-F:]+)').Groups[1].Value
@@ -25,10 +27,12 @@ print(matches[0])
 '@
 $selectedPort = (& $python -c $detect $Port $identity | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Device identity check failed.' }
-# A development-only helper: production keys are never silently substituted.
-& $python -m espsecure verify-signature --version 2 --keyfile .deps/muse/esp32/dev_signing_key.pem $image *> .data/app-signature-check.log
-if ($LASTEXITCODE -ne 0) { throw 'Development image signature check failed.' }
-& $python scripts/flash-slot.py $selectedPort firmware/build/partition_table/partition-table.bin $image *> .data/app-slot-check.log
+$verifyKey = if ($Release) {
+    (Get-Content -LiteralPath 'release/config.json' -Raw | ConvertFrom-Json).productionPublicKey
+} else { '.deps/muse/esp32/dev_signing_key.pem' }
+& $python -m espsecure verify-signature --version 2 --keyfile $verifyKey $image *> .data/app-signature-check.log
+if ($LASTEXITCODE -ne 0) { throw 'Image signature does not match the selected release or development trust profile.' }
+& $python scripts/flash-slot.py $selectedPort $table $image *> .data/app-slot-check.log
 if ($LASTEXITCODE -ne 0) { throw 'Live safety checks failed; see .data/app-slot-check.log. No application was written.' }
 $slotLine = @(Get-Content -LiteralPath .data/app-slot-check.log | Where-Object { $_ -match '^@slot ' })
 if ($slotLine.Count -ne 1) { throw 'Could not identify the stable boot slot.' }

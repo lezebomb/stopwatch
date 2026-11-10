@@ -6,6 +6,7 @@ node_modules/
 dist/
 build/
 firmware/build/
+firmware/build-release/
 firmware/sdkconfig
 firmware/assets/*.rgb
 firmware/build-realtime/

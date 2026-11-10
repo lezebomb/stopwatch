@@ -50,8 +50,8 @@ const report = async (status) => {
 };
 function stopChild() {
   const target = child;
-  if (!target) return;
-  target.send?.({ type: "stop" });
+  if (!target || target.exitCode !== null || target.signalCode !== null) return;
+  if (target.connected) target.send({ type: "stop" }, () => {});
   setTimeout(() => {
     if (target.exitCode === null) target.kill();
   }, 2000).unref();
@@ -108,9 +108,8 @@ async function boot() {
     windowsHide: true,
   });
   const version = selection.pending?.version || selection.currentVersion;
-  child.stdin.end(JSON.stringify({ config: { ...config, version }, token: credential, root }) + "\n");
+  const input = JSON.stringify({ config: { ...config, version }, token: credential, root }) + "\n";
   credential = null;
-  await report({ state: "starting", online: false, version, updateState: selection.lastResult || "idle" });
   lastHealth = 0;
   healthyTimer = setTimeout(() => {
     if (!lastHealth || Date.now() - lastHealth > 10000) stopChild();
@@ -134,7 +133,6 @@ async function boot() {
         clearTimeout(updateTimer);
         if (child?.exitCode === null) stopChild();
       }
-      if (!pending) await report({ updateState: result.state, updateDetail: "" });
     }
   });
   // Never forward raw child output or credentials into persistent logs.
@@ -156,6 +154,9 @@ async function boot() {
       retry = setTimeout(boot, 5000);
     }
   });
+  child.stdin.on("error", () => {});
+  await report({ state: "starting", online: false, version, updateState: selection.lastResult || "idle" });
+  child.stdin.end(input);
 }
 async function update() {
   if (stopped) return;
@@ -167,7 +168,7 @@ async function update() {
       if (pending && !childBusy) {
         await report({ updateState: "restarting" });
         stopChild();
-      }
+      } else if (!pending) await report({ updateState: result.state, updateDetail: "" });
       updateFailures = 0;
     }
   } catch (error) {

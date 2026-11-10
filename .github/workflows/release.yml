@@ -49,12 +49,12 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "24.13.0"
+      - run: npm ci --no-fund
+      - run: node scripts/fetch-upstream.mjs
       - name: Require reviewed production identity
         env:
           RELEASE_SIGNING_KEY_PEM: ${{ secrets.RELEASE_SIGNING_KEY_PEM }}
         run: node scripts/provision-release.mjs
-      - run: npm ci --no-fund
-      - run: node scripts/fetch-upstream.mjs
       - run: node scripts/prepare-firmware.mjs
       - name: Build signed app only
         shell: bash
@@ -99,12 +99,12 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "24.13.0"
+      - run: npm ci --no-fund
+      - run: node scripts/package-windows.mjs
       - name: Require reviewed production identity
         env:
           RELEASE_SIGNING_KEY_PEM: ${{ secrets.RELEASE_SIGNING_KEY_PEM }}
         run: node scripts/provision-release.mjs
-      - run: npm ci --no-fund
-      - run: node scripts/package-windows.mjs
       - name: Stage installer and bridge update
         shell: pwsh
         run: |
@@ -135,15 +135,15 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "24.13.0"
-      - name: Require reviewed production identity
-        env:
-          RELEASE_SIGNING_KEY_PEM: ${{ secrets.RELEASE_SIGNING_KEY_PEM }}
-        run: node scripts/provision-release.mjs
       - run: npm ci --no-fund
       - run: node scripts/build.mjs --production
       - run: npm prune --omit=dev
       - run: node scripts/package-portal.mjs
       - run: node scripts/portal-update.mjs --check release-output/portal
+      - name: Require reviewed production identity
+        env:
+          RELEASE_SIGNING_KEY_PEM: ${{ secrets.RELEASE_SIGNING_KEY_PEM }}
+        run: node scripts/provision-release.mjs
       - name: Stage production portal
         run: |
           mkdir -p release-output/assets

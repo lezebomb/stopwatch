@@ -6,6 +6,7 @@ on:
     branches: [main]
   workflow_dispatch:
 permissions:
+  actions: read
   contents: read
   pages: write
   id-token: write
@@ -13,12 +14,11 @@ concurrency:
   group: github-pages
   cancel-in-progress: true
 jobs:
-  deploy:
+  build:
     if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-24.04
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      artifact: ${{ steps.package.outputs.name }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -32,8 +32,32 @@ jobs:
         env:
           SW_BUILD_ID: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b
+      - id: package
+        run: echo "name=github-pages-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa
         with:
           path: preview-dist
-      - uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e
+          name: ${{ steps.package.outputs.name }}
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Wait for the Pages artifact to be indexed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT: ${{ needs.build.outputs.artifact }}
+        run: |
+          for attempt in {1..8}; do
+            count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?name=$ARTIFACT" --jq '[.artifacts[] | select(.expired == false)] | length') || count=0
+            if [ "$count" = 1 ]; then exit 0; fi
+            sleep 5
+          done
+          echo 'Pages artifact did not become visible' >&2
+          exit 1
+      - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346
         id: deployment
+        with:
+          artifact_name: ${{ needs.build.outputs.artifact }}

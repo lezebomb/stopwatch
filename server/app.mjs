@@ -646,6 +646,9 @@ export async function createRelay({
     }
     if (bridge && !online()) bridge.terminate();
   }, 15000);
+  const ticketCleanup = setInterval(() => {
+    try { store.pruneTickets(); } catch { /* Retry on the next sweep if SQLite is busy. */ }
+  }, 60000).unref();
   await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
   return {
     server,
@@ -655,6 +658,7 @@ export async function createRelay({
     publish,
     close: async () => {
       clearInterval(heartbeat);
+      clearInterval(ticketCleanup);
       for (const ws of wss.clients) ws.terminate();
       await new Promise((resolve) => server.close(resolve));
       wss.close();
