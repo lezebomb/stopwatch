@@ -46,6 +46,8 @@ for (const file of [
   "sw_sync.h",
   "sw_miao.c",
   "sw_miao.h",
+  "sw_memory.c",
+  "sw_memory.h",
 ])
   await writeChanged(
     `${component}/${file}`,
@@ -55,7 +57,7 @@ for (const file of [
 let cmake = git(["show", "HEAD:esp32/components/muse/CMakeLists.txt"]);
 cmake = cmake.replace(
   '"muse_app.c"',
-  '"muse_app.c"\n        "sw_companion.c"\n        "sw_model.c"\n        "sw_update_core.c"\n        "sw_updater.c"\n        "sw_updater_ui.c"\n        "sw_sync.c"\n        "sw_miao.c"',
+  '"muse_app.c"\n        "sw_companion.c"\n        "sw_model.c"\n        "sw_update_core.c"\n        "sw_updater.c"\n        "sw_updater_ui.c"\n        "sw_sync.c"\n        "sw_miao.c"\n        "sw_memory.c"',
 );
 cmake = cmake.replace(
   "idf_component_register(",
@@ -124,10 +126,10 @@ ui +=
   "\nbool sw_companion_native_page(bool settings) {\n    if (!s_tv || !s_settings || !s_face) return false;\n    lv_tileview_set_tile(s_tv, settings ? s_settings : s_face, LV_ANIM_OFF);\n    update_tileview_swipe();\n    return true;\n}\n";
 await writeChanged(`${component}/muse_ui.c`, ui);
 let app = git(["show", "HEAD:esp32/components/muse/muse_app.c"]);
-app = '#include "sw_updater.h"\n' + app;
+app = '#include "sw_memory.h"\n#include "sw_updater.h"\n' + app;
 app = app.replace(
   '        muse_state_set_caption("%s", "");   /* the button icons say how to talk */',
-  '        muse_state_set_caption("%s", "");   /* the button icons say how to talk */\n        sw_update_services_ready();',
+  '        muse_state_set_caption("%s", "");   /* the button icons say how to talk */\n        sw_update_services_ready();\n        sw_memory_mark("boot.audio", 0, 0, 0);',
 );
 await writeChanged(`${component}/muse_app.c`, app);
 let tokenConsole = git(["show", "HEAD:esp32/main/sdk_token_console.c"]);
@@ -212,6 +214,15 @@ if (!mainApp.includes(firstMuseRequest))
   throw new Error("Upstream boot connection hook changed");
 mainApp = mainApp.replace(firstMuseRequest,
   "                muse_glue_wait_local_boot();\n" + firstMuseRequest);
+mainApp = '#include "sw_memory.h"\n' + mainApp;
+for (const [hook, phase, indent] of [
+  ['heap_snapshot("after config+id");', "boot.config", "    "],
+  ['heap_snapshot("after wifi_mgr_init");', "boot.wifi-init", "    "],
+  ['ui_set_status("wifi_connected");\n            led_status_set_state(LED_STATE_WIFI_CONNECTED);', "boot.wifi-up", "            "],
+]) {
+  if (!mainApp.includes(hook)) throw new Error(`Upstream memory phase changed: ${phase}`);
+  mainApp = mainApp.replace(hook, hook + `\n${indent}sw_memory_mark("${phase}", 0, 0, 0);`);
+}
 await writeChanged(`${sdk}/main/app.c`, mainApp);
 let glue = git(["show", "HEAD:esp32/main/muse_glue.c"]);
 glue = glue.replace(
@@ -240,16 +251,69 @@ const vmApi = git(["show", "HEAD:esp32/main/vm_api.c"]);
 const vmClient = "    esp_http_client_handle_t client = esp_http_client_init(&cfg);\n" +
   "    if (!client) return VM_API_ERR_FAILED;";
 const vmCleanup = "    esp_http_client_cleanup(client);";
-if (!vmApi.includes(vmClient) || !vmApi.includes(vmCleanup))
+const vmBuffers = "        .buffer_size = 4096,\n        .buffer_size_tx = 4096,";
+const vmRequest = "    esp_err_t err = esp_http_client_perform(client);";
+const vmHandler = "static esp_err_t http_event_handler(esp_http_client_event_t *evt) {";
+const vmRetry = `        if (rc == VM_API_ERR_AUTH) {
+            free(resp->buf);
+            resp->buf = NULL;
+            return VM_API_ERR_AUTH;
+        }
+        if (!http_status_retryable(status)) {
+            ESP_LOGW(TAG, "HTTP %d is not retryable", status);
+            free(resp->buf);
+            resp->buf = NULL;
+            return VM_API_ERR_FAILED;
+        }`;
+const vmRetryEnd = `                     MAX_FETCH_ATTEMPTS, status);
+            free(resp->buf);
+            resp->buf = NULL;
+            return VM_API_ERR_FAILED;`;
+if (![vmClient, vmCleanup, vmBuffers, vmRequest, vmHandler, vmRetry, vmRetryEnd]
+    .every((hook) => vmApi.includes(hook)))
   throw new Error("Upstream VM HTTPS client changed");
-await writeChanged(`${sdk}/main/vm_api.c`, '#include "sw_sync.h"\n' + vmApi
+await writeChanged(`${sdk}/main/vm_api.c`, '#include "sw_memory.h"\n#include "sw_sync.h"\n' + vmApi
+  .replace(vmHandler, `static esp_err_t sw_vm_bundle_attach(void *conf) {
+    sw_memory_mark("vm.tls-config", 0, 0, 0);
+    return esp_crt_bundle_attach(conf);
+}
+
+` + vmHandler + `
+    if (evt->event_id == HTTP_EVENT_ON_CONNECTED)
+        sw_memory_mark("vm.https-up", 0, 0, 0);`)
+  .replace(vmBuffers, "        .buffer_size = SW_VM_HTTP_BUFFER_BYTES,\n" +
+    "        .buffer_size_tx = SW_VM_HTTP_BUFFER_BYTES,")
+  .replace(".crt_bundle_attach = esp_crt_bundle_attach,", ".crt_bundle_attach = sw_vm_bundle_attach,")
   .replace(vmClient, `    if (!sw_sync_http_take()) return VM_API_ERR_FAILED;
+    sw_memory_target(url);
+    sw_memory_mark("vm.before", SW_VM_HTTP_BUFFER_BYTES, 0, 0);
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
         sw_sync_http_release();
         return VM_API_ERR_FAILED;
     }`)
-  .replace(vmCleanup, vmCleanup + "\n    sw_sync_http_release();"));
+  .replace(vmRequest, '    sw_memory_mark("vm.client-ready", SW_VM_HTTP_BUFFER_BYTES, 0, 0);\n' + vmRequest)
+  .replace(vmCleanup, `#if !SW_UPDATE_PRODUCTION
+    if (err != ESP_OK) {
+        int tls = 0, flags = 0;
+        esp_err_t transport = esp_http_client_get_and_clear_last_tls_error(client, &tls, &flags);
+        sw_memory_mark("vm.transport-error", transport, tls, flags);
+    }
+#endif
+    sw_memory_mark("vm.response", err, *status_out, 0);
+` + vmCleanup + '\n    sw_memory_mark("vm.client-free", 0, 0, 0);\n    sw_sync_http_release();')
+  .replace(vmRetry, `        free(resp->buf);
+        resp->buf = NULL;
+        resp->len = resp->cap = 0;
+        sw_memory_mark("vm.retry-free", rc, status, attempt);
+        if (rc == VM_API_ERR_AUTH)
+            return VM_API_ERR_AUTH;
+        if (!http_status_retryable(status)) {
+            ESP_LOGW(TAG, "HTTP %d is not retryable", status);
+            return VM_API_ERR_FAILED;
+        }`)
+  .replace(vmRetryEnd, `                     MAX_FETCH_ATTEMPTS, status);
+            return VM_API_ERR_FAILED;`));
 // Restore the pinned source even when reusing a build with the retired PEAP patch.
 await writeChanged(`${sdk}/main/wifi_mgr.c`, git(["show", "HEAD:esp32/main/wifi_mgr.c"]));
 let settingsUi = git(["show", "HEAD:esp32/components/muse/muse_settings_ui.c"]);
@@ -397,7 +461,7 @@ if (production) {
     throw new Error("Signing key/public trust mismatch");
   await writeChanged(
     `${sdk}/sdkconfig.release`,
-    `CONFIG_SECURE_BOOT_SIGNING_KEY=${JSON.stringify(path.resolve(process.env.SW_SIGNING_KEY_PATH).replaceAll("\\", "/"))}\nCONFIG_MUSE_REALTIME_VOICE=y\n`,
+    `CONFIG_SECURE_BOOT_SIGNING_KEY=${JSON.stringify(path.resolve(process.env.SW_SIGNING_KEY_PATH).replaceAll("\\", "/"))}\nCONFIG_MUSE_REALTIME_VOICE=y\n# CONFIG_FREERTOS_USE_TRACE_FACILITY is not set\n`,
   );
 }
 if (existsSync("firmware/dependencies.lock"))

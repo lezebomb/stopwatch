@@ -23,12 +23,13 @@ PHOTO_BYTES = 466 * 466 * 2
 
 
 class Device:
-    def __init__(self, port):
+    def __init__(self, port, *, diagnostic_line=None):
         self.port = serial.Serial()
         self.port.port, self.port.baudrate, self.port.timeout = port, 115200, 0.2
         self.port.dtr, self.port.rts = False, False
         self.port.open()
         self.sequence = 0
+        self.diagnostic_line = diagnostic_line
 
     def close(self):
         self.port.close()
@@ -49,7 +50,9 @@ class Device:
                 line, pending = pending.split(b'\n', 1)
                 marker = line.find(b'@sw {')
                 if marker < 0:
-                    continue  # Never expose SDK diagnostics, pairing data or tokens.
+                    if self.diagnostic_line:
+                        self.diagnostic_line(line)
+                    continue
                 try:
                     reply = json.loads(line[marker + 4:])
                 except (UnicodeError, ValueError):

@@ -22,6 +22,7 @@
 #include "sw_companion.h"
 #include "sw_miao.h"
 #include "sw_update_build.h"
+#include "sw_memory.h"
 #include "sw_update_core.h"
 #include <stdatomic.h>
 #include <stdio.h>
@@ -94,6 +95,13 @@ void sw_update_health_tick(bool ready) {
 void sw_update_services_ready(void) { atomic_store(&services, true); }
 void sw_update_interaction(bool busy) { atomic_store(&interaction, busy); }
 void sw_update_request_check(void) {
+  if (!production_configured || !manifest_url[0]) {
+    sw_update_status_t current;
+    sw_update_status(&current);
+    if (!strcmp(current.state, "idle"))
+      state("unconfigured", "维护者尚未配置正式更新信任根");
+    return;
+  }
   atomic_store(&manual, true);
   if (update_task)
     xTaskNotifyGive(update_task);
@@ -684,11 +692,10 @@ static void worker(void *arg) {
            (unsigned)uxTaskGetStackHighWaterMark(NULL));
   if (production_configured && manifest_url[0])
     poll_updates();
-  for (;;) {
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    if (atomic_exchange(&manual, false))
-      state("unconfigured", "维护者尚未配置正式更新信任根");
-  }
+  sw_memory_mark("updater.exit", SW_UPDATE_DEV_STACK_BYTES, 0, 0);
+  nvs_close(nvs);
+  update_task = NULL;
+  vTaskDelete(NULL);
 }
 void sw_update_start(bool storage_ok) {
   storage_ready = storage_ok;
@@ -724,7 +731,9 @@ void sw_update_start(bool storage_ok) {
     policy.min_battery = 20;
   if (policy.min_battery > 90)
     policy.min_battery = 90;
-  if (xTaskCreate(worker, "sw_update", SW_UPDATE_PRODUCTION ? 14336 : 4096,
+  if (xTaskCreate(worker, "sw_update", SW_UPDATE_PRODUCTION
+                                         ? SW_UPDATE_RELEASE_STACK_BYTES
+                                         : SW_UPDATE_DEV_STACK_BYTES,
                   NULL, 3, &update_task) != pdPASS) {
     state("disabled", "无法启动更新任务");
     const esp_partition_t *running = esp_ota_get_running_partition();

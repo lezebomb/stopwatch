@@ -25,6 +25,7 @@
 #include "psa/crypto.h"
 #include "src/misc/cache/instance/lv_image_cache.h"
 #include "sw_miao.h"
+#include "sw_memory.h"
 #include "sw_model.h"
 #include "sw_setup_qr.h"
 #include "sw_sync.h"
@@ -779,8 +780,25 @@ static bool device_console_locked(const char *line) {
     cJSON_Delete(request);
     return true;
   }
+#if !SW_UPDATE_PRODUCTION
+  if (!strcmp(op, "memory.stats")) {
+    sw_memory_status(id);
+    cJSON_Delete(request);
+    return true;
+  }
+  if (!strcmp(op, "memory.tasks") || !strcmp(op, "memory.http-probe")) {
+    if (!strcmp(op, "memory.tasks"))
+      sw_memory_tasks();
+    else
+      sw_memory_http_probe();
+    error = NULL;
+    goto done;
+  }
+#endif
   if (!SW_UPDATE_PRODUCTION && !strcmp(op, "diag.miao")) {
+    sw_memory_mark("miao.before", 0, 0, 0);
     unsigned frames = sw_miao_verify_embedded();
+    sw_memory_mark("miao.after", (int)frames, 0, 0);
     printf("@sw {\"id\":%d,\"ok\":true,\"decoded\":%u}\n", id, frames);
     fflush(stdout);
     cJSON_Delete(request);
@@ -1029,6 +1047,7 @@ static void photo_worker(void *arg) {
       }
       continue;
     }
+    sw_memory_mark("photo.before", 0, 0, 0);
     uint8_t *data =
         heap_caps_malloc(466u * 466u * 2u, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!data) {
@@ -1059,6 +1078,7 @@ static void photo_worker(void *arg) {
     hash_hex(hash, result.hash);
     if (xQueueSend(photo_results, &result, pdMS_TO_TICKS(20)) != pdTRUE)
       free(data);
+    sw_memory_mark("photo.decoded", 0, 0, 0);
   }
 }
 static void load_photo(void) {
@@ -1528,7 +1548,7 @@ void sw_companion_init(void) {
   photo_results = xQueueCreate(1, sizeof(photo_result_t));
   sync_results = xQueueCreate(1, sizeof(cover_sync_t));
   if (!transfer_lock || !photo_requests || !photo_results ||
-      xTaskCreate(photo_worker, "sw_photo", 4096, NULL, 2, NULL) != pdPASS) {
+      xTaskCreate(photo_worker, "sw_photo", SW_PHOTO_STACK_BYTES, NULL, 2, NULL) != pdPASS) {
     if (photo_requests)
       vQueueDelete(photo_requests);
     if (photo_results)

@@ -1,4 +1,4 @@
-param([string]$Port = '-', [switch]$CaptureBoot, [switch]$Release, [switch]$Realtime)
+param([string]$Port = '-', [switch]$CaptureBoot, [switch]$Release, [switch]$Realtime, [switch]$MemoryProfile)
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 $python = (Resolve-Path '.tools/espressif/python_env/idf6.0_py3.12_env/Scripts/python.exe').Path
@@ -53,7 +53,9 @@ $session | Add-Member -NotePropertyName lastFlashedSha256 -NotePropertyValue $di
 [IO.File]::WriteAllText($sessionPath, ($session | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
 Write-Output "Application written and verified on $selectedPort at $offset."
 if ($CaptureBoot) {
-    & $python scripts/serial-capture.py --port $selectedPort --reset --seconds 38 --log .data/app-last-boot.log
+    $captureArgs = @('--port', $selectedPort, '--reset', '--seconds', '38', '--log', '.data/app-last-boot.log')
+    if ($MemoryProfile) { $captureArgs += '--memory-only' }
+    & $python scripts/serial-capture.py @captureArgs
     if ($LASTEXITCODE -ne 0) { throw 'Application verified, but boot capture failed.' }
     if (-not (Select-String -LiteralPath .data/app-last-boot.log -Quiet -SimpleMatch "Loaded app from partition at offset $offset")) {
         throw 'Application verified, but the expected slot was not confirmed in the boot log.'

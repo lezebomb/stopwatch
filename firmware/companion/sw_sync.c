@@ -12,6 +12,7 @@
 #include "muse_state.h"
 #include "muse_wifi.h"
 #include "nvs.h"
+#include "sw_memory.h"
 #include "sw_sync_build.h"
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -103,6 +104,7 @@ static bool net_ready(void) {
 
 static void close_request(esp_http_client_handle_t client) {
   esp_http_client_cleanup(client);
+  sw_memory_mark("relay.cleanup", 0, 0, 0);
   sw_sync_http_release();
 }
 
@@ -140,6 +142,7 @@ static esp_http_client_handle_t open_request(const char *path,
     sw_sync_http_release();
     return NULL;
   }
+  sw_memory_mark("relay.before", 0, 0, 0);
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (!client) {
     sw_sync_http_release();
@@ -162,6 +165,7 @@ static esp_http_client_handle_t open_request(const char *path,
   }
   int body_size = body ? (int)strlen(body) : 0;
   esp_err_t opened = ok ? esp_http_client_open(client, body_size) : ESP_FAIL;
+  sw_memory_mark("relay.connected", opened, 0, 0);
   if (opened == ESP_OK &&
       (!body_size ||
        esp_http_client_write(client, body, body_size) == body_size)) {
@@ -523,7 +527,7 @@ void sw_sync_start(void) {
       nvs_open("sw_relay", NVS_READWRITE, &nvs) != ESP_OK)
     return;
   /* A photo download opens TLS while the album transaction is on the stack. */
-  if (xTaskCreate(sync_worker, "sw_relay", 8192, NULL, 2, &worker) != pdPASS) {
+  if (xTaskCreate(sync_worker, "sw_relay", SW_RELAY_STACK_BYTES, NULL, 2, &worker) != pdPASS) {
     nvs_close(nvs);
     worker = NULL;
   }

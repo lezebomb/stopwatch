@@ -11,6 +11,7 @@ p.add_argument('--port', required=True)
 p.add_argument('--seconds', type=int, default=30)
 p.add_argument('--log', required=True)
 p.add_argument('--reset', action='store_true')
+p.add_argument('--memory-only', action='store_true')
 a = p.parse_args()
 root = pathlib.Path(__file__).resolve().parents[1]
 target = pathlib.Path(a.log).resolve()
@@ -22,6 +23,14 @@ port.port, port.baudrate, port.timeout = a.port, 115200, 0.2
 port.dtr, port.rts = False, False
 port.open()
 lines = []
+memory_line = re.compile(
+    r'I \(\d+\) sw_mem: @mem (?:boot|vm|relay|photo|miao|updater|probe)\.[a-z-]+(?: -?\d+){11}'
+    r'|I \(\d+\) sw_mem: @mem-target [a-zA-Z0-9.-]+'
+    r'|Loaded app from partition at offset 0x[0-9a-f]+'
+    r'|Found \d+MB PSRAM device'
+    r'|select\(\) timeout|getaddrinfo\(\) returns -?\d+|mbedtls_ssl_handshake returned -?0x[0-9a-fA-F]+'
+    r'|Guru Meditation|stack overflow|assert failed|allocate DMA buffer failed|Allocation failed'
+)
 try:
     if a.reset:
         HardReset(port, uses_usb=True).reset()
@@ -32,11 +41,19 @@ try:
             chunk = port.read(4096)
             if not chunk:
                 continue
-            out.write(chunk)
+            if not a.memory_only:
+                out.write(chunk)
             pending += chunk
             while b'\n' in pending:
                 line, pending = pending.split(b'\n', 1)
-                lines.append(line.decode('utf-8', 'replace').strip())
+                decoded = line.decode('utf-8', 'replace').strip()
+                if a.memory_only:
+                    event = memory_line.search(decoded)
+                    if not event:
+                        continue
+                    decoded = event.group(0)
+                    out.write((decoded + '\n').encode())
+                lines.append(decoded)
 except serial.SerialException as e:
     print('Serial disconnected:', type(e).__name__)
 finally:
@@ -46,4 +63,5 @@ selected = [s for s in lines if pattern.search(s)]
 for line in selected[-32:]:
     line = re.sub(r'(?:mgst_|eyJ|ghp_|github_pat_)[A-Za-z0-9_.-]+', '[redacted]', line)
     print(line)
-print(f'Captured {len(lines)} lines; raw log retained locally: {target.relative_to(root)}')
+kind = 'filtered memory log' if a.memory_only else 'raw log'
+print(f'Captured {len(lines)} lines; {kind} retained locally: {target.relative_to(root)}')

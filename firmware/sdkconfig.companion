@@ -5,6 +5,8 @@ CONFIG_MUSE_CJK_FONT_NOTO=y
 # CONFIG_HOMEHUB_OTA_ENABLED is not set
 # The StopWatch board already enables PSRAM XIP, including code and rodata.
 CONFIG_HOMEHUB_SETUP_TASKS_IN_PSRAM=y
+# On-demand task snapshots in USB development diagnostics.
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 CONFIG_LV_DEF_REFR_PERIOD=100
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 # CONFIG_SECURE_BOOT is not set
