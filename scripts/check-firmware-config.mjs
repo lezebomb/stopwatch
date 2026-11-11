@@ -2,6 +2,16 @@ import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import assert from "node:assert/strict";
 const root = process.argv[2] || "firmware/build";
 const config = await readFile(`${root}/sdkconfig`, "utf8");
+if (process.env.SW_PRODUCTION === "1") {
+  assert(
+    /^CONFIG_GADGET_SDK_TOKEN=""\r?$/m.test(config),
+    "Public firmware must use device-local Muse enrollment",
+  );
+  assert(
+    /^CONFIG_MUSE_REALTIME_VOICE=y\r?$/m.test(config),
+    "Public firmware must include Muse voice playback",
+  );
+}
 for (const name of [
   "BOOTLOADER_APP_ROLLBACK_ENABLE",
   "SECURE_SIGNED_APPS_NO_SECURE_BOOT",

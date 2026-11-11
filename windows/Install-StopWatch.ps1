@@ -29,12 +29,14 @@ $button.Add_Click({try{
  $origin=[Uri]$controls.Relay.Text.Trim();if($origin.Scheme -ne 'https' -or $origin.GetLeftPart([UriPartial]::Authority) -cne $installProfile.origin -or -not $installProfile.updateManifestUrl){throw '安装包缺少正式控制台或更新渠道。'}
  $workspace=(Resolve-Path -LiteralPath $controls.Workspace.Text).Path;if(-not (Test-Path -LiteralPath $workspace -PathType Container)){throw '请选择存在的工作区目录。'}
  $codex=(Resolve-Path -LiteralPath $controls.Codex.Text).Path;if([IO.Path]::GetExtension($codex) -ne '.exe'){throw '请选择 Codex 可执行程序。'}
+ foreach($file in @('runtime/node.exe','app/supervisor.mjs','app/bridge.mjs','app/Launch.vbs','app/Settings.vbs','app/Settings.ps1','app/Decrypt-Credential.ps1','release-public.pem')){
+  if(-not (Test-Path -LiteralPath (Join-Path $packageRoot $file) -PathType Leaf)){throw '安装包缺少必要文件，请重新下载完整安装包。'}
+ }
  $button.Enabled=$false
  $body=@{code=$controls.Code.Text.Trim();name=$env:COMPUTERNAME;protocol=1}|ConvertTo-Json
  $paired=Invoke-RestMethod -Uri ($origin.AbsoluteUri.TrimEnd('/')+'/api/bridge/enroll') -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 15
  if(-not $paired.token -or -not $paired.bridgeId){throw '中转服务没有返回有效设备授权。'}
  New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
- if(-not (Test-Path -LiteralPath (Join-Path $packageRoot 'runtime/node.exe'))){throw '安装包缺少 Node 运行时；无需自行安装 Node，请重新下载完整安装包。'}
  Copy-Item -LiteralPath (Join-Path $packageRoot 'runtime') -Destination $InstallRoot -Recurse -Force
  Copy-Item -LiteralPath (Join-Path $packageRoot 'app') -Destination $InstallRoot -Recurse -Force
  Copy-Item -LiteralPath (Join-Path $packageRoot 'release-public.pem') -Destination $InstallRoot -Force

@@ -5,13 +5,16 @@ Production Windows wireless delivery remains a separate, unconfigured path.
 """
 import argparse
 import base64
+import getpass
 import hashlib
 import json
 import pathlib
+import re
 import sys
 import time
 import urllib.request
 import urllib.error
+import warnings
 from urllib.parse import urlparse
 
 import serial
@@ -148,6 +151,38 @@ def watch(device, args):
         time.sleep(2)
 
 
+def read_muse_token():
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', getpass.GetPassWarning)
+            token = getpass.getpass('Paste your Muse SDK token (hidden): ').strip()
+    except getpass.GetPassWarning:
+        raise SystemExit('Open an interactive terminal to enter the token privately.') from None
+    if not re.fullmatch(r'mgst_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]', token):
+        raise SystemExit('Invalid Muse SDK token format.')
+    return token
+
+
+def set_muse_token(device, token):
+    device.command('info')
+    device.port.reset_input_buffer()
+    device.port.write(f'>sdk_token={token}\n'.encode('ascii'))
+    device.port.flush()
+    deadline = time.monotonic() + 10
+    pending = b''
+    while time.monotonic() < deadline:
+        pending += device.port.readline()
+        if not pending.endswith(b'\n'):
+            continue
+        if pending.rstrip().endswith(b'@sdk_token ok'):
+            print('Muse token saved on the StopWatch. Complete pairing in Muse > Settings > Devices.')
+            return
+        if b'@sdk_token error' in pending:
+            raise SystemExit('StopWatch rejected the Muse SDK token.')
+        pending = b''
+    raise SystemExit('StopWatch did not confirm saving the Muse SDK token.')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--port', required=True)
@@ -158,12 +193,19 @@ def main():
     p.add_argument('--pipe', action='store_true', help='Trusted parent process NDJSON over stdin/stdout; no listener')
     p.add_argument('--relay')
     p.add_argument('--session-file')
+    p.add_argument('--set-muse-token', action='store_true', help='Privately enter the SDK token over USB; restarts the device')
     p.add_argument('--data', default='.data')
     a = p.parse_args()
+    if a.set_muse_token and (a.info or a.photo or a.pipe or a.watch):
+        p.error('--set-muse-token must be used by itself with --port')
     if a.watch and (not a.relay or not a.session_file):
         p.error('--watch requires --relay and an ignored viewer --session-file')
+    muse_token = read_muse_token() if a.set_muse_token else None
     device = Device(a.port)
     try:
+        if a.set_muse_token:
+            set_muse_token(device, muse_token)
+            return
         if a.info:
             print(json.dumps(device.command('info')))
         if a.photo:

@@ -140,6 +140,10 @@ tokenConsole =
     tokenHook,
     tokenHook + "\n    if (sw_companion_console(line)) return true;",
   );
+tokenConsole = tokenConsole.replace(
+  'ESP_LOGI(TAG, "stored SDK token %.12s, restarting to use it", token);',
+  'ESP_LOGI(TAG, "stored SDK token, restarting to use it");',
+);
 await writeChanged(`${sdk}/main/sdk_token_console.c`, tokenConsole);
 let input = git(["show", "HEAD:esp32/components/muse/muse_input.c"]);
 const serialStack =
@@ -251,6 +255,19 @@ chat = chat.replace(
   'snprintf(err, err_cap, "Can\'t reach %.32s", s_host);',
 );
 await writeChanged(`${component}/muse_chat_session.cpp`, chat);
+let voiceCall = git(["show", "HEAD:esp32/components/muse/muse_voice_call.cpp"]);
+voiceCall = '#include "esp_attr.h"\n' + voiceCall;
+// These session-task buffers never go to I2S DMA. Leave internal RAM for DMA.
+for (const declaration of [
+  "static muse_vc_call_t s_call;",
+  "static muse_vc_uplink_t s_up;",
+  "static char s_append[MUSE_VC_APPEND_MAX];",
+  "static int16_t s_mic[MIC_PIECE];",
+]) {
+  if (!voiceCall.includes(declaration)) throw new Error("Upstream voice call buffers changed");
+  voiceCall = voiceCall.replace(declaration, `EXT_RAM_BSS_ATTR ${declaration}`);
+}
+await writeChanged(`${component}/muse_voice_call.cpp`, voiceCall);
 await writeChanged(
   `${sdk}/partitions_companion.csv`,
   await readFile("firmware/partitions.csv", "utf8"),
@@ -271,7 +288,7 @@ if (production) {
     throw new Error("Signing key/public trust mismatch");
   await writeChanged(
     `${sdk}/sdkconfig.release`,
-    `CONFIG_SECURE_BOOT_SIGNING_KEY=${JSON.stringify(path.resolve(process.env.SW_SIGNING_KEY_PATH).replaceAll("\\", "/"))}\n`,
+    `CONFIG_SECURE_BOOT_SIGNING_KEY=${JSON.stringify(path.resolve(process.env.SW_SIGNING_KEY_PATH).replaceAll("\\", "/"))}\nCONFIG_MUSE_REALTIME_VOICE=y\n`,
   );
 }
 if (existsSync("firmware/dependencies.lock"))

@@ -37,18 +37,18 @@ else {
   if (!response.ok) throw new Error("Node distribution LICENSE unavailable");
   await writeFile(`${root}/runtime/LICENSE`, await response.text());
 }
-for (const file of [
-  "Launch.vbs",
-  "Settings.vbs",
-  "Settings.ps1",
-  "Decrypt-Credential.ps1",
-])
+for (const file of ["Launch.vbs", "Settings.vbs"])
   await cp(`windows/${file}`, `${root}/app/${file}`);
 await cp("windows/Install.vbs", `${root}/Install-StopWatch.vbs`);
-await cp(
-  "windows/Install-StopWatch.ps1",
-  `${root}/setup/Install-StopWatch.ps1`,
-);
+// The VBS launchers use Windows PowerShell 5.1, which needs a BOM for UTF-8.
+for (const [file, directory] of [
+  ["Install-StopWatch.ps1", "setup"],
+  ["Settings.ps1", "app"],
+  ["Decrypt-Credential.ps1", "app"],
+]) {
+  const source = await readFile(`windows/${file}`, "utf8");
+  await writeFile(`${root}/${directory}/${file}`, "\uFEFF" + source.replace(/^\uFEFF/, ""));
+}
 await cp(
   development ? ".data/update-dev-public.pem" : config.productionPublicKey,
   `${root}/release-public.pem`,

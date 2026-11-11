@@ -13,7 +13,10 @@ $version = (Get-Content release/config.json -Raw | ConvertFrom-Json).version
 $factory = if ($FactoryAssets) { 'ON' } else { 'OFF' }
 $env:SW_ALLOW_FACTORY_ASSETS = if ($FactoryAssets) { '1' } else { '' }
 if ($Realtime) {
-    Set-Content -LiteralPath (Join-Path $sdkRoot 'sdkconfig.realtime') -Value 'CONFIG_MUSE_REALTIME_VOICE=y' -Encoding utf8
+    $realtimeConfig = Join-Path $sdkRoot 'sdkconfig.realtime'
+    if (!(Test-Path -LiteralPath $realtimeConfig) -or [IO.File]::ReadAllText($realtimeConfig).Trim() -cne 'CONFIG_MUSE_REALTIME_VOICE=y') {
+        [IO.File]::WriteAllText($realtimeConfig, "CONFIG_MUSE_REALTIME_VOICE=y`n")
+    }
     $defaults += ';sdkconfig.realtime'
     $buildRoot += '-realtime'
 }
@@ -37,7 +40,13 @@ try {
     python "$env:IDF_PATH/tools/idf.py" @buildArguments build
     if ($LASTEXITCODE -ne 0) { throw 'ESP-IDF firmware build failed' }
 } finally { Pop-Location }
-Copy-Item -LiteralPath (Join-Path $buildRoot 'muse-gadget.bin') -Destination 'artifacts/stopwatch.bin'
 node scripts/check-firmware-config.mjs $buildRoot
 if ($LASTEXITCODE -ne 0) { throw 'Firmware security/layout check failed' }
+$image = Join-Path $buildRoot 'muse-gadget.bin'
+if ($Release) {
+    $publicKey = (Get-Content release/config.json -Raw | ConvertFrom-Json).productionPublicKey
+    python -m espsecure verify-signature --version 2 --keyfile $publicKey $image
+    if ($LASTEXITCODE -ne 0) { throw 'Firmware signature does not match the production trust root' }
+}
+Copy-Item -LiteralPath $image -Destination 'artifacts/stopwatch.bin'
 Write-Output 'Built artifacts/stopwatch.bin. No flash or device operation was performed.'

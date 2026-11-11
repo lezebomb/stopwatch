@@ -2,7 +2,7 @@
 
 基于 M5Stack StopWatch C152 和官方 Muse SDK，在 v0.1 上扩展签名 OTA、自动发布、在线演示及 Windows 后台交付。当前版本 **0.2.0**。
 
-**实机进展：** 原厂完整备份及首次烧录已通过，照片/触屏/按键经本人确认；照片API经USB到真实显示、真实Codex状态和SDK离线音频已实测。手机无线、本人Muse授权、Windows正式安装与生产OTA仍待配置。见 [HARDWARE_TEST.md](HARDWARE_TEST.md)。
+**实机进展** 已验证照片封面、触屏、按键、手机配网、云端授权和无线相册。本地 Codex 状态已通过 USB 联动挂件。Muse 账号与听感、Windows 公网桥接和正式 OTA 待验收。[硬件测试记录](HARDWARE_TEST.md)
 
 **[打开在线隔离演示](https://lezebomb.github.io/stopwatch/)**：无需下载仓库、运行 Node 或安装 APK。发布状态以 GitHub Actions 为准。演示任务、配对和更新均为 Mock，图片仅在浏览器内存处理；不连接真实 Codex，不具备公网执行权限。
 
@@ -92,6 +92,8 @@ npm.cmd audit
 ## 挂件无线同步
 
 挂件先扫码连上 Wi-Fi。正式控制台的操作者进入「设置 → 绑定 StopWatch」，再打开挂件的「手机配网」，用手机在蓝牙授权页选择设备并确认。两分钟授权码只用一次，之后通过 HTTPS 自动获取相册、默认封面、轮播、边框和 Codex 摘要。设备使用独立只读授权，可在控制台撤销。离线时继续显示已存照片。
+
+Muse 首次授权需要本人从官方账户创建 SDK token。在已加载 ESP-IDF 的本地终端运行 `python scripts/device-sync.py --port COM5 --set-muse-token`，在隐藏提示处粘贴令牌。挂件保存令牌后会重启，随后在 Muse App 的「设置 → 设备」完成配对。语音便签回复显示为文字，语音播放使用支持实时通话的固件和账号。[Muse SDK 官方说明](https://github.com/facebookincubator/muse-gadget-sdk/blob/463bd2a05380fea4211b0099ad0f70933c108b20/esp32/README.md)
 
 固件默认不启用中转。正式构建使用 `release/config.json` 的固定 HTTPS 来源。本地开发可在构建前设置 `SW_DEVICE_RELAY_ORIGIN`，内网自建 CA 时可另用 `SW_DEVICE_RELAY_CA` 指向公开 CA 证书。中转用 `STOPWATCH_MODE=production` 和同一 HTTPS `STOPWATCH_PUBLIC_ORIGIN`，通过受信反代访问。手机浏览器也需要信任该证书。功能代码已编译，实际无线链路待集中实机验收。
 

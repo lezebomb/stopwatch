@@ -1,4 +1,4 @@
-param([string]$Port = '-', [switch]$CaptureBoot, [switch]$Release)
+param([string]$Port = '-', [switch]$CaptureBoot, [switch]$Release, [switch]$Realtime)
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 $python = (Resolve-Path '.tools/espressif/python_env/idf6.0_py3.12_env/Scripts/python.exe').Path
@@ -11,6 +11,7 @@ if ((Get-Item -LiteralPath $backup).Length -ne 16777216 -or (Get-FileHash -Liter
 $plan = Get-Content -LiteralPath $session.firstInstallPlan -Raw | ConvertFrom-Json
 $partition = $plan | Where-Object file -EQ 'partition_table/partition-table.bin'
 $build = if ($Release) { 'firmware/build-release' } else { 'firmware/build' }
+if ($Realtime) { $build += '-realtime' }
 $table = Join-Path $build 'partition_table/partition-table.bin'
 if ((Get-FileHash -LiteralPath $table -Algorithm SHA256).Hash -ne $partition.sha256) { throw 'Partition layout changed; migration assessment required.' }
 $image = (Resolve-Path (Join-Path $build 'muse-gadget.bin')).Path
