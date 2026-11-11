@@ -1,8 +1,6 @@
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
-#include "esp_err.h"
-#include "esp_wifi_types.h"
 #define SW_MIAO_SLOT_A "/photos/miao0.pack"
 #define SW_MIAO_SLOT_B "/photos/miao1.pack"
 bool sw_companion_resource_reserve(size_t bytes, size_t reclaim);
@@ -17,9 +15,6 @@ bool sw_companion_audio_silent(void);
 /* Board expander operations. State is -1 if readback failed. */
 bool sw_companion_amp_refresh(void);
 int sw_companion_amp_state(void);
-/* Apply a saved PEAP profile only for the station's selected SSID. */
-esp_err_t sw_companion_wifi_prepare(wifi_config_t *station);
-esp_err_t sw_companion_wifi_enable(const wifi_config_t *station);
 int sw_companion_brightness(int requested);
 bool sw_companion_keep_awake(void);
 bool sw_companion_controls_sleep(void);

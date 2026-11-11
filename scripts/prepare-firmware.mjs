@@ -59,7 +59,7 @@ cmake = cmake.replace(
 );
 cmake = cmake.replace(
   "idf_component_register(",
-  'list(APPEND muse_priv_requires spiffs app_update wpa_supplicant)\nlist(APPEND embed "update_public.pem" "sw_miao_pack.bin" "sw_miao_idle.bin")\nidf_component_register(',
+  'list(APPEND muse_priv_requires spiffs app_update)\nlist(APPEND embed "update_public.pem" "sw_miao_pack.bin" "sw_miao_idle.bin")\nidf_component_register(',
 );
 const museManifest = git(["show", "HEAD:esp32/components/muse/idf_component.yml"]);
 if (!museManifest.includes("dependencies:\n")) throw new Error("Upstream Muse dependency manifest changed");
@@ -188,16 +188,8 @@ glue = glue.replace(
   'ESP_LOGI(TAG, "SDK token stored in settings; restarting");',
 );
 await writeChanged(`${sdk}/main/muse_glue.c`, glue);
-let wifiManager = '#include "sw_companion.h"\n' + git(["show", "HEAD:esp32/main/wifi_mgr.c"]);
-const stationConfig = '    esp_err_t err = ESP_OK;\n    for (int i = 0; i < 30; i++) {  // ~1.5s budget @ 50ms';
-const stationConnect = '    atomic_store(&s_sta_idle, false);\n    err = esp_wifi_connect();';
-if (!wifiManager.includes(stationConfig) || !wifiManager.includes(stationConnect))
-  throw new Error("Upstream station connection hooks changed");
-wifiManager = wifiManager.replace(stationConfig, stationConfig.replace('esp_err_t err = ESP_OK;',
-  'esp_err_t err = sw_companion_wifi_prepare(&wc);\n    if (err != ESP_OK) goto done;'));
-wifiManager = wifiManager.replace(stationConnect,
-  '    err = sw_companion_wifi_enable(&wc);\n    if (err != ESP_OK) goto done;\n' + stationConnect);
-await writeChanged(`${sdk}/main/wifi_mgr.c`, wifiManager);
+// Restore the pinned source even when reusing a build with the retired PEAP patch.
+await writeChanged(`${sdk}/main/wifi_mgr.c`, git(["show", "HEAD:esp32/main/wifi_mgr.c"]));
 let settingsUi = git(["show", "HEAD:esp32/components/muse/muse_settings_ui.c"]);
 settingsUi = '#include "sw_updater.h"\n' + settingsUi;
 const settingsHook =

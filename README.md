@@ -97,7 +97,7 @@ Muse 首次授权需要本人从官方账户创建 SDK token。Windows 本机运
 
 当前固件默认静音，并持久保存本地静音开关。静音时功放使能保持关闭，PCM 输出为零，提示音与回环诊断直接返回。`python scripts/device-sync.py --port COM5 --muse-status` 可读取令牌是否配置、账号绑定状态、静音状态和功放寄存器，不返回凭据。后续获准播放时，可通过本地 USB 的 `audio.silent` 命令解除静音，并在官方声音设置中恢复音量。
 
-企业 Wi-Fi 通过本地 USB 的 `wifi.enterprise` 命令保存单个 PEAP 配置。使用可信本机程序经 `device-sync.py --pipe` 提交 `ssid`、`username`、`password` 和可选的 `domain`。连接时由 ESP-IDF 内置 CA 证书包验证服务器，原有普通 Wi-Fi 仍由 Muse SDK 管理。
+日常配网使用普通 2.4 GHz Wi-Fi 或手机热点，由 Muse SDK 管理。旧版 PEAP 测试凭据可经 USB 执行 `device-sync.py --pipe`，发送 `{"id":1,"op":"wifi.enterprise.clear"}`。命令只删除现存的 PEAP 凭据键，并清除同命名空间中已删除条目的残留数据。可用 `wifi.enterprise.status` 查询凭据是否仍在。若旧校园网名称仍在 Wi-Fi 列表，只需在设置中忘记对应网络。
 
 固件默认不启用中转。正式构建使用 `release/config.json` 的固定 HTTPS 来源。本地开发可在构建前设置 `SW_DEVICE_RELAY_ORIGIN`，内网自建 CA 时可另用 `SW_DEVICE_RELAY_CA` 指向公开 CA 证书。中转用 `STOPWATCH_MODE=production` 和同一 HTTPS `STOPWATCH_PUBLIC_ORIGIN`，通过受信反代访问。手机浏览器也需要信任该证书。功能代码已编译，实际无线链路待集中实机验收。
 
