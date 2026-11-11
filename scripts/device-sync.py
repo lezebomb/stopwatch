@@ -151,11 +151,14 @@ def watch(device, args):
         time.sleep(2)
 
 
-def read_muse_token():
+def read_muse_token(from_stdin=False):
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter('error', getpass.GetPassWarning)
-            token = getpass.getpass('Paste your Muse SDK token (hidden): ').strip()
+        if from_stdin:
+            token = sys.stdin.readline(256).strip()
+        else:
+            with warnings.catch_warnings():
+                warnings.simplefilter('error', getpass.GetPassWarning)
+                token = getpass.getpass('Paste your Muse SDK token (hidden): ').strip()
     except getpass.GetPassWarning:
         raise SystemExit('Open an interactive terminal to enter the token privately.') from None
     if not re.fullmatch(r'mgst_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]', token):
@@ -163,8 +166,11 @@ def read_muse_token():
     return token
 
 
-def set_muse_token(device, token):
-    device.command('info')
+def set_muse_token(device, token, replace=False):
+    status = device.command('muse.status')
+    if status.get('sdkTokenStored') and not replace:
+        print('Muse SDK token is already stored. No token was written.')
+        return
     device.port.reset_input_buffer()
     device.port.write(f'>sdk_token={token}\n'.encode('ascii'))
     device.port.flush()
@@ -194,18 +200,37 @@ def main():
     p.add_argument('--relay')
     p.add_argument('--session-file')
     p.add_argument('--set-muse-token', action='store_true', help='Privately enter the SDK token over USB; restarts the device')
+    p.add_argument('--replace-muse-token', action='store_true', help='Explicitly replace the stored token; pair again in Muse afterwards')
+    p.add_argument('--muse-status', action='store_true', help='Read Muse authorization and hardware mute status without secrets')
+    p.add_argument('--token-stdin', action='store_true', help='Receive the token from the local masked-entry helper over stdin')
     p.add_argument('--data', default='.data')
     a = p.parse_args()
     if a.set_muse_token and (a.info or a.photo or a.pipe or a.watch):
         p.error('--set-muse-token must be used by itself with --port')
+    if a.replace_muse_token and not a.set_muse_token:
+        p.error('--replace-muse-token requires --set-muse-token')
+    if a.token_stdin and not a.set_muse_token:
+        p.error('--token-stdin requires --set-muse-token')
     if a.watch and (not a.relay or not a.session_file):
         p.error('--watch requires --relay and an ignored viewer --session-file')
-    muse_token = read_muse_token() if a.set_muse_token else None
+    muse_token = None
+    if a.set_muse_token:
+        probe = Device(a.port)
+        try:
+            status = probe.command('muse.status')
+        finally:
+            probe.close()
+        if status.get('sdkTokenStored') and not a.replace_muse_token:
+            print('Muse SDK token is already stored. No token was written.')
+            return
+        muse_token = read_muse_token(from_stdin=a.token_stdin)
     device = Device(a.port)
     try:
         if a.set_muse_token:
-            set_muse_token(device, muse_token)
+            set_muse_token(device, muse_token, replace=a.replace_muse_token)
             return
+        if a.muse_status:
+            print(json.dumps(device.command('muse.status')))
         if a.info:
             print(json.dumps(device.command('info')))
         if a.photo:

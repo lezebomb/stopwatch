@@ -59,7 +59,7 @@ cmake = cmake.replace(
 );
 cmake = cmake.replace(
   "idf_component_register(",
-  'list(APPEND muse_priv_requires spiffs app_update)\nlist(APPEND embed "update_public.pem" "sw_miao_pack.bin" "sw_miao_idle.bin")\nidf_component_register(',
+  'list(APPEND muse_priv_requires spiffs app_update wpa_supplicant)\nlist(APPEND embed "update_public.pem" "sw_miao_pack.bin" "sw_miao_idle.bin")\nidf_component_register(',
 );
 const museManifest = git(["show", "HEAD:esp32/components/muse/idf_component.yml"]);
 if (!museManifest.includes("dependencies:\n")) throw new Error("Upstream Muse dependency manifest changed");
@@ -174,7 +174,30 @@ mainApp = mainApp.replace(
   healthHook +
     "\n#if CONFIG_MUSE_BOARD_M5STACK_STOPWATCH\n    stack_monitor_record(NULL);\n    vTaskDelete(NULL);\n    return; /* sw_updater owns storage/UI/services health, including offline operation. */\n#endif",
 );
+mainApp = mainApp.replace(
+  'ESP_LOGI(TAG, "  SDK token:  %.12s", identity_sdk_token() ? identity_sdk_token() : "(none)");',
+  'ESP_LOGI(TAG, "  SDK token configured: %s", identity_sdk_token() ? "yes" : "no");',
+).replace(
+  'ESP_LOGW(TAG, "  Paired with SDK token %s, not this one. Pair again in the "\n                      "Muse app to use it.", paired_sdk_hint);',
+  'ESP_LOGW(TAG, "SDK token changed; pair again in the Muse app");',
+);
 await writeChanged(`${sdk}/main/app.c`, mainApp);
+let glue = git(["show", "HEAD:esp32/main/muse_glue.c"]);
+glue = glue.replace(
+  'ESP_LOGI(TAG, "SDK token %.12s set in settings, restarting to use it", token);',
+  'ESP_LOGI(TAG, "SDK token stored in settings; restarting");',
+);
+await writeChanged(`${sdk}/main/muse_glue.c`, glue);
+let wifiManager = '#include "sw_companion.h"\n' + git(["show", "HEAD:esp32/main/wifi_mgr.c"]);
+const stationConfig = '    esp_err_t err = ESP_OK;\n    for (int i = 0; i < 30; i++) {  // ~1.5s budget @ 50ms';
+const stationConnect = '    atomic_store(&s_sta_idle, false);\n    err = esp_wifi_connect();';
+if (!wifiManager.includes(stationConfig) || !wifiManager.includes(stationConnect))
+  throw new Error("Upstream station connection hooks changed");
+wifiManager = wifiManager.replace(stationConfig, stationConfig.replace('esp_err_t err = ESP_OK;',
+  'esp_err_t err = sw_companion_wifi_prepare(&wc);\n    if (err != ESP_OK) goto done;'));
+wifiManager = wifiManager.replace(stationConnect,
+  '    err = sw_companion_wifi_enable(&wc);\n    if (err != ESP_OK) goto done;\n' + stationConnect);
+await writeChanged(`${sdk}/main/wifi_mgr.c`, wifiManager);
 let settingsUi = git(["show", "HEAD:esp32/components/muse/muse_settings_ui.c"]);
 settingsUi = '#include "sw_updater.h"\n' + settingsUi;
 const settingsHook =
@@ -227,6 +250,28 @@ let board = git([
   "show",
   "HEAD:esp32/components/muse/boards/board_m5stack_stopwatch.c",
 ]);
+board = '#include "sw_companion.h"\n#include <stdatomic.h>\n' + board;
+const ampOutput = '        uint16_t want = (v & ~mask) | (bits & mask);';
+if (!board.includes(ampOutput)) throw new Error("Upstream amp output hook changed");
+board = board.replace(ampOutput, ampOutput + '\n        if (reg == IOE_OUT && sw_companion_audio_silent()) want &= ~IOE_SPK;');
+const ampSet = '    return ioe_set(IOE_SPK, high) == ESP_OK ? ESP_CODEC_DEV_OK : ESP_CODEC_DEV_WRITE_FAIL;';
+if (!board.includes(ampSet)) throw new Error("Upstream amp driver hook changed");
+const ampHelpers = `
+static atomic_bool sw_amp_requested;
+bool sw_companion_amp_refresh(void) {
+    return s_ioe && s_ioe_lock && ioe_set(IOE_SPK, atomic_load(&sw_amp_requested)) == ESP_OK;
+}
+int sw_companion_amp_state(void) {
+    if (!s_ioe || !s_ioe_lock) return -1;
+    uint8_t output[2];
+    xSemaphoreTake(s_ioe_lock, portMAX_DELAY);
+    esp_err_t err = reg_read(s_ioe, IOE_OUT, output, sizeof(output));
+    xSemaphoreGive(s_ioe_lock);
+    return err == ESP_OK ? !!((output[0] | output[1] << 8) & IOE_SPK) : -1;
+}
+`;
+board = board.replace('static int ioe_gpio_set(int16_t gpio, bool high)', ampHelpers + '\nstatic int ioe_gpio_set(int16_t gpio, bool high)');
+board = board.replace(ampSet, '    atomic_store(&sw_amp_requested, high);\n    return sw_companion_amp_refresh() ? ESP_CODEC_DEV_OK : ESP_CODEC_DEV_WRITE_FAIL;');
 const begin = board.indexOf(
   "#if !CONFIG_MUSE_REALTIME_VOICE\n#define TALK_GPIO",
 );
@@ -246,6 +291,16 @@ board =
   '    .talk_button = "top-left",\n    .speaker_button = "top-right",\n    .talk_hint = { LV_ALIGN_CENTER, -144, -110 },\n    .speaker_hint = { LV_ALIGN_CENTER, 144, -110 },\n' +
   board.slice(hintEnd + 6);
 await writeChanged(`${component}/boards/board_m5stack_stopwatch.c`, board);
+let audio = '#include "sw_companion.h"\n' + git(["show", "HEAD:esp32/components/muse/muse_audio.c"]);
+for (const signature of ["void muse_audio_chirp(int rising)", "void muse_audio_loopback_test(int volume)"]) {
+  const body = signature + "\n{";
+  if (!audio.includes(body)) throw new Error("Upstream audio diagnostic hook changed");
+  audio = audio.replace(body, body + '\n    if (sw_companion_audio_silent()) return;');
+}
+const pcmMute = "bool mute = !muse_settings_speaker_on();";
+if (!audio.includes(pcmMute)) throw new Error("Upstream PCM mute hook changed");
+audio = audio.replace(pcmMute, "bool mute = sw_companion_audio_silent() || !muse_settings_speaker_on();");
+await writeChanged(`${component}/muse_audio.c`, audio);
 let chat = git(["show", "HEAD:esp32/components/muse/muse_chat_session.cpp"]);
 const unsafeCaption = 'snprintf(err, err_cap, "Can\'t reach %s", s_host);';
 if (!chat.includes(unsafeCaption))

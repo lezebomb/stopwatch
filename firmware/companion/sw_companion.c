@@ -1,5 +1,6 @@
 #include "sw_companion.h"
 #include "cJSON.h"
+#include "esp_eap_client.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -12,9 +13,11 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "mbedtls/base64.h"
+#include "mbedtls/platform_util.h"
 #include "muse_ble.h"
 #include "muse_board.h"
 #include "muse_input.h"
+#include "muse_link.h"
 #include "muse_settings.h"
 #include "muse_settings_ui.h"
 #include "muse_state.h"
@@ -80,6 +83,139 @@ static sw_display_settings_t display_settings = {
 static unsigned egg_day_seen;
 static nvs_handle_t config;
 static bool nvs_ok;
+static atomic_bool audio_silent = true;
+typedef struct {
+  char ssid[33];
+  char username[128];
+  char password[128];
+  char domain[128];
+} eap_profile_t;
+
+esp_err_t sw_companion_wifi_prepare(wifi_config_t *station) {
+  static bool enterprise_prepared;
+  if (enterprise_prepared) {
+    esp_err_t disabled = esp_wifi_sta_enterprise_disable();
+    if (disabled != ESP_OK)
+      return disabled;
+    enterprise_prepared = false;
+  }
+  nvs_handle_t settings;
+  if (nvs_open("stopwatch", NVS_READONLY, &settings) != ESP_OK)
+    return ESP_OK;
+  eap_profile_t profile = {0};
+  size_t size = sizeof(profile);
+  esp_err_t result = nvs_get_blob(settings, "eap_profile", &profile, &size);
+  nvs_close(settings);
+  if (result != ESP_OK || size != sizeof(profile) || !profile.ssid[0] ||
+      profile.ssid[sizeof(profile.ssid) - 1] ||
+      strncmp(profile.ssid, (const char *)station->sta.ssid,
+              sizeof(station->sta.ssid))) {
+    mbedtls_platform_zeroize(&profile, sizeof(profile));
+    return ESP_OK;
+  }
+
+  if (!profile.username[0] || profile.username[sizeof(profile.username) - 1] ||
+      !profile.password[0] || profile.password[sizeof(profile.password) - 1] ||
+      profile.domain[sizeof(profile.domain) - 1]) {
+    result = ESP_ERR_INVALID_ARG;
+    goto done;
+  }
+  result = esp_eap_client_use_default_cert_bundle(true);
+  if (result == ESP_OK && profile.domain[0])
+    result = esp_eap_client_set_domain_name(profile.domain);
+  if (result == ESP_OK)
+    result = esp_eap_client_set_eap_methods(ESP_EAP_TYPE_PEAP);
+  if (result == ESP_OK)
+    result = esp_eap_client_set_identity((const unsigned char *)profile.username,
+                                         strlen(profile.username));
+  if (result == ESP_OK)
+    result = esp_eap_client_set_username((const unsigned char *)profile.username,
+                                         strlen(profile.username));
+  if (result == ESP_OK)
+    result = esp_eap_client_set_password((const unsigned char *)profile.password,
+                                         strlen(profile.password));
+  if (result == ESP_OK) {
+    enterprise_prepared = true;
+    station->sta.threshold.authmode = WIFI_AUTH_WPA2_ENTERPRISE;
+    memset(station->sta.password, 0, sizeof(station->sta.password));
+  } else {
+    esp_wifi_sta_enterprise_disable();
+  }
+done:
+  mbedtls_platform_zeroize(&profile, sizeof(profile));
+  return result;
+}
+
+esp_err_t sw_companion_wifi_enable(const wifi_config_t *station) {
+  return station->sta.threshold.authmode == WIFI_AUTH_WPA2_ENTERPRISE
+             ? esp_wifi_sta_enterprise_enable()
+             : ESP_OK;
+}
+
+static bool save_eap_profile(cJSON *request) {
+  const cJSON *ssid = cJSON_GetObjectItemCaseSensitive(request, "ssid");
+  const cJSON *user = cJSON_GetObjectItemCaseSensitive(request, "username");
+  const cJSON *pass = cJSON_GetObjectItemCaseSensitive(request, "password");
+  const cJSON *domain = cJSON_GetObjectItemCaseSensitive(request, "domain");
+  eap_profile_t profile = {0};
+  if (!nvs_ok || !cJSON_IsString(ssid) || !ssid->valuestring[0] ||
+      strlen(ssid->valuestring) >= sizeof(profile.ssid) ||
+      !cJSON_IsString(user) || !user->valuestring[0] ||
+      strlen(user->valuestring) >= sizeof(profile.username) ||
+      !cJSON_IsString(pass) || !pass->valuestring[0] ||
+      strlen(pass->valuestring) >= sizeof(profile.password) ||
+      (domain && (!cJSON_IsString(domain) ||
+                  strlen(domain->valuestring) >= sizeof(profile.domain))))
+    return false;
+  muse_wifi_saved_t known[MUSE_WIFI_SAVED_MAX];
+  int count = muse_wifi_saved(known, MUSE_WIFI_SAVED_MAX);
+  if (count == MUSE_WIFI_SAVED_MAX) {
+    bool present = false;
+    for (int i = 0; i < count; i++)
+      if (!strcmp(known[i].ssid, ssid->valuestring))
+        present = true;
+    if (!present)
+      return false;
+  }
+  strlcpy(profile.ssid, ssid->valuestring, sizeof(profile.ssid));
+  strlcpy(profile.username, user->valuestring, sizeof(profile.username));
+  strlcpy(profile.password, pass->valuestring, sizeof(profile.password));
+  mbedtls_platform_zeroize(pass->valuestring, strlen(pass->valuestring));
+  if (domain)
+    strlcpy(profile.domain, domain->valuestring, sizeof(profile.domain));
+  bool stored = nvs_set_blob(config, "eap_profile", &profile, sizeof(profile)) == ESP_OK &&
+                nvs_commit(config) == ESP_OK;
+  if (stored) {
+    muse_settings_set_wifi_on(true);
+    muse_settings_set_wifi(profile.ssid, "");
+  }
+  mbedtls_platform_zeroize(&profile, sizeof(profile));
+  return stored;
+}
+
+bool sw_companion_audio_silent(void) { return atomic_load(&audio_silent); }
+
+static bool persist_audio_silent(bool silent) {
+  return nvs_ok && nvs_set_u8(config, "audio_silent", silent) == ESP_OK &&
+         nvs_commit(config) == ESP_OK;
+}
+
+static bool set_audio_silent(bool silent) {
+  if (silent) {
+    atomic_store(&audio_silent, true);
+    bool applied = sw_companion_amp_refresh();
+    return persist_audio_silent(true) && applied;
+  }
+  if (!persist_audio_silent(false))
+    return false;
+  atomic_store(&audio_silent, false);
+  if (sw_companion_amp_refresh())
+    return true;
+  atomic_store(&audio_silent, true);
+  sw_companion_amp_refresh();
+  persist_audio_silent(true);
+  return false;
+}
 static atomic_bool external_power_seen, previous_external_power;
 #define PHOTO_BYTES SW_SYNC_PHOTO_BYTES
 #define USER_SLOTS SW_SYNC_PHOTO_LIMIT
@@ -627,6 +763,36 @@ static bool device_console_locked(const char *line) {
   const char *error = "invalid-command";
   if (id <= 0 || !request)
     goto done;
+  if (!strcmp(op, "wifi.enterprise")) {
+    if (save_eap_profile(request))
+      error = NULL;
+    goto done;
+  }
+  if (!strcmp(op, "audio.silent")) {
+    cJSON *enabled = cJSON_GetObjectItemCaseSensitive(request, "enabled");
+    if (cJSON_IsBool(enabled) && set_audio_silent(cJSON_IsTrue(enabled)))
+      error = NULL;
+    goto done;
+  }
+  if (!strcmp(op, "muse.status")) {
+    printf("@sw {\"id\":%d,\"ok\":true,\"sdkTokenStored\":%s,"
+           "\"tokenChanged\":%s,\"accountLinked\":%s,\"linkState\":\"%s\","
+           "\"bleStarted\":%s,\"wifi\":%s,\"inCall\":%s,\"silent\":%s,"
+           "\"speakerAmp\":%d,\"volume\":%d,\"speaker\":%s}\n",
+           id, muse_link_sdk_token() ? "true" : "false",
+           muse_link_sdk_token_changed() ? "true" : "false",
+           muse_link_hatch_linked() ? "true" : "false",
+           muse_link_state_name(muse_link_state()),
+           muse_link_ble_started() ? "true" : "false",
+           muse_wifi_connected() ? "true" : "false",
+           muse_voice_in_call() ? "true" : "false",
+           sw_companion_audio_silent() ? "true" : "false",
+           sw_companion_amp_state(), muse_settings_volume(),
+           muse_settings_speaker_on() ? "true" : "false");
+    fflush(stdout);
+    cJSON_Delete(request);
+    return true;
+  }
   if (!strcmp(op, "info")) {
     char hash[65];
     char hashes[USER_SLOTS * 67 + 3];
@@ -1384,6 +1550,13 @@ void sw_companion_init(void) {
     ESP_LOGW("companion", "assets unavailable: %s", esp_err_to_name(mounted));
   if (nvs_open("stopwatch", NVS_READWRITE, &config) == ESP_OK) {
     nvs_ok = true;
+    uint8_t silent = 1;
+    esp_err_t silent_result = nvs_get_u8(config, "audio_silent", &silent);
+    atomic_store(&audio_silent, silent_result != ESP_OK || silent != 0);
+    if (silent_result == ESP_ERR_NVS_NOT_FOUND) {
+      nvs_set_u8(config, "audio_silent", 1);
+      nvs_commit(config);
+    }
     uint32_t selected = 0;
     uint8_t slide = 0;
     nvs_get_u32(config, "photo", &selected);

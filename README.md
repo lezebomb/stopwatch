@@ -93,7 +93,11 @@ npm.cmd audit
 
 挂件先扫码连上 Wi-Fi。正式控制台的操作者进入「设置 → 绑定 StopWatch」，再打开挂件的「手机配网」，用手机在蓝牙授权页选择设备并确认。两分钟授权码只用一次，之后通过 HTTPS 自动获取相册、默认封面、轮播、边框和 Codex 摘要。设备使用独立只读授权，可在控制台撤销。离线时继续显示已存照片。
 
-Muse 首次授权需要本人从官方账户创建 SDK token。在已加载 ESP-IDF 的本地终端运行 `python scripts/device-sync.py --port COM5 --set-muse-token`，在隐藏提示处粘贴令牌。挂件保存令牌后会重启，随后在 Muse App 的「设置 → 设备」完成配对。语音便签回复显示为文字，语音播放使用支持实时通话的固件和账号。[Muse SDK 官方说明](https://github.com/facebookincubator/muse-gadget-sdk/blob/463bd2a05380fea4211b0099ad0f70933c108b20/esp32/README.md)
+Muse 首次授权需要本人从官方账户创建 SDK token。Windows 本机运行 `./scripts/set-muse-token.ps1 -Port COM5`，在密码框粘贴并保存。命令行入口为 `python scripts/device-sync.py --port COM5 --set-muse-token`，需要 ESP-IDF Python 环境。已有令牌会跳过写入，更换令牌须显式加 `--replace-muse-token`，再按官方流程重新绑定。令牌通过 USB 保存在设备 NVS，随后在 Muse App 的「设置 → 设备」完成配对。语音便签回复显示为文字，语音播放使用支持实时通话的固件和账号。[Muse SDK 官方说明](https://github.com/facebookincubator/muse-gadget-sdk/blob/463bd2a05380fea4211b0099ad0f70933c108b20/esp32/README.md)
+
+当前固件默认静音，并持久保存本地静音开关。静音时功放使能保持关闭，PCM 输出为零，提示音与回环诊断直接返回。`python scripts/device-sync.py --port COM5 --muse-status` 可读取令牌是否配置、账号绑定状态、静音状态和功放寄存器，不返回凭据。后续获准播放时，可通过本地 USB 的 `audio.silent` 命令解除静音，并在官方声音设置中恢复音量。
+
+企业 Wi-Fi 通过本地 USB 的 `wifi.enterprise` 命令保存单个 PEAP 配置。使用可信本机程序经 `device-sync.py --pipe` 提交 `ssid`、`username`、`password` 和可选的 `domain`。连接时由 ESP-IDF 内置 CA 证书包验证服务器，原有普通 Wi-Fi 仍由 Muse SDK 管理。
 
 固件默认不启用中转。正式构建使用 `release/config.json` 的固定 HTTPS 来源。本地开发可在构建前设置 `SW_DEVICE_RELAY_ORIGIN`，内网自建 CA 时可另用 `SW_DEVICE_RELAY_CA` 指向公开 CA 证书。中转用 `STOPWATCH_MODE=production` 和同一 HTTPS `STOPWATCH_PUBLIC_ORIGIN`，通过受信反代访问。手机浏览器也需要信任该证书。功能代码已编译，实际无线链路待集中实机验收。
 

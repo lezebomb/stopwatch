@@ -3,11 +3,21 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Security
 $root=Join-Path $env:LOCALAPPDATA 'StopWatchCompanion'
+function Test-OwnedBridgeProcess($bridgeProcessId) {
+ if (!$bridgeProcessId) { return $false }
+ $process = Get-Process -Id $bridgeProcessId -ErrorAction SilentlyContinue
+ return $process -and $process.Path -eq (Join-Path $root 'runtime/node.exe')
+}
 function Stop-OwnedBridge {
  Set-Content -LiteralPath (Join-Path $root 'stop.request') -Value 'stop' -Encoding ascii
  Start-Sleep -Seconds 2
  $file=Join-Path $root 'status.json'
- if(Test-Path -LiteralPath $file){$state=Get-Content -LiteralPath $file -Raw|ConvertFrom-Json;foreach($processId in @($state.pid,$state.supervisorPid)){if($processId){$process=Get-Process -Id $processId -ErrorAction SilentlyContinue;if($process -and $process.Path -eq (Join-Path $root 'runtime/node.exe')){Stop-Process -Id $processId}}}}
+ if(Test-Path -LiteralPath $file){
+  $state=Get-Content -LiteralPath $file -Raw|ConvertFrom-Json
+  foreach($processId in @($state.pid,$state.supervisorPid)){
+   if(Test-OwnedBridgeProcess $processId){Stop-Process -Id $processId}
+  }
+ }
  Remove-Item -LiteralPath (Join-Path $root 'supervisor.lock') -ErrorAction SilentlyContinue
 }
 function Revoke-OwnedCredential {
@@ -44,7 +54,19 @@ function Uninstall-OwnedProgram {
 }
 $form=New-Object Windows.Forms.Form;$form.Text='StopWatch 后台设置';$form.Size=New-Object Drawing.Size(480,360);$form.StartPosition='CenterScreen'
 $label=New-Object Windows.Forms.Label;$label.Location=New-Object Drawing.Point(25,20);$label.Size=New-Object Drawing.Size(420,120);$form.Controls.Add($label)
-$timer=New-Object Windows.Forms.Timer;$timer.Interval=2000;$timer.Add_Tick({try{$s=Get-Content -LiteralPath (Join-Path $root 'status.json') -Raw|ConvertFrom-Json;$label.Text='状态：'+$s.state+"`n实际在线："+$s.online+"`n"+$s.detail}catch{$label.Text='尚未启动或没有状态记录。'}});$timer.Start()
+$timer=New-Object Windows.Forms.Timer
+$timer.Interval=2000
+$timer.Add_Tick({
+ try {
+  $status=Get-Content -LiteralPath (Join-Path $root 'status.json') -Raw|ConvertFrom-Json
+  $online=$status.online -and (Test-OwnedBridgeProcess $status.supervisorPid) -and (Test-OwnedBridgeProcess $status.pid)
+  $state=if($status.online -and !$online){'后台进程已退出'}else{$status.state}
+  $label.Text='状态：'+$state+"`n实际在线："+$online+"`n"+$status.detail
+ } catch {
+  $label.Text='尚未启动或没有状态记录。'
+ }
+})
+$timer.Start()
 $y=150
 foreach($item in @(@('启动',{Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/wscript.exe') -ArgumentList ('"'+(Join-Path $root 'app/Launch.vbs')+'"') -WindowStyle Hidden}),@('停止',{Stop-OwnedBridge}),@('撤销本机与云端授权',{Stop-OwnedBridge;$message=Revoke-OwnedCredential;[Windows.Forms.MessageBox]::Show($message,'StopWatch') | Out-Null}),@('卸载程序（保留私人数据）',{Uninstall-OwnedProgram}))){$button=New-Object Windows.Forms.Button;$button.Text=$item[0];$button.Location=New-Object Drawing.Point(25,$y);$button.Size=New-Object Drawing.Size(420,30);$button.Add_Click({try{& $this.Tag}catch{[Windows.Forms.MessageBox]::Show($_.Exception.Message,'操作未完成') | Out-Null}});$button.Tag=$item[1];$form.Controls.Add($button);$y+=35}
 $form.Add_FormClosed({$timer.Stop()});[void]$form.ShowDialog()
