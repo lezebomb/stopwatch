@@ -181,13 +181,75 @@ mainApp = mainApp.replace(
   'ESP_LOGW(TAG, "  Paired with SDK token %s, not this one. Pair again in the "\n                      "Muse app to use it.", paired_sdk_hint);',
   'ESP_LOGW(TAG, "SDK token changed; pair again in the Muse app");',
 );
+// The cached scan can predate the association or miss its channel during BLE setup.
+const pairingScan = "    int n = wifi_mgr_get_cached_scan(scan, MAX_SCAN_RESULTS);";
+if (!mainApp.includes(pairingScan))
+  throw new Error("Upstream pairing scan changed");
+mainApp = mainApp.replace('#include "esp_log.h"', '#include "esp_log.h"\n#include "esp_wifi.h"')
+  .replace(pairingScan, pairingScan + `
+    wifi_ap_record_t connected;
+    if (wifi_mgr_is_connected() && esp_wifi_sta_get_ap_info(&connected) == ESP_OK &&
+        connected.ssid[0]) {
+        connected.ssid[sizeof(connected.ssid) - 1] = 0;
+        const char *ssid = (const char *)connected.ssid;
+        int position = 0;
+        while (position < n && strcmp(scan[position].ssid, ssid))
+            ++position;
+        if (position == n && n < MAX_SCAN_RESULTS)
+            ++n;
+        if (position == MAX_SCAN_RESULTS)
+            --position;
+        memmove(scan + 1, scan, (size_t)position * sizeof(*scan));
+        strlcpy(scan[0].ssid, ssid, sizeof(scan[0].ssid));
+        scan[0].rssi = connected.rssi;
+        scan[0].auth_mode = connected.authmode;
+        ESP_LOGI(TAG, "Pairing list includes the connected access point");
+    }
+`);
+const firstMuseRequest =
+  '                ESP_LOGI(TAG, "found device credentials in NVS, fetching leased VM");';
+if (!mainApp.includes(firstMuseRequest))
+  throw new Error("Upstream boot connection hook changed");
+mainApp = mainApp.replace(firstMuseRequest,
+  "                muse_glue_wait_local_boot();\n" + firstMuseRequest);
 await writeChanged(`${sdk}/main/app.c`, mainApp);
 let glue = git(["show", "HEAD:esp32/main/muse_glue.c"]);
 glue = glue.replace(
   'ESP_LOGI(TAG, "SDK token %.12s set in settings, restarting to use it", token);',
   'ESP_LOGI(TAG, "SDK token stored in settings; restarting");',
 );
+const linkReady = "void muse_glue_link_ready(void)";
+const glueStart = "void muse_glue_start(void) {";
+const glueHeader = git(["show", "HEAD:esp32/main/muse_glue.h"]);
+if (!glue.includes(linkReady) || !glueHeader.includes(linkReady + ";") ||
+    !glue.includes(glueStart))
+  throw new Error("Upstream Muse readiness hook changed");
+glue = '#include "sw_sync.h"\n' + glue.replace(glueStart, glueStart + "\n    sw_sync_http_init();")
+  .replace(linkReady, `void muse_glue_wait_local_boot(void) {
+    // Let the audio codec reserve internal DMA buffers before the first TLS request.
+    if (!(xEventGroupWaitBits(s_ready, BIT_MUSE, pdFALSE, pdTRUE,
+                             pdMS_TO_TICKS(8000)) & BIT_MUSE))
+        ESP_LOGW(TAG, "local Muse boot did not finish before connection");
+}
+
+` + linkReady);
+await writeChanged(`${sdk}/main/muse_glue.h`,
+  glueHeader.replace(linkReady + ";", linkReady + ";\nvoid muse_glue_wait_local_boot(void);"));
 await writeChanged(`${sdk}/main/muse_glue.c`, glue);
+const vmApi = git(["show", "HEAD:esp32/main/vm_api.c"]);
+const vmClient = "    esp_http_client_handle_t client = esp_http_client_init(&cfg);\n" +
+  "    if (!client) return VM_API_ERR_FAILED;";
+const vmCleanup = "    esp_http_client_cleanup(client);";
+if (!vmApi.includes(vmClient) || !vmApi.includes(vmCleanup))
+  throw new Error("Upstream VM HTTPS client changed");
+await writeChanged(`${sdk}/main/vm_api.c`, '#include "sw_sync.h"\n' + vmApi
+  .replace(vmClient, `    if (!sw_sync_http_take()) return VM_API_ERR_FAILED;
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        sw_sync_http_release();
+        return VM_API_ERR_FAILED;
+    }`)
+  .replace(vmCleanup, vmCleanup + "\n    sw_sync_http_release();"));
 // Restore the pinned source even when reusing a build with the retired PEAP patch.
 await writeChanged(`${sdk}/main/wifi_mgr.c`, git(["show", "HEAD:esp32/main/wifi_mgr.c"]));
 let settingsUi = git(["show", "HEAD:esp32/components/muse/muse_settings_ui.c"]);

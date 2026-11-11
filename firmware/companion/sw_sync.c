@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mbedtls/platform_util.h"
 #include "muse_state.h"
@@ -41,6 +42,18 @@ static char pending[TOKEN_LENGTH + 1];
 static int64_t pair_deadline;
 static TaskHandle_t worker;
 static nvs_handle_t nvs;
+static StaticSemaphore_t http_lock_storage;
+static SemaphoreHandle_t http_lock;
+
+void sw_sync_http_init(void) {
+  http_lock = xSemaphoreCreateMutexStatic(&http_lock_storage);
+}
+
+bool sw_sync_http_take(void) {
+  return xSemaphoreTake(http_lock, pdMS_TO_TICKS(16000)) == pdTRUE;
+}
+
+void sw_sync_http_release(void) { xSemaphoreGive(http_lock); }
 
 static bool valid_token(const char *s) {
   return s && strlen(s) == TOKEN_LENGTH &&
@@ -88,6 +101,11 @@ static bool net_ready(void) {
          sw_companion_sync_allowed();
 }
 
+static void close_request(esp_http_client_handle_t client) {
+  esp_http_client_cleanup(client);
+  sw_sync_http_release();
+}
+
 /* The origin is compiled in. Reject redirects so bearer credentials can only
  * be sent to that origin. Use the IDF trust bundle and hostname validation. */
 static esp_http_client_handle_t open_request(const char *path,
@@ -97,8 +115,7 @@ static esp_http_client_handle_t open_request(const char *path,
                                              int64_t *length) {
   *status = 0;
   *length = -1;
-  if (!net_ready() || heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < 12000 ||
-      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) < 4096)
+  if (!net_ready())
     return NULL;
   char url[256], authorization[48] = {0};
   int n = snprintf(url, sizeof(url), "%s%s", SW_RELAY_ORIGIN, path);
@@ -116,9 +133,18 @@ static esp_http_client_handle_t open_request(const char *path,
       .max_authorization_retries = -1,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
   };
-  esp_http_client_handle_t client = esp_http_client_init(&cfg);
-  if (!client)
+  if (!sw_sync_http_take())
     return NULL;
+  if (!net_ready() || heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < 12000 ||
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) < 4096) {
+    sw_sync_http_release();
+    return NULL;
+  }
+  esp_http_client_handle_t client = esp_http_client_init(&cfg);
+  if (!client) {
+    sw_sync_http_release();
+    return NULL;
+  }
   bool ok = true;
   if (token) {
     snprintf(authorization, sizeof(authorization), "Bearer %s", token);
@@ -135,7 +161,8 @@ static esp_http_client_handle_t open_request(const char *path,
     ok = ok && esp_http_client_set_header(client, "Range", range) == ESP_OK;
   }
   int body_size = body ? (int)strlen(body) : 0;
-  if (ok && esp_http_client_open(client, body_size) == ESP_OK &&
+  esp_err_t opened = ok ? esp_http_client_open(client, body_size) : ESP_FAIL;
+  if (opened == ESP_OK &&
       (!body_size ||
        esp_http_client_write(client, body, body_size) == body_size)) {
     *length = esp_http_client_fetch_headers(client);
@@ -143,7 +170,9 @@ static esp_http_client_handle_t open_request(const char *path,
     if (*length >= 0 && *status == (offset ? 206 : 200))
       return client;
   }
-  esp_http_client_cleanup(client);
+  if (ok && opened != ESP_OK)
+    ESP_LOGW("sw_relay", "HTTPS connection failed: %s", esp_err_to_name(opened));
+  close_request(client);
   return NULL;
 }
 
@@ -180,7 +209,7 @@ static cJSON *get_json(const char *path, const char *token, const char *body,
   if (data && body)
     mbedtls_platform_zeroize(data, used);
   free(data);
-  esp_http_client_cleanup(client);
+  close_request(client);
   return json;
 }
 
@@ -344,7 +373,7 @@ static sw_sync_album_result_t fetch_photo(const sw_sync_photo_t *photo,
     }
     complete = used == SW_SYNC_PHOTO_BYTES &&
                esp_http_client_is_complete_data_received(client);
-    esp_http_client_cleanup(client);
+    close_request(client);
     if (write_failed)
       break;
   }

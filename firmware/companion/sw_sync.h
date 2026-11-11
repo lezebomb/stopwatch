@@ -47,6 +47,10 @@ void sw_companion_sync_task(bool online, const char *state, const char *title,
                             const char *error, int quota, uint64_t synced_ms);
 bool sw_companion_sync_allowed(void);
 bool sw_companion_pairing_open(void);
+/* Serialize the short relay and Muse VM API HTTPS requests on the StopWatch. */
+void sw_sync_http_init(void);
+bool sw_sync_http_take(void);
+void sw_sync_http_release(void);
 void sw_sync_start(void);
 void sw_sync_focus(bool focused);
 bool sw_sync_enroll(const char *code);
