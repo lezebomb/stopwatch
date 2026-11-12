@@ -41,7 +41,7 @@ static atomic_bool focused;
 static portMUX_TYPE pair_lock = portMUX_INITIALIZER_UNLOCKED;
 static char pending[TOKEN_LENGTH + 1];
 static int64_t pair_deadline;
-static TaskHandle_t worker;
+static _Atomic(TaskHandle_t) worker;
 static nvs_handle_t nvs;
 static StaticSemaphore_t http_lock_storage;
 static SemaphoreHandle_t http_lock;
@@ -70,14 +70,15 @@ const char *sw_sync_state(void) {
 }
 
 const char *sw_sync_pair_state(void) {
-  if (!worker)
+  if (!atomic_load(&worker))
     return "disabled";
   static const char *const names[] = {"idle", "pending", "paired", "failed"};
   return names[atomic_load(&pair_state)];
 }
 
 bool sw_sync_enroll(const char *code) {
-  if (!worker || !valid_token(code) || !sw_companion_pairing_open())
+  TaskHandle_t task = atomic_load(&worker);
+  if (!task || !valid_token(code) || !sw_companion_pairing_open())
     return false;
   portENTER_CRITICAL(&pair_lock);
   bool accepted = atomic_load(&pair_state) != PAIR_PENDING;
@@ -88,13 +89,14 @@ bool sw_sync_enroll(const char *code) {
   }
   portEXIT_CRITICAL(&pair_lock);
   if (accepted)
-    xTaskNotifyGive(worker);
+    xTaskNotifyGive(task);
   return accepted;
 }
 
 void sw_sync_focus(bool value) {
-  if (atomic_exchange(&focused, value) != value && value && worker)
-    xTaskNotifyGive(worker);
+  TaskHandle_t task = atomic_load(&worker);
+  if (atomic_exchange(&focused, value) != value && value && task)
+    xTaskNotifyGive(task);
 }
 
 static bool net_ready(void) {
@@ -527,8 +529,10 @@ void sw_sync_start(void) {
       nvs_open("sw_relay", NVS_READWRITE, &nvs) != ESP_OK)
     return;
   /* A photo download opens TLS while the album transaction is on the stack. */
-  if (xTaskCreate(sync_worker, "sw_relay", SW_RELAY_STACK_BYTES, NULL, 2, &worker) != pdPASS) {
+  TaskHandle_t task;
+  if (xTaskCreate(sync_worker, "sw_relay", SW_RELAY_STACK_BYTES, NULL, 2, &task) != pdPASS) {
     nvs_close(nvs);
-    worker = NULL;
+    return;
   }
+  atomic_store(&worker, task);
 }

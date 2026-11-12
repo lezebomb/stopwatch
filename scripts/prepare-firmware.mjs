@@ -126,11 +126,15 @@ ui +=
   "\nbool sw_companion_native_page(bool settings) {\n    if (!s_tv || !s_settings || !s_face) return false;\n    lv_tileview_set_tile(s_tv, settings ? s_settings : s_face, LV_ANIM_OFF);\n    update_tileview_swipe();\n    return true;\n}\n";
 await writeChanged(`${component}/muse_ui.c`, ui);
 let app = git(["show", "HEAD:esp32/components/muse/muse_app.c"]);
-app = '#include "sw_memory.h"\n#include "sw_updater.h"\n' + app;
+app = '#include "sw_memory.h"\n#include "sw_sync.h"\n#include "sw_updater.h"\n' + app;
 app = app.replace(
   '        muse_state_set_caption("%s", "");   /* the button icons say how to talk */',
   '        muse_state_set_caption("%s", "");   /* the button icons say how to talk */\n        sw_update_services_ready();\n        sw_memory_mark("boot.audio", 0, 0, 0);',
 );
+const hatchStart = "    muse_hatch_start();";
+if (!app.includes(hatchStart)) throw new Error("Upstream local audio startup changed");
+app = app.replace(hatchStart,
+  "    /* Reserve the codec DMA rings before the companion relay stack. */\n    sw_sync_start();\n\n" + hatchStart);
 await writeChanged(`${component}/muse_app.c`, app);
 let tokenConsole = git(["show", "HEAD:esp32/main/sdk_token_console.c"]);
 const tokenHook = "bool sdk_token_console_command(const char *line) {";
@@ -408,6 +412,21 @@ board =
   board.slice(0, hintBegin) +
   '    .talk_button = "top-left",\n    .speaker_button = "top-right",\n    .talk_hint = { LV_ALIGN_CENTER, -144, -110 },\n    .speaker_hint = { LV_ALIGN_CENTER, 144, -110 },\n' +
   board.slice(hintEnd + 6);
+if (!production) {
+  board = '#include "sw_memory.h"\n' + board;
+  for (const [expression, label, stage] of [
+    ["i2s_new_channel(&chan_cfg, &tx, &rx)", "i2s channel", 1],
+    ["i2s_channel_init_std_mode(tx, &std_cfg)", "i2s tx", 2],
+    ["i2s_channel_init_std_mode(rx, &std_cfg)", "i2s rx", 3],
+  ]) {
+    const hook = `    ESP_RETURN_ON_ERROR(${expression}, TAG, "${label}");`;
+    if (!board.includes(hook)) throw new Error(`Upstream I2S allocation changed: ${label}`);
+    board = board.replace(hook, `    sw_memory_dma_begin(${stage});
+    ${stage === 1 ? "esp_err_t " : ""}dma_result = ${expression};
+    sw_memory_dma_end(dma_result);
+    ESP_RETURN_ON_ERROR(dma_result, TAG, "${label}");`);
+  }
+}
 await writeChanged(`${component}/boards/board_m5stack_stopwatch.c`, board);
 let audio = '#include "sw_companion.h"\n' + git(["show", "HEAD:esp32/components/muse/muse_audio.c"]);
 for (const signature of ["void muse_audio_chirp(int rising)", "void muse_audio_loopback_test(int volume)"]) {
@@ -418,6 +437,12 @@ for (const signature of ["void muse_audio_chirp(int rising)", "void muse_audio_l
 const pcmMute = "bool mute = !muse_settings_speaker_on();";
 if (!audio.includes(pcmMute)) throw new Error("Upstream PCM mute hook changed");
 audio = audio.replace(pcmMute, "bool mute = sw_companion_audio_silent() || !muse_settings_speaker_on();");
+if (!production) {
+  const openCodec = "            err = open_codecs();   /* logs its own failure */";
+  if (!audio.includes(openCodec)) throw new Error("Upstream codec startup changed");
+  audio = '#include "sw_memory.h"\n' + audio.replace(openCodec,
+    "            sw_memory_dma_begin(4);\n" + openCodec + "\n            sw_memory_dma_end(err);");
+}
 await writeChanged(`${component}/muse_audio.c`, audio);
 let chat = git(["show", "HEAD:esp32/components/muse/muse_chat_session.cpp"]);
 const unsafeCaption = 'snprintf(err, err_cap, "Can\'t reach %s", s_host);';
@@ -446,6 +471,16 @@ await writeChanged(
   await readFile("firmware/partitions.csv", "utf8"),
 );
 let top = git(["show", "HEAD:esp32/CMakeLists.txt"]);
+if (!production) {
+  top += `
+idf_component_get_property(sw_i2s_target esp_driver_i2s COMPONENT_LIB)
+idf_component_get_property(sw_i2s_dir esp_driver_i2s COMPONENT_DIR)
+set_property(SOURCE "${'${sw_i2s_dir}'}/i2s_common.c" TARGET_DIRECTORY ${'${sw_i2s_target}'}
+    APPEND PROPERTY COMPILE_DEFINITIONS
+    heap_caps_calloc=sw_memory_i2s_calloc
+    heap_caps_aligned_calloc=sw_memory_i2s_aligned_calloc)
+`;
+}
 top += `\nif(SW_FACTORY_ASSETS)\n  spiffs_create_partition_image(photos "${path.resolve("firmware/assets").replaceAll("\\", "/")}" FLASH_IN_PROJECT)\nelse()\n  spiffs_create_partition_image(photos "${path.resolve("firmware/assets").replaceAll("\\", "/")}")\nendif()\n`;
 await writeChanged(`${sdk}/CMakeLists.txt`, top);
 await writeChanged(

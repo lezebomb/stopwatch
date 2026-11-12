@@ -53,7 +53,9 @@ static const char *TAG = "sw_update";
 /* Keep the complete OTA path linked in development builds, while failing
  * closed. */
 static volatile bool production_configured = SW_UPDATE_PRODUCTION;
-static char manifest_url[768], resource_url[768];
+/* Strings stay in rodata. Retain the existing development link coverage. */
+static const char *volatile manifest_url = SW_UPDATE_MANIFEST_URL;
+static const char *volatile resource_url = SW_RESOURCE_MANIFEST_URL;
 static TaskHandle_t update_task;
 typedef struct {
   char version[32], url[768], build[65];
@@ -700,8 +702,6 @@ static void worker(void *arg) {
 void sw_update_start(bool storage_ok) {
   storage_ready = storage_ok;
   policy = sw_update_defaults();
-  snprintf(manifest_url, sizeof(manifest_url), "%s", SW_UPDATE_MANIFEST_URL);
-  snprintf(resource_url, sizeof(resource_url), "%s", SW_RESOURCE_MANIFEST_URL);
   psa_crypto_init();
   snprintf(status.current, sizeof(status.current), "%s", SW_UPDATE_VERSION);
   ESP_LOGI(TAG, "Updater started; production trust configured: %d",

@@ -14,6 +14,7 @@ PHASE = re.compile(
     rb'((?: -?\d+){11})\s*$'
 )
 TASK = re.compile(rb'@mem-task (\d+) ([\w-]+) (\d+) (\d+) ([01])\s*$')
+DMA = re.compile(rb'@mem-dma ((?:-?\d+ ){10}-?\d+)\s*$')
 TARGET = re.compile(rb'@mem-target ([a-z0-9.-]*(?:muse\.ai|facebook\.com|meta\.com))\s*$', re.I)
 FAULT = re.compile(rb'Guru Meditation|stack overflow|assert failed|allocate DMA buffer failed|Allocation failed')
 TRACE_TAG = re.compile(rb'\bI \(\d+\) sw_mem: ')
@@ -22,6 +23,8 @@ TRANSPORT = re.compile(rb'select\(\) timeout|getaddrinfo\(\) returns -?\d+|'
                        rb'mbedtls_ssl_handshake returned -?0x[0-9a-fA-F]+')
 PHASE_FIELDS = ('ms', 'dramFree', 'dramMinimum', 'dramLargest', 'dmaLargest',
                 'psramFree', 'psramLargest', 'stackFree', 'result', 'detail', 'flags')
+DMA_FIELDS = ('ms', 'stage', 'kind', 'requestedBytes', 'alignment', 'caps', 'result',
+              'freeBefore', 'largestBefore', 'freeAfter', 'largestAfter')
 
 
 def capture(log, line):
@@ -51,6 +54,10 @@ def capture(log, line):
         log({'task': name.decode(), 'number': int(number), 'stack': int(stack),
              'stackFree': int(free), 'psramStack': external == b'1'})
         return
+    match = DMA.fullmatch(line)
+    if match:
+        log({'dma': dict(zip(DMA_FIELDS, map(int, match[1].split())))})
+        return
     match = TARGET.search(line)
     if match:
         log({'museTarget': match[1].decode()})
@@ -75,6 +82,7 @@ def verify_mute(device):
 
 def exercise(device, trace, log):
     device.command('memory.tasks')
+    device.command('memory.dma')
     device.command('memory.http-probe', timeout=35)
     decoded = device.command('diag.miao', timeout=45)['decoded']
     log({'exercise': 'miao-decode', 'frames': decoded})

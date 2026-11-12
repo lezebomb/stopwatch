@@ -786,6 +786,11 @@ static bool device_console_locked(const char *line) {
     cJSON_Delete(request);
     return true;
   }
+  if (!strcmp(op, "memory.dma")) {
+    sw_memory_dma_dump();
+    error = NULL;
+    goto done;
+  }
   if (!strcmp(op, "memory.tasks") || !strcmp(op, "memory.http-probe")) {
     if (!strcmp(op, "memory.tasks"))
       sw_memory_tasks();
@@ -1679,7 +1684,6 @@ void sw_companion_init(void) {
     nvs_commit(config);
   }
   sw_update_start(mounted == ESP_OK && nvs_ok);
-  sw_sync_start();
   lv_timer_create(tick, 250, NULL);
   screen = SW_PHOTOS;
   show();

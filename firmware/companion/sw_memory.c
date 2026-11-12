@@ -1,6 +1,7 @@
 #include "sw_memory.h"
 
 #if !SW_UPDATE_PRODUCTION
+#include "esp_attr.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
@@ -11,6 +12,7 @@
 #include "freertos/task.h"
 #include "sw_sync.h"
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -18,6 +20,101 @@
 #define DRAM (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
 #define DMA (MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)
 #define PSRAM (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+
+typedef struct {
+  unsigned free, largest;
+} dma_heap_t;
+
+typedef struct {
+  unsigned stage, kind, bytes, alignment, caps;
+  int result;
+  unsigned ms;
+  dma_heap_t before, after;
+} dma_record_t;
+
+/* The driver's trace runs only in the board's audio initialization task.
+ * Publish completed rows for USB diagnostics without logging mid-allocation. */
+static EXT_RAM_BSS_ATTR dma_record_t dma_records[40];
+static atomic_uint dma_count;
+static _Atomic(TaskHandle_t) dma_owner;
+static unsigned dma_stage;
+static dma_heap_t dma_stage_before;
+
+static dma_heap_t dma_heap(void) {
+  return (dma_heap_t){heap_caps_get_free_size(DMA),
+                      heap_caps_get_largest_free_block(DMA)};
+}
+
+static void dma_record(dma_record_t row) {
+  unsigned index = atomic_load_explicit(&dma_count, memory_order_relaxed);
+  if (index >= sizeof(dma_records) / sizeof(dma_records[0]))
+    return;
+  row.ms = (unsigned)(esp_timer_get_time() / 1000);
+  dma_records[index] = row;
+  atomic_store_explicit(&dma_count, index + 1, memory_order_release);
+}
+
+void sw_memory_dma_begin(unsigned stage) {
+  dma_stage = stage;
+  dma_stage_before = dma_heap();
+  atomic_store(&dma_owner, xTaskGetCurrentTaskHandle());
+}
+
+void sw_memory_dma_end(int result) {
+  atomic_store(&dma_owner, NULL);
+  dma_record((dma_record_t){.stage = dma_stage, .result = result,
+                            .before = dma_stage_before, .after = dma_heap()});
+}
+
+static bool dma_trace_active(void) {
+  TaskHandle_t owner = atomic_load(&dma_owner);
+  return owner && owner == xTaskGetCurrentTaskHandle();
+}
+
+/* Only esp_driver_i2s/i2s_common.c uses these substitutes, and only in
+ * development builds. The requested sizes, alignment and capabilities pass
+ * through unchanged. */
+void *sw_memory_i2s_calloc(size_t count, size_t size, uint32_t caps) {
+  if (!dma_trace_active())
+    return heap_caps_calloc(count, size, caps);
+  dma_heap_t before = dma_heap();
+  void *ptr = heap_caps_calloc(count, size, caps);
+  dma_record((dma_record_t){.stage = dma_stage, .kind = 1,
+                            .bytes = count * size, .caps = caps,
+                            .result = ptr ? ESP_OK : ESP_ERR_NO_MEM,
+                            .before = before, .after = dma_heap()});
+  return ptr;
+}
+
+void *sw_memory_i2s_aligned_calloc(size_t alignment, size_t count, size_t size,
+                                   uint32_t caps) {
+  if (!dma_trace_active())
+    return heap_caps_aligned_calloc(alignment, count, size, caps);
+  dma_heap_t before = dma_heap();
+  void *ptr = heap_caps_aligned_calloc(alignment, count, size, caps);
+  dma_record((dma_record_t){.stage = dma_stage, .kind = 2,
+                            .bytes = count * size, .alignment = alignment,
+                            .caps = caps, .result = ptr ? ESP_OK : ESP_ERR_NO_MEM,
+                            .before = before, .after = dma_heap()});
+  return ptr;
+}
+
+void sw_memory_dma_dump(void) {
+  unsigned count = atomic_load_explicit(&dma_count, memory_order_acquire);
+  for (unsigned i = 0; i < count; ++i) {
+    const dma_record_t *row = &dma_records[i];
+    ESP_LOGI("sw_mem", "@mem-dma %u %u %u %u %u %u %d %u %u %u %u", row->ms,
+             row->stage, row->kind, row->bytes, row->alignment, row->caps,
+             row->result, row->before.free, row->before.largest,
+             row->after.free, row->after.largest);
+  }
+  /* Simulated call entry: observe current capacity without enabling audio,
+   * allocating a channel, connecting to Muse, or capturing microphone data. */
+  dma_heap_t current = dma_heap();
+  ESP_LOGI("sw_mem", "@mem-dma %u 5 0 0 0 0 0 %u %u %u %u",
+           (unsigned)(esp_timer_get_time() / 1000), current.free,
+           current.largest, current.free, current.largest);
+}
 
 void sw_memory_mark(const char *phase, int result, int detail, int flags) {
   ESP_LOGI("sw_mem",
