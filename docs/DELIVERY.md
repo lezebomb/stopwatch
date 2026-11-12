@@ -1,6 +1,6 @@
 # 一次配置，持续交付
 
-本轮没有接入实物、真实账号或VPS，也没有注册开发电脑常驻程序。
+手机控制台和设备无线相册已经上线并通过热点实测。正式签名更新、真实 Muse 会话和 Windows 登录自启仍需验收。
 
 ## 维护者一次性配置
 
@@ -9,7 +9,7 @@
 3. 固定 HTTPS 入口为 `https://fym.lezebomb.top`。首次部署时核对 DNS 和 HTTPS，公开 Pages 继续提供隔离演示。
 4. VPS 获授权后，在独立用户目录放置首个可信门户制品。结构为 `versions/<首版目录>/`、`current.json`（内容为 `{"release":"<首版目录>"}`）、制品自带的 `bootstrap/`、`release-public.pem` 和 `production.env`。门户只监听 127.0.0.1，使用单独的域名入口；部署前确认不会影响已有代理和端口。
 5. 在 `production.env` 中设置绝对 `STOPWATCH_DATA_DIR`，指向发布目录之外的持久目录。安装制品附带的用户级 `stopwatch.service` 和 `stopwatch-update.{service,timer}` 模板。先验证首版、持久数据和回滚，再启用 timer。`STOPWATCH_ENABLE_EXECUTION=0` 保持关闭，直到维护者明确授权。
-6. 首次设备初始化先备份，安装正式签名/公钥和rollback Bootloader。仅首次显式-FactoryAssets写内置照片，以后不重写默认SPIFFS。
+6. 首次设备初始化先备份，核对现有分区、启动槽和 rollback Bootloader，再安装正式签名应用与信任根。已在使用的设备保留照片分区和个人配置。用两个递增签名版本依次验证成功升级和失败回滚，再启用稳定渠道。
 7. 收礼人只需配网/Muse官方授权、手机一次配对、Windows一次图形安装和工作区授权，不维护仓库或CI。
 
 信任根轮换需要双签名过渡和恢复计划，不能只改公钥文件或使用公开开发密钥，更不能盲目烧eFuse。

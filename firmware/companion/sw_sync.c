@@ -45,6 +45,7 @@ static _Atomic(TaskHandle_t) worker;
 static nvs_handle_t nvs;
 static StaticSemaphore_t http_lock_storage;
 static SemaphoreHandle_t http_lock;
+static atomic_uint muse_http_waiters;
 
 void sw_sync_http_init(void) {
   http_lock = xSemaphoreCreateMutexStatic(&http_lock_storage);
@@ -53,6 +54,17 @@ void sw_sync_http_init(void) {
 bool sw_sync_http_take(void) {
   return xSemaphoreTake(http_lock, pdMS_TO_TICKS(16000)) == pdTRUE;
 }
+
+bool sw_sync_http_take_muse(void) {
+  atomic_fetch_add(&muse_http_waiters, 1);
+  bool acquired = sw_sync_http_take();
+  atomic_fetch_sub(&muse_http_waiters, 1);
+  return acquired;
+}
+
+bool sw_sync_http_muse_pending(void) { return atomic_load(&muse_http_waiters) != 0; }
+
+bool sw_sync_http_try_take(void) { return xSemaphoreTake(http_lock, 0) == pdTRUE; }
 
 void sw_sync_http_release(void) { xSemaphoreGive(http_lock); }
 
@@ -531,8 +543,12 @@ void sw_sync_start(void) {
   /* A photo download opens TLS while the album transaction is on the stack. */
   TaskHandle_t task;
   if (xTaskCreate(sync_worker, "sw_relay", SW_RELAY_STACK_BYTES, NULL, 2, &task) != pdPASS) {
+    ESP_LOGW("sw_relay", "Task allocation failed; largest internal block: %u bytes",
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     nvs_close(nvs);
     return;
   }
   atomic_store(&worker, task);
 }
+
+bool sw_sync_worker_ready(void) { return atomic_load(&worker) != NULL; }

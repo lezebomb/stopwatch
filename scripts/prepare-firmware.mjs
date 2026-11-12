@@ -127,9 +127,13 @@ ui +=
 await writeChanged(`${component}/muse_ui.c`, ui);
 let app = git(["show", "HEAD:esp32/components/muse/muse_app.c"]);
 app = '#include "sw_memory.h"\n#include "sw_sync.h"\n#include "sw_updater.h"\n' + app;
+const voiceStartup = "    if (!board->audio_init && !board->mic_init) {";
+if (!app.includes(voiceStartup)) throw new Error("Upstream voice startup changed");
+app = app.replace(voiceStartup,
+  '    sw_update_boot_memory("audio-before");\n' + voiceStartup);
 app = app.replace(
   '        muse_state_set_caption("%s", "");   /* the button icons say how to talk */',
-  '        muse_state_set_caption("%s", "");   /* the button icons say how to talk */\n        sw_update_services_ready();\n        sw_memory_mark("boot.audio", 0, 0, 0);',
+  '        muse_state_set_caption("%s", "");   /* the button icons say how to talk */\n        sw_update_boot_memory("audio-ready");\n        sw_update_services_ready();\n        sw_memory_mark("boot.audio", 0, 0, 0);',
 );
 const hatchStart = "    muse_hatch_start();";
 if (!app.includes(hatchStart)) throw new Error("Upstream local audio startup changed");
@@ -288,7 +292,7 @@ await writeChanged(`${sdk}/main/vm_api.c`, '#include "sw_memory.h"\n#include "sw
   .replace(vmBuffers, "        .buffer_size = SW_VM_HTTP_BUFFER_BYTES,\n" +
     "        .buffer_size_tx = SW_VM_HTTP_BUFFER_BYTES,")
   .replace(".crt_bundle_attach = esp_crt_bundle_attach,", ".crt_bundle_attach = sw_vm_bundle_attach,")
-  .replace(vmClient, `    if (!sw_sync_http_take()) return VM_API_ERR_FAILED;
+  .replace(vmClient, `    if (!sw_sync_http_take_muse()) return VM_API_ERR_FAILED;
     sw_memory_target(url);
     sw_memory_mark("vm.before", SW_VM_HTTP_BUFFER_BYTES, 0, 0);
     esp_http_client_handle_t client = esp_http_client_init(&cfg);

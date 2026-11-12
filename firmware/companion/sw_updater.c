@@ -21,6 +21,7 @@
 #include "psa/crypto.h"
 #include "sw_companion.h"
 #include "sw_miao.h"
+#include "sw_sync.h"
 #include "sw_update_build.h"
 #include "sw_memory.h"
 #include "sw_update_core.h"
@@ -56,7 +57,7 @@ static volatile bool production_configured = SW_UPDATE_PRODUCTION;
 /* Strings stay in rodata. Retain the existing development link coverage. */
 static const char *volatile manifest_url = SW_UPDATE_MANIFEST_URL;
 static const char *volatile resource_url = SW_RESOURCE_MANIFEST_URL;
-static TaskHandle_t update_task;
+static _Atomic(TaskHandle_t) update_task;
 typedef struct {
   char version[32], url[768], build[65];
   uint8_t hash[32];
@@ -64,6 +65,8 @@ typedef struct {
   uint64_t sequence;
 } manifest_t;
 #define MIAO_MAX_BYTES 950000u
+#define OTA_TLS_TIMEOUT_MS 5000
+#define OTA_TRANSFER_LIMIT_S 180
 typedef struct {
   uint64_t sequence;
   uint32_t size;
@@ -105,8 +108,9 @@ void sw_update_request_check(void) {
     return;
   }
   atomic_store(&manual, true);
-  if (update_task)
-    xTaskNotifyGive(update_task);
+  TaskHandle_t task = atomic_load(&update_task);
+  if (task)
+    xTaskNotifyGive(task);
 }
 static bool busy(void) {
   muse_mode_t m = muse_state_mode(NULL);
@@ -114,29 +118,54 @@ static bool busy(void) {
          muse_voice_notes_waiting() || m == MUSE_MODE_LISTENING ||
          m == MUSE_MODE_THINKING || m == MUSE_MODE_SPEAKING;
 }
+static bool request_allowed(void) {
+  return muse_wifi_connected() && !busy() && !sw_sync_http_muse_pending();
+}
+static bool tls_headroom(void) {
+  return heap_caps_get_free_size(MALLOC_CAP_INTERNAL) >= 12000 &&
+         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) >= 4096 &&
+         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) >= 4096;
+}
+void sw_update_boot_memory(const char *phase) {
+  if (SW_UPDATE_PRODUCTION)
+    ESP_LOGI(TAG, "boot-memory %s internal=%u largest=%u dma=%u dma_largest=%u psram=%u",
+             phase, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
 static bool https_url(const char *s) {
   return s && strncmp(s, "https://", 8) == 0 && strlen(s) < 768 &&
          !strchr(s, '\n') && !strchr(s, '\r') && !strchr(s, '@') &&
          !strchr(s, '#');
 }
 static esp_http_client_handle_t http_open(const char *url, size_t max) {
-  if (!https_url(url))
+  if (!https_url(url) || !request_allowed() || !sw_sync_http_try_take())
     return NULL;
+  if (!request_allowed() || !tls_headroom()) {
+    sw_sync_http_release();
+    return NULL;
+  }
   esp_http_client_config_t cfg = {.url = url,
                                   .crt_bundle_attach = esp_crt_bundle_attach,
-                                  .timeout_ms = 15000,
+                                  .timeout_ms = OTA_TLS_TIMEOUT_MS,
                                   .buffer_size = 2048,
                                   .max_redirection_count = 4,
                                   .disable_auto_redirect = true,
                                   .transport_type = HTTP_TRANSPORT_OVER_SSL};
   esp_http_client_handle_t h = esp_http_client_init(&cfg);
-  if (!h)
+  if (!h) {
+    sw_sync_http_release();
     return NULL;
-  for (int redirect = 0; redirect < 5; redirect++) {
-    if (esp_http_client_open(h, 0) != ESP_OK)
+  }
+  for (int redirect = 0; redirect < 5 && request_allowed(); redirect++) {
+    if (esp_http_client_open(h, 0) != ESP_OK || !request_allowed())
       break;
     int64_t length = esp_http_client_fetch_headers(h);
     int code = esp_http_client_get_status_code(h);
+    if (!request_allowed())
+      break;
     if (code == 200 && length >= 0 && (uint64_t)length <= max)
       return h;
     if (code != 301 && code != 302 && code != 303 && code != 307 && code != 308)
@@ -150,6 +179,7 @@ static esp_http_client_handle_t http_open(const char *url, size_t max) {
       break;
   }
   esp_http_client_cleanup(h);
+  sw_sync_http_release();
   return NULL;
 }
 static const char *str(cJSON *o, const char *key) {
@@ -277,14 +307,13 @@ done:
   cJSON_Delete(envelope);
   return ok;
 }
-static bool read_http(const char *url, uint8_t *data, size_t limit,
+static bool read_body(esp_http_client_handle_t h, uint8_t *data, size_t limit,
                       size_t *used, bool (*can_continue)(void)) {
-  esp_http_client_handle_t h = http_open(url, limit);
-  if (!h)
-    return false;
+  uint64_t deadline = seconds() + OTA_TRANSFER_LIMIT_S;
   *used = 0;
   bool ok = false;
-  while (*used <= limit && (!can_continue || can_continue())) {
+  while (*used <= limit && seconds() < deadline && request_allowed() &&
+         (!can_continue || can_continue())) {
     size_t room = limit + 1 - *used;
     int count = esp_http_client_read(h, (char *)data + *used,
                                      room > 4096 ? 4096 : room);
@@ -294,16 +323,21 @@ static bool read_http(const char *url, uint8_t *data, size_t limit,
     }
     *used += (size_t)count;
   }
-  esp_http_client_cleanup(h);
-  return ok;
+  return ok && request_allowed();
 }
 static int fetch_manifest(const char *url, manifest_t *out, bool miao) {
   size_t used;
   uint8_t *json = heap_caps_malloc(16386, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   int result = -1;
-  if (json && read_http(url, json, 16384, &used, NULL)) {
-    json[used] = 0;
-    result = parse_manifest((const char *)json, out, miao);
+  esp_http_client_handle_t h = json ? http_open(url, 16384) : NULL;
+  if (h) {
+    bool received = read_body(h, json, 16384, &used, NULL);
+    esp_http_client_cleanup(h);
+    if (received && request_allowed()) {
+      json[used] = 0;
+      result = parse_manifest((const char *)json, out, miao);
+    }
+    sw_sync_http_release();
   }
   free(json);
   return result;
@@ -311,8 +345,18 @@ static int fetch_manifest(const char *url, manifest_t *out, bool miao) {
 static bool install_allowed(void) {
   muse_power_t power = muse_state_power();
   return (power.usb || power.charging) &&
-         power.battery_pct >= policy.min_battery && muse_wifi_connected() &&
-         !busy();
+         power.battery_pct >= policy.min_battery && request_allowed();
+}
+static bool download_resource(const manifest_t *m, uint8_t *data, size_t *used) {
+  esp_http_client_handle_t h = http_open(m->url, m->size);
+  if (!h)
+    return false;
+  bool received = read_body(h, data, m->size, used, install_allowed);
+  esp_http_client_cleanup(h);
+  /* Album sync may take the HTTPS gate while holding the photo lock. Release
+   * the gate before resource reservation or any SPIFFS operations. */
+  sw_sync_http_release();
+  return received;
 }
 static bool matches_hash(const uint8_t *data, size_t size,
                          const uint8_t expected[32]) {
@@ -412,7 +456,7 @@ static bool check_resource(void) {
   struct stat st;
   size_t reclaim =
       stat(path, &st) == 0 && st.st_size > 0 ? (size_t)st.st_size : 0;
-  if (data && read_http(m.url, data, m.size, &used, install_allowed) &&
+  if (data && download_resource(&m, data, &used) &&
       used == m.size && matches_hash(data, used, m.hash) &&
       sw_miao_validate_pack(data, used, install_allowed) &&
       sw_companion_resource_reserve(used, reclaim)) {
@@ -459,6 +503,8 @@ static void abort_update(void *p) {
 static int activate(void *p) {
   ota_context_t *c = p;
   const manifest_t *m = c->manifest;
+  if (!install_allowed())
+    return -1;
   if (nvs_set_u64(nvs, "pending_seq", m->sequence) != ESP_OK ||
       nvs_set_str(nvs, "pending_ver", m->version) != ESP_OK ||
       nvs_commit(nvs) != ESP_OK)
@@ -475,6 +521,7 @@ static bool install(const manifest_t *m) {
   const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
   if (!part || m->size > part->size)
     return false;
+  uint64_t deadline = seconds() + OTA_TRANSFER_LIMIT_S;
   esp_http_client_handle_t h = http_open(m->url, m->size);
   if (!h)
     return false;
@@ -484,20 +531,21 @@ static bool install(const manifest_t *m) {
                          end_signature, activate, abort_update};
   psa_hash_operation_t hash = PSA_HASH_OPERATION_INIT;
   bool success = false;
-  uint8_t *buffer = malloc(4096);
+  uint8_t *buffer = heap_caps_malloc(4096, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   size_t total = 0;
-  if (!buffer || psa_hash_setup(&hash, PSA_ALG_SHA_256) != PSA_SUCCESS ||
+  if (!buffer || !install_allowed() ||
+      psa_hash_setup(&hash, PSA_ALG_SHA_256) != PSA_SUCCESS ||
       sw_update_stream_begin(&stream, ops, m->size, part->size))
     goto done;
   for (;;) {
-    if (!install_allowed())
+    if (!install_allowed() || seconds() >= deadline)
       goto done;
     int count = esp_http_client_read(h, (char *)buffer, 4096);
     if (count < 0)
       goto done;
     if (!count)
       break;
-    if ((size_t)count > m->size - total ||
+    if (!install_allowed() || (size_t)count > m->size - total ||
         psa_hash_update(&hash, buffer, (size_t)count) != PSA_SUCCESS ||
         sw_update_stream_write(&stream, buffer, (size_t)count))
       goto done;
@@ -506,10 +554,16 @@ static bool install(const manifest_t *m) {
   }
   uint8_t actual[32];
   size_t length = 0;
-  if (!esp_http_client_is_complete_data_received(h) ||
+  if (!install_allowed() || !esp_http_client_is_complete_data_received(h) ||
       psa_hash_finish(&hash, actual, sizeof(actual), &length) != PSA_SUCCESS ||
       length != 32)
     goto done;
+  /* Release TLS memory before ESP-IDF validates the image. Keep the shared
+   * gate through verification and the boot-slot journal. */
+  esp_http_client_cleanup(h);
+  h = NULL;
+  free(buffer);
+  buffer = NULL;
   state("verifying", "校验镜像签名与完整性");
   success = sw_update_stream_finish(&stream, m->hash, actual) == 0;
 done:
@@ -517,10 +571,12 @@ done:
     sw_update_stream_abort(&stream);
   psa_hash_abort(&hash);
   free(buffer);
-  esp_http_client_cleanup(h);
+  if (h)
+    esp_http_client_cleanup(h);
+  sw_sync_http_release();
   return success;
 }
-static void health(void) {
+static bool health(void) {
   const esp_partition_t *running = esp_ota_get_running_partition();
   esp_ota_img_states_t image_state = ESP_OTA_IMG_UNDEFINED;
   if (running)
@@ -550,7 +606,9 @@ static void health(void) {
   while (seconds() < deadline) {
     muse_state_poke(); /* Temporary health window; never overwrite saved sleep
                           preferences. */
-    if (storage_ready && atomic_load(&services) && atomic_load(&ui_beat) > 0 &&
+    if (storage_ready && atomic_load(&services) &&
+        (!production_configured || sw_sync_worker_ready()) &&
+        atomic_load(&ui_beat) > 0 &&
         seconds() - atomic_load(&ui_beat) < 3 && seconds() - start >= 30 &&
         heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > 12000) {
       if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
@@ -560,16 +618,19 @@ static void health(void) {
         nvs_erase_key(nvs, "pending_seq");
         nvs_commit(nvs);
         state("idle", "启动健康检查通过");
-        return;
+        return true;
       }
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
-  state("health-failed", "启动健康检查失败");
+  state("health-failed", production_configured && !sw_sync_worker_ready()
+                             ? "相册同步任务未启动"
+                             : "启动健康检查失败");
   if (image_state == ESP_OTA_IMG_PENDING_VERIFY) {
     esp_ota_mark_app_invalid_rollback_and_reboot();
     esp_restart();
   }
+  return false;
 }
 /* Keep the TLS and resource frame out of the health-only development task's
  * call stack, even when the compiler inlines the individual download steps. */
@@ -630,6 +691,13 @@ static __attribute__((noinline)) void poll_updates(void) {
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(have_candidate ? 1000 : 30000));
       continue;
     }
+    if (!request_allowed() || !tls_headroom()) {
+      if (user_check)
+        atomic_store(&manual, true);
+      state("deferred", "等待 Muse 空闲和更新所需内存");
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(30000));
+      continue;
+    }
     bool ok = true;
     if (!have_candidate && action != SW_UP_WAIT) {
       state("checking", "正在检查签名版本清单");
@@ -650,7 +718,8 @@ static __attribute__((noinline)) void poll_updates(void) {
       ok = install(&candidate);
       if (ok) {
         state("restarting", "更新已验证，正在重启");
-        vTaskDelay(pdMS_TO_TICKS(500));
+        while (busy())
+          vTaskDelay(pdMS_TO_TICKS(1000));
         esp_restart();
       } else
         have_candidate = false;
@@ -689,14 +758,15 @@ static __attribute__((noinline)) void poll_updates(void) {
 }
 static void worker(void *arg) {
   (void)arg;
-  health();
+  bool healthy = health();
   ESP_LOGI(TAG, "Startup stack headroom: %u bytes",
            (unsigned)uxTaskGetStackHighWaterMark(NULL));
-  if (production_configured && manifest_url[0])
+  if (healthy && production_configured && manifest_url[0]) {
+    atomic_store(&update_task, xTaskGetCurrentTaskHandle());
     poll_updates();
+  }
   sw_memory_mark("updater.exit", SW_UPDATE_DEV_STACK_BYTES, 0, 0);
   nvs_close(nvs);
-  update_task = NULL;
   vTaskDelete(NULL);
 }
 void sw_update_start(bool storage_ok) {
@@ -731,15 +801,18 @@ void sw_update_start(bool storage_ok) {
     policy.min_battery = 20;
   if (policy.min_battery > 90)
     policy.min_battery = 90;
+  sw_update_boot_memory("worker-before");
   if (xTaskCreate(worker, "sw_update", SW_UPDATE_PRODUCTION
                                          ? SW_UPDATE_RELEASE_STACK_BYTES
                                          : SW_UPDATE_DEV_STACK_BYTES,
-                  NULL, 3, &update_task) != pdPASS) {
+                  NULL, 3, NULL) != pdPASS) {
     state("disabled", "无法启动更新任务");
     const esp_partition_t *running = esp_ota_get_running_partition();
     esp_ota_img_states_t current;
     if (running && esp_ota_get_state_partition(running, &current) == ESP_OK &&
         current == ESP_OTA_IMG_PENDING_VERIFY)
       esp_ota_mark_app_invalid_rollback_and_reboot();
+  } else {
+    sw_update_boot_memory("worker-ready");
   }
 }

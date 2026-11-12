@@ -6,6 +6,7 @@ typedef struct {
   unsigned failures;
 } sw_update_status_t;
 void sw_update_start(bool storage_ok);
+void sw_update_boot_memory(const char *phase);
 void sw_update_health_tick(bool photo_ready);
 void sw_update_services_ready(void);
 void sw_update_interaction(bool busy);

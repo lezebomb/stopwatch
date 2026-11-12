@@ -2,7 +2,7 @@
 
 基于 M5Stack StopWatch C152 和官方 Muse SDK，在 v0.1 上扩展签名 OTA、自动发布、在线演示及 Windows 后台交付。当前版本 **0.2.0**。
 
-**实机进展** 已验证照片封面、触屏、按键、手机配网、云端授权和无线相册。本地 Codex 状态已通过 USB 联动挂件。Muse 账号与听感、Windows 公网桥接和正式 OTA 待验收。[硬件测试记录](HARDWARE_TEST.md)
+**实机进展** 已验证照片封面、触屏、按键、手机配网、云端授权和无线相册。本地 Codex 状态已通过 USB 联动挂件。Muse 官方账号已绑定，正式会话仍待网络联调，听感待验收。挂件当前保持持久静音。Windows 正式桥接和正式签名 OTA 待实机验收。[硬件测试记录](HARDWARE_TEST.md)
 
 **[打开在线隔离演示](https://lezebomb.github.io/stopwatch/)**：无需下载仓库、运行 Node 或安装 APK。发布状态以 GitHub Actions 为准。演示任务、配对和更新均为 Mock，图片仅在浏览器内存处理；不连接真实 Codex，不具备公网执行权限。
 
@@ -11,11 +11,11 @@
 ## 日常使用与当前边界
 
 - 挂件进入上次照片封面，保留 Wi-Fi、Muse 授权和配置。充电联网且空闲时更新；电池照片页不为更新唤醒 Wi-Fi。
-- 正式手机入口是维护者的固定 HTTPS 域名，一次扫码配对，保护会话滚动续期。Edge / Chrome，无需 APK。公开演示不是正式控制台。
+- [手机控制台](https://fym.lezebomb.top/) 已部署，首次登录可扫码或输入一次性六位码。支持 Edge 和 Chrome，无需 APK。公开 Pages 提供独立的演示入口。
 - Windows 正式包自带 Node，一次图形安装、选择工作区并授权，之后后台启动、主动 WSS、恢复和更新，无需每次 CMD。
 - 授权失效会明确提示重新授权；仅恢复桥接自己创建的 App Server 会话，不接管 Desktop。
 
-**正式启用还需要维护者一次性生产公钥/签名 secret、域名/中转配置和实机验收。本轮未部署 VPS，未安装本机自启动。**
+**交付待办** 配置正式签名公钥与 GitHub 发布凭据，验收双槽升级、回滚和数据保留，再启用稳定更新渠道。Windows 仍需验收图形安装、工作区授权、登录自启和恢复，公网远程执行保持关闭。
 
 ## 自动交付
 
@@ -99,7 +99,7 @@ Muse 首次授权需要本人从官方账户创建 SDK token。Windows 本机运
 
 日常配网使用普通 2.4 GHz Wi-Fi 或手机热点，由 Muse SDK 管理。旧版 PEAP 测试凭据可经 USB 执行 `device-sync.py --pipe`，发送 `{"id":1,"op":"wifi.enterprise.clear"}`。命令只删除现存的 PEAP 凭据键，并清除同命名空间中已删除条目的残留数据。可用 `wifi.enterprise.status` 查询凭据是否仍在。若旧校园网名称仍在 Wi-Fi 列表，只需在设置中忘记对应网络。
 
-固件默认不启用中转。正式构建使用 `release/config.json` 的固定 HTTPS 来源。本地开发可在构建前设置 `SW_DEVICE_RELAY_ORIGIN`，内网自建 CA 时可另用 `SW_DEVICE_RELAY_CA` 指向公开 CA 证书。中转用 `STOPWATCH_MODE=production` 和同一 HTTPS `STOPWATCH_PUBLIC_ORIGIN`，通过受信反代访问。手机浏览器也需要信任该证书。功能代码已编译，实际无线链路待集中实机验收。
+固件默认不启用中转。正式构建使用 `release/config.json` 的固定 HTTPS 来源。本地开发可在构建前设置 `SW_DEVICE_RELAY_ORIGIN`，内网自建 CA 时可另用 `SW_DEVICE_RELAY_CA` 指向公开 CA 证书。中转用 `STOPWATCH_MODE=production` 和同一 HTTPS `STOPWATCH_PUBLIC_ORIGIN`，通过受信反代访问。手机浏览器也需要信任该证书。已在普通热点实测自动重连、实际照片下载及删除，原照片与显示设置保留。
 
 ## 妙妙与显示模式
 

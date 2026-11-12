@@ -26,6 +26,10 @@ lines = []
 memory_line = re.compile(
     r'I \(\d+\) sw_mem: @mem (?:boot|vm|relay|photo|miao|updater|probe)\.[a-z-]+(?: -?\d+){11}'
     r'|I \(\d+\) sw_mem: @mem-target [a-zA-Z0-9.-]+'
+    r'|I \(\d+\) sw_update: (?:boot-memory [a-z-]+ internal=\d+ largest=\d+ dma=\d+ dma_largest=\d+ psram=\d+'
+    r'|Startup stack headroom: \d+ bytes|health-failed:|idle:)'
+    r'|voice pipeline unavailable|AUDIO INIT FAILED'
+    r'|Relay task allocation failed; largest internal block: \d+ bytes'
     r'|Loaded app from partition at offset 0x[0-9a-f]+'
     r'|Found \d+MB PSRAM device'
     r'|select\(\) timeout|getaddrinfo\(\) returns -?\d+|mbedtls_ssl_handshake returned -?0x[0-9a-fA-F]+'
