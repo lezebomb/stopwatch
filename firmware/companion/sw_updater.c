@@ -46,6 +46,8 @@ extern const unsigned char
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 static sw_update_status_t status;
 static atomic_bool manual, interaction, services;
+static atomic_bool boot_ready, ota_worker_started;
+static uint64_t ota_retry_after;
 static atomic_uint ui_beat;
 static bool storage_ready;
 static nvs_handle_t nvs;
@@ -761,13 +763,46 @@ static void worker(void *arg) {
   bool healthy = health();
   ESP_LOGI(TAG, "Startup stack headroom: %u bytes",
            (unsigned)uxTaskGetStackHighWaterMark(NULL));
-  if (healthy && production_configured && manifest_url[0]) {
-    atomic_store(&update_task, xTaskGetCurrentTaskHandle());
-    poll_updates();
-  }
+  /* The health-only task exits in both profiles. The download task keeps
+   * its original 14336-byte INTERNAL stack, but cannot reserve it before
+   * codec DMA and sw_relay have started. Do not shrink/migrate the OTA stack. */
+  atomic_store(&boot_ready, healthy);
   sw_memory_mark("updater.exit", SW_UPDATE_DEV_STACK_BYTES, 0, 0);
-  nvs_close(nvs);
+  if (!healthy || !production_configured) nvs_close(nvs);
   vTaskDelete(NULL);
+}
+static void download_worker(void *arg) {
+  (void)arg;
+  atomic_store(&update_task, xTaskGetCurrentTaskHandle());
+  poll_updates();
+  /* poll_updates owns the original retry/candidate state and normally does
+   * not return. Leave the NVS handle alive for the configured manager. */
+  atomic_store(&update_task, NULL);
+  atomic_store(&ota_worker_started, false);
+  vTaskDelete(NULL);
+}
+bool sw_update_boot_ready(void) { return atomic_load(&boot_ready); }
+void sw_update_maintenance(void) {
+  if (!production_configured || !manifest_url[0] || !atomic_load(&boot_ready) ||
+      atomic_load(&ota_worker_started) || seconds() < ota_retry_after ||
+      !request_allowed()) return;
+  ota_retry_after = seconds() + 30;
+  /* Reserve task + TCB before allowing the existing TLS admission test.
+   * Insufficient memory postpones OTA; it must never break core services. */
+  if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) <
+          SW_UPDATE_RELEASE_STACK_BYTES + 16384 ||
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) <
+          SW_UPDATE_RELEASE_STACK_BYTES + 512 ||
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) < 8192) {
+    state("deferred", "核心服务已就绪，等待完整 OTA 栈与 TLS 内存");
+    return;
+  }
+  atomic_store(&ota_worker_started, true);
+  if (xTaskCreate(download_worker, "sw_ota", SW_UPDATE_RELEASE_STACK_BYTES,
+                  NULL, 3, NULL) != pdPASS) {
+    atomic_store(&ota_worker_started, false);
+    state("deferred", "更新任务分配失败，保留核心服务并稍后重试");
+  }
 }
 void sw_update_start(bool storage_ok) {
   storage_ready = storage_ok;
@@ -802,9 +837,7 @@ void sw_update_start(bool storage_ok) {
   if (policy.min_battery > 90)
     policy.min_battery = 90;
   sw_update_boot_memory("worker-before");
-  if (xTaskCreate(worker, "sw_update", SW_UPDATE_PRODUCTION
-                                         ? SW_UPDATE_RELEASE_STACK_BYTES
-                                         : SW_UPDATE_DEV_STACK_BYTES,
+  if (xTaskCreate(worker, "sw_update", SW_UPDATE_DEV_STACK_BYTES,
                   NULL, 3, NULL) != pdPASS) {
     state("disabled", "无法启动更新任务");
     const esp_partition_t *running = esp_ota_get_running_partition();

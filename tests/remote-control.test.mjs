@@ -4,9 +4,19 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Store } from "../server/store.mjs";
+import { createDeviceSync } from "../server/device-sync.mjs";
 import { AppServerTransport } from "../bridge/app-server.mjs";
 import { AppServerCodex } from "../bridge/real-engine.mjs";
-import { createCommandDispatcher } from "../web/command-dispatch.mjs";
+import { createCommandDispatcher, mergeCommandReceipt } from "../web/command-dispatch.mjs";
+
+test("a delayed HTTP 202 cannot erase an official completed/failed receipt from WSS", () => {
+  for (const stage of ["succeeded", "failed", "interrupted"]) {
+    const final = [{ commandId: "same-command", taskId: "same-task", stage }];
+    assert.equal(mergeCommandReceipt(final, { commandId: "same-command", taskId: "same-task", stage: "received" }), final);
+  }
+  const unknown = [{ commandId: "same-command", stage: "uncertain" }];
+  assert.equal(mergeCommandReceipt(unknown, { commandId: "same-command", stage: "executing" })[0].stage, "executing");
+});
 
 test("ambiguous HTTP retries reuse the command id; parallel clicks share one submission", async () => {
   const requests = [];
@@ -37,6 +47,21 @@ test("acknowledgement never claims execution success; delayed events cannot regr
     assert.equal(store.receipts("other-device").length, 0);
     assert.equal(store.receipts("bound-device").length, 1);
     assert.equal(store.command({ id: "receipt-command", action: "start", actor: "bound-device" }), false);
+  } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("device receipt stays compact even when the full web error contains long escaped content", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "sw-wire-receipt-"));
+  const store = new Store(directory);
+  try {
+    store.command({ id: "long-error-command", action: "start", actor: "bound-device" });
+    store.commandStatus({ commandId: "long-error-command", stage: "failed", message: "\u0000".repeat(512) });
+    const sync = createDeviceSync(store, directory, () => false);
+    const data = await sync.snapshot("bound-device");
+    assert.deepEqual(Object.keys(data.codex.receipt).sort(), ["commandId", "stage", "updated"]);
+    assert.equal(data.codex.receipt.stage, "failed");
+    assert.equal(store.receipt("long-error-command").message.length, 512);
+    assert.equal((await sync.snapshot("another-device")).codex.receipt, null);
   } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
 });
 

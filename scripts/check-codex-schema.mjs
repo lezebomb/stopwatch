@@ -35,6 +35,14 @@ const steer = JSON.parse(
   await readFile(".deps/codex-schema/v2/TurnSteerParams.json", "utf8"),
 );
 assert(steer.required.includes("expectedTurnId"));
+for (const name of ["ThreadStartParams", "ThreadResumeParams"]) {
+  const params = JSON.parse(await readFile(`.deps/codex-schema/v2/${name}.json`, "utf8"));
+  assert(params.definitions.SandboxMode.enum.includes("read-only"), `${name} must support read-only`);
+  assert(params.properties.approvalPolicy, `${name} must support explicit approval policy`);
+}
+const turn = JSON.parse(await readFile(".deps/codex-schema/v2/TurnStartParams.json", "utf8"));
+const readOnly = turn.definitions.SandboxPolicy.oneOf.find(p => p.properties?.type?.enum?.includes("readOnly"));
+assert(readOnly?.properties.networkAccess.type === "boolean", "Read-only turn policy must explicitly disable tool network");
 const version = execFileSync("codex", ["--version"], {
   encoding: "utf8",
 }).trim();
@@ -45,6 +53,7 @@ await writeFile(
       version,
       methods: required,
       expectedTurnId: true,
+      readOnlySandboxPolicy: true,
       authenticated: false,
       realSessionsTested: false,
     },

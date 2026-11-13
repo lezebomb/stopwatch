@@ -824,12 +824,12 @@ static bool device_console_locked(const char *line) {
     cJSON_Delete(request);
     return true;
   }
-#if !SW_UPDATE_PRODUCTION
   if (!strcmp(op, "memory.stats")) {
     sw_memory_status(id);
     cJSON_Delete(request);
     return true;
   }
+#if !SW_UPDATE_PRODUCTION
   if (!strcmp(op, "memory.dma")) {
     sw_memory_dma_dump();
     error = NULL;
@@ -1328,7 +1328,8 @@ static void codex_open(lv_event_t *event) {
   for (unsigned i = 0; i < codex_choices.count; i++) codex_row(list, codex_choices.titles[i], codex_select, (void *)(uintptr_t)i);
   if (codex_choices.online && codex_choices.can_control) {
     if (codex_choices.approval[0]) {
-      codex_row(list, "批准屏幕所示本次操作", codex_action, "accept");
+      label = lv_label_create(list); lv_obj_set_width(label, 292);
+      lv_label_set_text(label, "此处仅为摘要，不可批准\n手机打开 fym.lezebomb.top\nCodex 任务 → 待审批任务");
       codex_row(list, "拒绝本次操作", codex_action, "decline");
     } else {
       if (codex_choices.running) codex_row(list, "中断当前任务", codex_action, "interrupt");
@@ -1410,7 +1411,13 @@ static void show(void) {
               sizeof(connection));
     const char *command_state = sw_sync_codex_command_state();
     if (!strcmp(command_state, "sending")) strlcpy(connection, "正在提交指令", sizeof(connection));
-    else if (!strcmp(command_state, "failed")) strlcpy(connection, "指令未送达，请检查网络或权限", sizeof(connection));
+    else if (!strcmp(command_state, "received")) strlcpy(connection, "中转已接收，等待电脑回执", sizeof(connection));
+    else if (!strcmp(command_state, "accepted")) strlcpy(connection, "电脑已接收，等待执行结果", sizeof(connection));
+    else if (!strcmp(command_state, "executing")) strlcpy(connection, "指令正在执行", sizeof(connection));
+    else if (!strcmp(command_state, "succeeded")) strlcpy(connection, "指令执行成功", sizeof(connection));
+    else if (!strcmp(command_state, "interrupted")) strlcpy(connection, "任务已中断", sizeof(connection));
+    else if (!strcmp(command_state, "uncertain")) strlcpy(connection, "执行状态待核对，请看手机", sizeof(connection));
+    else if (!strcmp(command_state, "failed")) strlcpy(connection, "指令失败，请在手机查看原因", sizeof(connection));
     lv_label_set_text_fmt(
         caption, "%s\n%s%s%s%s%s\n%s\n%.180s", online ? phases[p] : "Codex 离线",
         project, *project ? " · " : "", title, p == 6 && *error ? "\n" : "",

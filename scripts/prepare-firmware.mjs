@@ -266,7 +266,19 @@ if (!mainApp.includes(firstMuseRequest))
   throw new Error("Upstream boot connection hook changed");
 mainApp = mainApp.replace(firstMuseRequest,
   "                muse_glue_wait_local_boot();\n" + firstMuseRequest);
-mainApp = '#include "sw_memory.h"\n' + mainApp;
+mainApp = '#include "sw_memory.h"\n#include "sw_updater.h"\n' + mainApp;
+// The optional chat VM helper otherwise allocates another 8 KiB task while
+// the startup health task is still resident. Wait before creating that task;
+// no auth/HTTPS lock has been taken here, and official requests are unchanged.
+const chatVmHook = "    hatch_vm_request_t req = {";
+if (!mainApp.includes(chatVmHook)) throw new Error("Upstream chat VM task hook changed");
+mainApp = mainApp.replace(chatVmHook, `    unsigned boot_wait = 0;
+    while (!sw_update_boot_ready() && boot_wait++ < 400)
+        vTaskDelay(pdMS_TO_TICKS(250));
+    if (!sw_update_boot_ready()) return false;
+    vTaskDelay(pdMS_TO_TICKS(20)); /* allow the idle task to reclaim its stack */
+    sw_memory_mark("vm.chat-boot-ready", 0, 0, 0);
+` + chatVmHook);
 for (const [hook, phase, indent] of [
   ['heap_snapshot("after config+id");', "boot.config", "    "],
   ['heap_snapshot("after wifi_mgr_init");', "boot.wifi-init", "    "],

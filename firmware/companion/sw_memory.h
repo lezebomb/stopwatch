@@ -10,6 +10,7 @@
 
 /* Keep the SDK's header capacity and cross IDF's malloc PSRAM threshold. */
 #define SW_VM_HTTP_BUFFER_BYTES 4112
+void sw_memory_status(int id);
 #if !CONFIG_SPIRAM_USE_MALLOC || CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL >= SW_VM_HTTP_BUFFER_BYTES
 #error "Muse HTTP buffers must prefer PSRAM"
 #endif
@@ -20,7 +21,6 @@
 
 void sw_memory_mark(const char *phase, int result, int detail, int flags);
 void sw_memory_target(const char *url);
-void sw_memory_status(int id);
 void sw_memory_tasks(void);
 void sw_memory_http_probe(void);
 void sw_memory_dma_begin(unsigned stage);

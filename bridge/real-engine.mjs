@@ -351,7 +351,7 @@ export class AppServerCodex {
     this.output(task, "approval", "等待你确认本次操作", {
       approvalId,
       approval: {
-        command: complete ? p.command || `文件修改 ${p.grantRoot || ""}` : "操作内容过长，请在电脑核对",
+        command: complete ? p.command || `文件修改 ${p.grantRoot || ""}` : "请求过大，请拒绝后要求拆分操作",
         reason: p.reason || "请求访问工作区",
         details: complete ? details : null,
         complete, digest: approvalDigest, requiresPhone: true,

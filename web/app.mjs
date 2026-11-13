@@ -11,7 +11,7 @@ const VERSION = releaseConfig.version;
 import { installDemo } from "./demo.mjs";
 import { watchVersion } from "./version-watch.mjs";
 import { MiaoPlayer } from "./miao-player.mjs";
-import { createCommandDispatcher } from "./command-dispatch.mjs";
+import { createCommandDispatcher, mergeCommandReceipt } from "./command-dispatch.mjs";
 const WEB_MODE = typeof __SW_WEB_MODE__ === "undefined" ? "local" : __SW_WEB_MODE__;
 const PREVIEW = typeof __SW_PREVIEW__ !== "undefined" && __SW_PREVIEW__;
 const demo = PREVIEW ? await installDemo() : null;
@@ -101,7 +101,8 @@ const date = (seconds) =>
     : "暂无数据";
 const active = () =>
   state.tasks.find((t) => t.id === state.selected) ||
-  [...state.tasks].sort((a, b) => b.updated - a.updated)[0];
+  (state.selected && state.commandReceipts.some(r => r.taskId === state.selected) ? null :
+    [...state.tasks].sort((a, b) => b.updated - a.updated)[0]);
 function toast(message) {
   document.querySelector(".toast")?.remove();
   const el = document.createElement("div");
@@ -274,15 +275,14 @@ function receive(event, silent = false) {
   if (event.type === "photos") state.photos = event.payload.photos;
   if (event.type === "commandError" && !silent) toast(event.payload.message);
   if (event.type === "commandStatus") {
-    const previous = state.commandReceipts.find(r => r.commandId === event.payload.commandId);
-    const rank = { received: 0, accepted: 1, executing: 2, uncertain: 3, succeeded: 4, failed: 4, interrupted: 4 };
-    if (!previous || rank[event.payload.stage] >= rank[previous.stage] && rank[previous.stage] !== 4) {
-      state.commandReceipts = [event.payload, ...state.commandReceipts.filter(r => r.commandId !== event.payload.commandId)].slice(0, 20);
-    }
+    state.commandReceipts = mergeCommandReceipt(state.commandReceipts, event.payload);
   }
   if (!silent) renderPreservingFocus();
 }
 function renderPreservingFocus() {
+  // render() already restores textarea drafts by task id. Restoring only by
+  // DOM id here would put the previous task's draft into a newly selected task.
+  if (document.activeElement?.tagName === "TEXTAREA") { render(); return; }
   const focus = document.activeElement,
     focusId = focus?.id,
     value = focus?.value,
@@ -377,9 +377,9 @@ function tasks() {
           `<button data-task="${escape(t.id)}" class="${task?.id === t.id ? "selected" : ""}">${escape(t.title)}<span class="muted">${escape(t.project)} · ${labels[t.state]}</span></button>`,
       )
       .join("") || '<p class="empty">还没有会话</p>'
-  }</div></div><section class="card"><div class="card-head"><h2>任务详情</h2><span class="task-status">${task ? labels[task.state] : "等待第一条指令"}</span></div>${
+  }</div></div><section class="card"><div class="card-head"><h2>任务详情</h2><span class="task-status">${task ? labels[task.state] : "等待会话状态"}</span></div>${commandReceiptCard(task)}${
     task
-      ? `<h3 class="task-title">${escape(task.title)}</h3><p class="muted small">${escape(task.project)} · ${task.sandbox === "read-only" ? "只读沙箱" : "工作区沙箱"}</p><p class="muted small">${escape(task.operation)}</p>${commandReceiptCard(task)}${task.state === "approval" ? approvalCard(task) : ""}${task.result ? `<div class="result">${escape(task.result)}</div>` : ""}<div class="timeline">${taskEvents()
+      ? `<h3 class="task-title">${escape(task.title)}</h3><p class="muted small">${escape(task.project)} · ${task.sandbox === "read-only" ? "只读沙箱" : "工作区沙箱"}</p><p class="muted small">${escape(task.operation)}</p>${task.state === "approval" ? approvalCard(task) : ""}${task.result ? `<div class="result">${escape(task.result)}</div>` : ""}<div class="timeline">${taskEvents()
           .filter((e) => e.payload.id === task.id)
           .slice(0, 8)
           .map(
@@ -389,17 +389,18 @@ function tasks() {
           .join(
             "",
           )}</div><form id="continue-form" data-task-context="${escape(task.id)}"><label for="continuation">${running ? "追加指令" : "继续这个会话"}</label><textarea id="continuation" required maxlength="8000" placeholder="输入后续要求"></textarea><div class="actions"><button ${task.state === "approval" ? "disabled" : ""}>${running ? "追加到当前任务" : "继续任务"}</button><button type="button" class="danger" id="interrupt" ${!running && task.state !== "approval" ? "disabled" : ""}>中断任务</button></div></form>`
-      : '<div class="empty">创建一个任务后，可以在这里查看执行过程、最终结果，以及需要你确认的操作。</div>'
+      : '<div class="empty">电脑尚未返回对应会话。可先查看指令回执；已接收不代表已执行，请勿重复创建。</div>'
   }</section></div>`;
 }
 function approvalCard(task) {
   const a = task.approval || {}, production = state.mode === "production";
   const reviewed = reviewedApproval?.id === task.approvalId && reviewedApproval?.digest === a.digest;
-  return `<div class="approval"><strong>核对完整操作</strong><pre class="approval-details">${escape(a.command)}</pre><p>${escape(a.reason)}</p>${production ? `<pre class="approval-details">${escape(a.details || "完整内容不可用，不能远程批准。请到电脑核对。")}</pre>${a.complete ? `<label class="approval-review"><input id="approval-reviewed" type="checkbox" ${reviewed ? "checked" : ""}>我已核对完整操作和请求权限</label>` : ""}` : ""}<div class="actions"><button data-decision="accept" ${production && (!a.complete || !reviewed) ? "disabled" : ""}>批准本次</button><button class="danger" data-decision="decline">拒绝</button></div></div>`;
+  return `<div class="approval"><strong>核对完整操作</strong><pre class="approval-details">${escape(a.command)}</pre><p>${escape(a.reason)}</p>${production ? `<pre class="approval-details">${escape(a.details || "完整内容不可用，不能远程批准。请拒绝本次，再要求 Codex 拆分操作。")}</pre>${a.complete ? `<label class="approval-review"><input id="approval-reviewed" type="checkbox" ${reviewed ? "checked" : ""}>我已核对完整操作和请求权限</label>` : ""}` : ""}<div class="actions"><button data-decision="accept" ${production && (!a.complete || !reviewed) ? "disabled" : ""}>批准本次</button><button class="danger" data-decision="decline">拒绝</button></div></div>`;
 }
 function commandReceiptCard(task) {
-  const receipts = state.commandReceipts.filter(r => r.taskId === task?.id).slice(0, 3);
-  return receipts.map(r => `<p class="small command-receipt" role="status">${escape(receiptLabels[r.stage] || r.stage)}${r.message ? ` · ${escape(r.message)}` : ""}</p>`).join("");
+  const receipts = state.commandReceipts.filter(r => r.taskId === (state.selected || task?.id)).slice(0, 3);
+  const actions = { start: "新任务", continue: "继续", steer: "追加", interrupt: "中断", approve: "审批" };
+  return receipts.map(r => `<p class="small command-receipt" role="status">${escape(r.action === "approve" ? (r.decision === "decline" ? "拒绝审批" : "批准审批") : actions[r.action] || "指令")} · ${escape(receiptLabels[r.stage] || r.stage)}${r.updated ? ` · ${time(r.updated)}` : ""}${r.message ? ` · ${escape(r.message)}` : ""}</p>`).join("");
 }
 function photos() {
   const bytes = state.photos.reduce((sum, p) => sum + p.bytes, 0);
@@ -564,7 +565,8 @@ async function command(action, extra = {}) {
       ...extra,
     });
     if (action === "start") state.selected = result.id;
-    if (result.receipt) state.commandReceipts = [result.receipt, ...state.commandReceipts.filter(r => r.commandId !== result.id)].slice(0, 20);
+    if (result.receipt) state.commandReceipts = mergeCommandReceipt(state.commandReceipts, result.receipt);
+    renderPreservingFocus();
     toast(state.mode === "production" ? "中转已接收，请查看电脑回执与执行结果" : "模拟指令已接收");
     return true;
   } catch (e) {

@@ -1,4 +1,11 @@
 #include "sw_memory.h"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
+#include <stdio.h>
+
+#define DRAM (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+#define DMA (MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)
+#define PSRAM (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 
 #if !SW_UPDATE_PRODUCTION
 #include "esp_attr.h"
@@ -17,9 +24,6 @@
 #include <string.h>
 #include <strings.h>
 
-#define DRAM (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
-#define DMA (MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)
-#define PSRAM (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 
 typedef struct {
   unsigned free, largest;
@@ -153,26 +157,6 @@ void sw_memory_target(const char *url) {
   }
 }
 
-void sw_memory_status(int id) {
-  printf("@sw {\"id\":%d,\"ok\":true,\"ms\":%llu,\"dramTotal\":%u,"
-         "\"dramFree\":%u,\"dramMinimum\":%u,\"dramLargest\":%u,"
-         "\"internalMinimum\":%u,\"dmaFree\":%u,\"dmaLargest\":%u,"
-         "\"psramHeapTotal\":%u,\"psramFree\":%u,\"psramMinimum\":%u,"
-         "\"psramLargest\":%u}\n",
-         id, (unsigned long long)(esp_timer_get_time() / 1000),
-         (unsigned)heap_caps_get_total_size(DRAM),
-         (unsigned)heap_caps_get_free_size(DRAM),
-         (unsigned)heap_caps_get_minimum_free_size(DRAM),
-         (unsigned)heap_caps_get_largest_free_block(DRAM),
-         (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
-         (unsigned)heap_caps_get_free_size(DMA),
-         (unsigned)heap_caps_get_largest_free_block(DMA),
-         (unsigned)heap_caps_get_total_size(PSRAM),
-         (unsigned)heap_caps_get_free_size(PSRAM),
-         (unsigned)heap_caps_get_minimum_free_size(PSRAM),
-         (unsigned)heap_caps_get_largest_free_block(PSRAM));
-  fflush(stdout);
-}
 
 void sw_memory_tasks(void) {
 #if CONFIG_FREERTOS_USE_TRACE_FACILITY
@@ -182,6 +166,7 @@ void sw_memory_tasks(void) {
   } known[] = {
       {"main", CONFIG_ESP_MAIN_TASK_STACK_SIZE}, {"sw_relay", SW_RELAY_STACK_BYTES},
       {"sw_photo", SW_PHOTO_STACK_BYTES}, {"sw_update", SW_UPDATE_DEV_STACK_BYTES},
+      {"sw_ota", SW_UPDATE_RELEASE_STACK_BYTES},
       {"muse_boot", 8192}, {"muse_keep", 6144}, {"muse_voice", 6144},
       {"muse_input", 4096}, {"muse_serial", 6144}, {"vm_auth_rfsh", 8192},
       {"muse_vm", 8192}, {"nimble_host", CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE},
@@ -238,3 +223,24 @@ void sw_memory_http_probe(void) {
   sw_sync_http_release();
 }
 #endif
+
+void sw_memory_status(int id) {
+  printf("@sw {\"id\":%d,\"ok\":true,\"ms\":%llu,\"dramTotal\":%u,"
+         "\"dramFree\":%u,\"dramMinimum\":%u,\"dramLargest\":%u,"
+         "\"internalMinimum\":%u,\"dmaFree\":%u,\"dmaLargest\":%u,"
+         "\"psramHeapTotal\":%u,\"psramFree\":%u,\"psramMinimum\":%u,"
+         "\"psramLargest\":%u}\n",
+         id, (unsigned long long)(esp_timer_get_time() / 1000),
+         (unsigned)heap_caps_get_total_size(DRAM),
+         (unsigned)heap_caps_get_free_size(DRAM),
+         (unsigned)heap_caps_get_minimum_free_size(DRAM),
+         (unsigned)heap_caps_get_largest_free_block(DRAM),
+         (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+         (unsigned)heap_caps_get_free_size(DMA),
+         (unsigned)heap_caps_get_largest_free_block(DMA),
+         (unsigned)heap_caps_get_total_size(PSRAM),
+         (unsigned)heap_caps_get_free_size(PSRAM),
+         (unsigned)heap_caps_get_minimum_free_size(PSRAM),
+         (unsigned)heap_caps_get_largest_free_block(PSRAM));
+  fflush(stdout);
+}

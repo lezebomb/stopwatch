@@ -62,6 +62,8 @@ def main():
     parser.add_argument('--observe-ready', action='store_true',
                         help='Keep sampling an established session for the entire duration')
     parser.add_argument('--report', type=pathlib.Path, default=ROOT / '.data/muse-connect/diagnostics.json')
+    parser.add_argument('--summary', action='store_true', help='Print only a compact result; keep samples in the report')
+    parser.add_argument('--codex-page', action='store_true', help='Observe current real Codex/Miao page, then return to photos (development firmware)')
     args = parser.parse_args()
     if args.seconds < 1 or args.seconds > 1800:
         parser.error('Duration must be between 1 and 1800 seconds')
@@ -71,6 +73,11 @@ def main():
     target.parent.mkdir(parents=True, exist_ok=True)
     report = {key: collections.Counter() for key in (
         'events', 'httpStatuses', 'proxyResults', 'transportResults', 'httpResults')}
+    started = time.monotonic()
+    report.update(requestedSeconds=args.seconds, running=True, finishedNormally=False)
+    def checkpoint():
+        report['elapsedSeconds'] = round(time.monotonic() - started, 3)
+        target.write_text(json.dumps(report, ensure_ascii=True, indent=2) + '\n', encoding='utf-8')
     device = Device(args.port, diagnostic_line=lambda line: capture(report, line))
 
     def status():
@@ -84,6 +91,8 @@ def main():
 
     try:
         report['before'] = status()
+        if args.codex_page:
+            device.command('diag.codex', enabled=True)
         report['samples'] = []
 
         def sample(state):
@@ -92,10 +101,13 @@ def main():
             report['samples'].append({
                 'sessionReady': state['sessionReady'], 'wifi': state['wifi'],
                 'uptimeMs': memory['ms'], 'relayState': info['relayState'],
+                **{key: info.get(key) for key in (
+                    'codexOnline', 'codexPhase', 'miaoFramesDrawn', 'otaState')},
                 **{key: memory[key] for key in (
                     'dramFree', 'dramMinimum', 'dramLargest', 'dmaFree',
-                    'dmaLargest', 'psramFree', 'psramLargest')},
+                    'dmaLargest', 'psramFree', 'psramLargest', 'psramMinimum') if key in memory},
             })
+            checkpoint()  # Preserve partial evidence if the host collector is interrupted.
 
         sample(report['before'])
         try:
@@ -125,10 +137,26 @@ def main():
                 next_status = time.monotonic() + 15
         report['after'] = status()
         sample(report['after'])
+        report['finishedNormally'] = True
     finally:
-        device.close()
-        target.write_text(json.dumps(report, ensure_ascii=True, indent=2) + '\n', encoding='utf-8')
-    print(json.dumps(report, ensure_ascii=True))
+        try:
+            if args.codex_page:
+                try:
+                    device.command('diag.codex', timeout=5, enabled=False)
+                    report['photoPageRestored'] = True
+                except (OSError, TimeoutError, RuntimeError):
+                    report['photoPageRestored'] = False
+            device.close()
+        finally:
+            report['running'] = False
+            checkpoint()
+    if args.summary:
+        rows = report.get('samples', [])
+        print(json.dumps({'samples': len(rows), 'elapsedSeconds': report['elapsedSeconds'],
+                          'finishedNormally': report['finishedNormally'], 'events': report['events'],
+                          'dramMinimum': min((r['dramMinimum'] for r in rows), default=None)}, ensure_ascii=True))
+    else:
+        print(json.dumps(report, ensure_ascii=True))
 
 
 if __name__ == '__main__':

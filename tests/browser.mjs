@@ -5,6 +5,7 @@ import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
+import { remoteControlUiChecks } from "./remote-control-browser.mjs";
 const directory = await mkdtemp(path.join(os.tmpdir(), "stopwatch-browser-"));
 const relay = await createRelay({ directory, port: 0 });
 const bridge = connectBridge({
@@ -117,6 +118,7 @@ try {
   await page.getByRole("button", { name: "指南", exact: true }).click();
   await page.getByRole("button", { name: "照片", exact: true }).click();
   assert.deepEqual(errors, [], "browser runtime errors");
+  await remoteControlUiChecks(browser);
   console.log(
     "Browser E2E passed: desktop/mobile, pairing, approval, continuation/failure, photo upload/default, settings, QR, reconnect, simulator controls.",
   );

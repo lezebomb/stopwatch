@@ -56,6 +56,7 @@ export function createDeviceSync(store, directory, bridgeOnline, { allowExecutio
     const bridge = store.snapshot("bridgeStatus");
     const online = bridgeOnline() && bridge?.mode === "production" && bridge?.online === true;
     const quota = online ? store.snapshot("quota") : null;
+    const receipt = deviceId ? store.receipts(deviceId)[0] : null;
     return {
       schema: 1,
       hardware: deviceHardware,
@@ -66,7 +67,9 @@ export function createDeviceSync(store, directory, bridgeOnline, { allowExecutio
       codex: {
         online,
         canControl: !!(deviceId && allowExecution && store.deviceControl(deviceId)),
-        receipt: deviceId ? store.receipts(deviceId)[0] || null : null,
+        // The 8 KiB device manifest needs only correlation and stage. Full
+        // provider errors and review details remain in the authenticated web UI.
+        receipt: receipt ? { commandId: receipt.commandId, stage: receipt.stage, updated: receipt.updated } : null,
         tasks: tasks.slice(0, 4).map(item => ({ id: item.id.slice(0, 64), title: String(item.title || "").slice(0, 60), project: String(item.project || "").slice(0, 30), state: item.state })),
         task: task ? {
           id: task.id.slice(0, 64),

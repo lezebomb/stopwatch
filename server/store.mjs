@@ -221,10 +221,11 @@ export class Store {
   }
   commandStatus(update) {
     const rank = { received: 0, accepted: 1, executing: 2, uncertain: 3, succeeded: 4, failed: 4, interrupted: 4 };
-    if (!Object.hasOwn(rank, update.stage) || typeof update.commandId !== "string" || !this.savedCommand(update.commandId)) return;
+    const command = typeof update.commandId === "string" && this.savedCommand(update.commandId);
+    if (!Object.hasOwn(rank, update.stage) || !command) return;
     const previous = this.receipt(update.commandId);
     if (previous && (rank[previous.stage] === 4 || rank[update.stage] < rank[previous.stage] && !(previous.stage === "uncertain" && update.stage === "executing"))) return;
-    const receipt = { commandId: update.commandId, stage: update.stage, taskId: update.taskId || previous?.taskId || null,
+    const receipt = { commandId: update.commandId, action: command.action, ...(command.action === "approve" ? { decision: command.decision } : {}), stage: update.stage, taskId: update.taskId || previous?.taskId || null,
       message: typeof update.message === "string" ? update.message.slice(0, 512) : null, updated: Date.now() };
     this.db.prepare("UPDATE commands SET receipt=? WHERE id=?").run(JSON.stringify(receipt), update.commandId);
     return receipt;

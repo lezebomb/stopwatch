@@ -12,4 +12,6 @@ void sw_update_services_ready(void);
 void sw_update_interaction(bool busy);
 void sw_update_request_check(void);
 void sw_update_status(sw_update_status_t *out);
+bool sw_update_boot_ready(void);
+void sw_update_maintenance(void);
 void sw_update_settings_open(lv_event_t *event);

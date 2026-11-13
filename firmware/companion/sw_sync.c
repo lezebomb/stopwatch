@@ -1,4 +1,5 @@
 #include "sw_sync.h"
+#include "sw_updater.h"
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
 #include "esp_attr.h"
@@ -53,6 +54,7 @@ typedef struct { char action[12], task[65], approval[65], decision[8], id[40]; u
 static codex_command_t codex_pending;
 static portMUX_TYPE codex_lock = portMUX_INITIALIZER_UNLOCKED;
 static atomic_int codex_command_state;
+static EXT_RAM_BSS_ATTR char codex_last_id[40];
 
 void sw_sync_codex_view(sw_codex_view_t *out) {
   portENTER_CRITICAL(&codex_lock);
@@ -60,12 +62,13 @@ void sw_sync_codex_view(sw_codex_view_t *out) {
   portEXIT_CRITICAL(&codex_lock);
 }
 const char *sw_sync_codex_command_state(void) {
-  static const char *const names[] = {"idle", "sending", "sent", "failed"};
+  static const char *const names[] = {"idle", "sending", "received", "failed", "accepted", "executing", "succeeded", "interrupted", "uncertain"};
   return names[atomic_load(&codex_command_state)];
 }
 bool sw_sync_codex_submit(const char *action, const char *task, const char *approval, const char *decision) {
   if (!action || (strcmp(action, "focus") && strcmp(action, "start") && strcmp(action, "continue") && strcmp(action, "interrupt") && strcmp(action, "approve")) ||
       !task || strlen(task) > 64 || !atomic_load(&worker) || !muse_wifi_connected() || muse_state_asleep()) return false;
+  if (!strcmp(action, "approve") && (!approval || !*approval || !decision || strcmp(decision, "decline"))) return false;
   codex_command_t next = {0};
   next.deadline = esp_timer_get_time() + 60000000;
   strlcpy(next.action, action, sizeof(next.action)); strlcpy(next.task, task, sizeof(next.task));
@@ -74,7 +77,7 @@ bool sw_sync_codex_submit(const char *action, const char *task, const char *appr
   snprintf(next.id, sizeof(next.id), "sw-%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
   portENTER_CRITICAL(&codex_lock);
   bool allowed = atomic_load(&codex_command_state) != 1 && !codex_pending.action[0] && (codex_view.can_control || !strcmp(action, "focus"));
-  if (allowed) { codex_pending = next; atomic_store(&codex_command_state, 1); }
+  if (allowed) { codex_pending = next; strlcpy(codex_last_id, next.id, sizeof(codex_last_id)); atomic_store(&codex_command_state, 1); }
   portEXIT_CRITICAL(&codex_lock);
   if (allowed) xTaskNotifyGive(atomic_load(&worker));
   return allowed;
@@ -460,6 +463,19 @@ static void save_task(cJSON *root) {
                       : 0;
   if (!time)
     return;
+  cJSON *receipt = cJSON_GetObjectItemCaseSensitive(codex, "receipt");
+  const char *receipt_id = string(receipt, "commandId"), *receipt_stage = string(receipt, "stage");
+  if (receipt_id && receipt_stage) {
+    static const struct { const char *name; int state; } stages[] = {
+      {"received", 2}, {"failed", 3}, {"accepted", 4}, {"executing", 5},
+      {"succeeded", 6}, {"interrupted", 7}, {"uncertain", 8}};
+    portENTER_CRITICAL(&codex_lock);
+    if (!strcmp(codex_last_id, receipt_id)) {
+      for (unsigned i = 0; i < sizeof(stages) / sizeof(stages[0]); i++)
+        if (!strcmp(receipt_stage, stages[i].name)) atomic_store(&codex_command_state, stages[i].state);
+    }
+    portEXIT_CRITICAL(&codex_lock);
+  }
   sw_codex_view_t *view = heap_caps_calloc(1, sizeof(*view), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (view) {
     const char *id = string(task, "id");
@@ -564,11 +580,13 @@ static void sync_worker(void *arg) {
         char *body = cJSON_PrintUnformatted(request); cJSON_Delete(request);
         int status = 0;
         cJSON *reply = body ? get_json("/api/device/commands", credentials.token, body, &status) : NULL;
-        bool ok = reply && (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(reply, "queued")) || cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(reply, "selected")));
+        bool selected = reply && status == 200 && !strcmp(command->action, "focus") && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(reply, "selected"));
+        bool queued = reply && status == 202 && strcmp(command->action, "focus") && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(reply, "queued"));
+        bool ok = selected || queued;
         cJSON_Delete(reply); free(body);
         if (!ok && (status == 0 || status >= 500) && ++command->attempts < 3) {
           portENTER_CRITICAL(&codex_lock); codex_pending = *command; portEXIT_CRITICAL(&codex_lock);
-        } else atomic_store(&codex_command_state, ok ? 2 : 3);
+        } else atomic_store(&codex_command_state, ok ? (selected ? 6 : 2) : 3);
         free(command); due = 0;
       }
     }
@@ -611,6 +629,7 @@ static void sync_worker(void *arg) {
       }
       due = esp_timer_get_time() + (int64_t)interval * 1000000;
     }
+    sw_update_maintenance();
     unsigned wait_ms =
         atomic_load(&focused) || atomic_load(&pair_state) == PAIR_PENDING
             ? 3000
