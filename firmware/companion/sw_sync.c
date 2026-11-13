@@ -218,7 +218,10 @@ static esp_http_client_handle_t open_request(const char *path,
        esp_http_client_write(client, body, body_size) == body_size)) {
     *length = esp_http_client_fetch_headers(client);
     *status = esp_http_client_get_status_code(client);
-    if (*length >= 0 && *status == (offset ? 206 : 200))
+    /* Command acceptance is asynchronous (202); photo/enrollment contracts
+     * remain strict so an error body can never become photo data. */
+    if (*length >= 0 && (*status == (offset ? 206 : 200) ||
+                         (body && !strcmp(path, "/api/device/commands") && *status == 202)))
       return client;
   }
   if (ok && opened != ESP_OK)

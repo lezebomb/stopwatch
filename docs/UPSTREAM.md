@@ -16,9 +16,9 @@
 
 ## Codex 核对
 
-`npm run protocol:check` 调用当前 PATH 的 `codex app-server generate-json-schema`，验证 `initialize`、`thread/list`、`thread/read`、`thread/start`、`thread/resume`、`turn/start`、`turn/steer`、`turn/interrupt`、`account/rateLimits/read` 确实存在。`turn/steer` 要求 `expectedTurnId`。审批是服务端发来的带 ID 请求，响应使用同一 ID；不是猜测的“approve”RPC。
+`npm run protocol:check` 调用当前 PATH 的 `codex app-server generate-json-schema`，验证 `initialize`、`thread/list`、`thread/read`、`thread/start`、`thread/resume`、`turn/start`、`turn/steer`、`turn/interrupt`、`account/rateLimits/read`、`model/list` 十个接口。`turn/steer` 要求 `expectedTurnId`。审批是服务端发来的带 ID 请求，响应使用同一 ID；不是猜测的“approve”RPC。应用侧使用随机审批 ID 映射具体请求，避免 App Server 重启后 ID 重用。
 
-本机沙箱中的 Desktop 捆绑 CLI 报告 0.167.0-alpha.3.2；原生执行环境 PATH 的 CLI 报告 0.164.0。schema 检查产物记录实际二进制版本。二者不能混称为同一次运行。没有执行账户 RPC、读取 Token 或接管当前会话。额度仅在接口确实返回对应窗口时展示；当前界面中的 5 小时/周额度明确为模拟。
+本轮原生执行环境实际使用 CLI 0.164.0，schema 检查产物记录二进制版本；之前观察到的 Desktop 捆绑 0.167.0-alpha.3.2 不混称为本次运行。已用官方账户额度和 `model/list`，选择当前账户推荐的 gpt-6.1-sol，修复全局旧模型 gpt-5.4 被拒绝的问题，不修改全局配置。真实公网任务、双工作区、追加、中断、审批和自有线程恢复已验证；额度窗口来自服务端实际返回。没有读取认证 Token 文件、列出或接管已有 Desktop 会话。
 
 ## 更新与许可
 
