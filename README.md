@@ -2,7 +2,7 @@
 
 基于 M5Stack StopWatch C152 和官方 Muse SDK，在 v0.1 上扩展签名 OTA、自动发布、在线演示及 Windows 后台交付。当前版本 **0.2.0**。
 
-**实机进展** 已验证照片封面、触屏、按键、手机配网、云端授权和无线相册。本地 Codex 状态已通过 USB 联动挂件。Muse 官方账号已绑定，正式会话仍待网络联调，听感待验收。挂件当前保持持久静音。Windows 正式桥接和正式签名 OTA 待实机验收。[硬件测试记录](HARDWARE_TEST.md)
+**实机进展** 已验证照片封面、触屏、按键、手机配网、云端授权和无线相册。本地 Codex 状态已通过 USB 联动挂件。Muse 保留原官方账号绑定，经华为热点共享代理出口，已实测获取 VM、WebSocket 升级、Noise 握手、`sessionReady=true`、断线恢复和完整文字回复；当前网络环境下仍依赖可用的代理网关。挂件保持持久静音，录音、通话和听感未验收。Windows 正式桥接和正式签名 OTA 待实机验收。[硬件测试记录](HARDWARE_TEST.md)
 
 **[打开在线隔离演示](https://lezebomb.github.io/stopwatch/)**：无需下载仓库、运行 Node 或安装 APK。发布状态以 GitHub Actions 为准。演示任务、配对和更新均为 Mock，图片仅在浏览器内存处理；不连接真实 Codex，不具备公网执行权限。
 
@@ -96,6 +96,10 @@ npm.cmd audit
 Muse 首次授权需要本人从官方账户创建 SDK token。Windows 本机运行 `./scripts/set-muse-token.ps1 -Port COM5`，在密码框粘贴并保存。命令行入口为 `python scripts/device-sync.py --port COM5 --set-muse-token`，需要 ESP-IDF Python 环境。已有令牌会跳过写入，更换令牌须显式加 `--replace-muse-token`，再按官方流程重新绑定。令牌通过 USB 保存在设备 NVS，随后在 Muse App 的「设置 → 设备」完成配对。语音便签回复显示为文字，语音播放使用支持实时通话的固件和账号。[Muse SDK 官方说明](https://github.com/facebookincubator/muse-gadget-sdk/blob/463bd2a05380fea4211b0099ad0f70933c108b20/esp32/README.md)
 
 当前固件默认静音，并持久保存本地静音开关。静音时功放使能保持关闭，PCM 输出为零，提示音与回环诊断直接返回。`python scripts/device-sync.py --port COM5 --muse-status` 可读取令牌是否配置、账号绑定状态、静音状态和功放寄存器，不返回凭据。后续获准播放时，可通过本地 USB 的 `audio.silent` 命令解除静音，并在官方声音设置中恢复音量。
+
+Muse 网络受限时，可让挂件通过手机或路由器的局域网 HTTP CONNECT 端口使用既有 VPS 出口。手机需同时开启兼容 2.4 GHz 的热点、代理及局域网共享。设备端一次通过本机 USB 配置 `{"id":1,"op":"muse.proxy.set","host":"@gateway","port":7890}`，之后从当前 Wi-Fi 获取网关并自动重连。也支持固定私有 IPv4 地址。设置独立保存在 `sw_muse_proxy` 命名空间，可用 `muse.proxy.status` 查询、`muse.proxy.clear` 撤销。
+
+该入口覆盖官方 Muse API 和 `*.metaaivm.com` 的动态 VM 主机。CONNECT 建立后由 ESP-IDF 按原始主机名执行 TLS 和证书校验，再运行官方 WebSocket/Noise 协议。配置启用而代理不可达时，会话按现有 SDK 策略重试。首次安装默认关闭代理，日常使用需保持所选网关的代理端口可用。`python scripts/muse-diagnostics.py --port COM5 --seconds 90` 在静音条件下记录凭据存在状态、HTTP 状态码和握手阶段；加 `--observe-ready` 会持续采样内存和连接状态，不在首次就绪时结束。报告留在 Git 忽略目录。SDK 的配对前缀一致不代表完整 Token 相同，远端有效性以真实服务响应为准。
 
 日常配网使用普通 2.4 GHz Wi-Fi 或手机热点，由 Muse SDK 管理。旧版 PEAP 测试凭据可经 USB 执行 `device-sync.py --pipe`，发送 `{"id":1,"op":"wifi.enterprise.clear"}`。命令只删除现存的 PEAP 凭据键，并清除同命名空间中已删除条目的残留数据。可用 `wifi.enterprise.status` 查询凭据是否仍在。若旧校园网名称仍在 Wi-Fi 列表，只需在设置中忘记对应网络。
 

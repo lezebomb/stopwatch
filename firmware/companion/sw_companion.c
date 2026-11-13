@@ -21,6 +21,7 @@
 #include "muse_state.h"
 #include "muse_voice.h"
 #include "muse_wifi.h"
+#include "sw_muse_proxy.h"
 #include "nvs.h"
 #include "psa/crypto.h"
 #include "src/misc/cache/instance/lv_image_cache.h"
@@ -678,6 +679,29 @@ static bool device_console_locked(const char *line) {
   const char *error = "invalid-command";
   if (id <= 0 || !request)
     goto done;
+  if (!strcmp(op, "muse.proxy.set")) {
+    cJSON *host = cJSON_GetObjectItemCaseSensitive(request, "host");
+    cJSON *port = cJSON_GetObjectItemCaseSensitive(request, "port");
+    if (!cJSON_IsString(host) || !cJSON_IsNumber(port) ||
+        port->valuedouble != port->valueint || port->valueint < 1 || port->valueint > 65535)
+      goto done;
+    esp_err_t result = sw_muse_proxy_set(host->valuestring, (uint16_t)port->valueint);
+    error = result == ESP_OK ? NULL : esp_err_to_name(result);
+    goto done;
+  }
+  if (!strcmp(op, "muse.proxy.clear")) {
+    esp_err_t result = sw_muse_proxy_clear();
+    error = result == ESP_OK ? NULL : esp_err_to_name(result);
+    goto done;
+  }
+  if (!strcmp(op, "muse.proxy.status")) {
+    printf("@sw {\"id\":%d,\"ok\":true,\"enabled\":%s,\"endpointReady\":%s}\n", id,
+           sw_muse_proxy_enabled() ? "true" : "false",
+           sw_muse_proxy_endpoint_ready() ? "true" : "false");
+    fflush(stdout);
+    cJSON_Delete(request);
+    return true;
+  }
   if (!strcmp(op, "wifi.enterprise.clear")) {
     esp_err_t result = clear_campus_profile();
     error = result == ESP_OK ? NULL : esp_err_to_name(result);
@@ -1494,6 +1518,7 @@ static void toggle_slide(lv_event_t *event) {
   save();
 }
 void sw_companion_init(void) {
+  sw_muse_proxy_init();
   /* The SDK Noto subset starts at U+3000: ASCII must resolve through a
    * Latin font. Keep this local copy; never mutate the SDK's const font. */
   companion_font = muse_font_cjk_noto_16;

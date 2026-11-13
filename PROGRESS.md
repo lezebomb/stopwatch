@@ -182,3 +182,14 @@
 - 同一挂件实测正式配置的 OTA 任务创建前后，内部空闲堆从 48,799 B 降至 34,355 B。I²S/语音管线初始化成功，音频就绪时内部堆 8,567 B、PSRAM 3,503,712 B、连续 DMA 832 B。开发版对应阶段采样为 19,903 B DRAM、3,494,792 B PSRAM 和 11,776 B 连续 DMA。两组采样的启动环境不完全相同，不能当作严格 A/B。OTA 任务健康路径栈余 11,988 B，真实验签下载路径的栈余量待测。
 - 正式配置在旧健康条件下通过，但 `relayState=disabled`。音频就绪时最大连续内部块 7,680 B，小于 `sw_relay` 的 8,192 B 栈，任务分配是最可能的阻塞。新增分配失败诊断，正式候选必须等相册任务成功启动才可通过健康检查；健康失败时停止更新轮询，待验证镜像仍由 ESP-IDF 回滚。保留任务栈并继续把正式配置的相册启动列为交付阻塞。
 - 测试只临时写入现有应用槽。原应用恢复后核对照片、显示设置、Muse 绑定及静音均保留。测试未执行实际 OTA 换槽或回滚。正式部署仍需可信签名、完整下载与验签实测、失败回滚与数据保留验证、Windows 图形安装和登录自启验收。
+
+## Muse 真实网络与 Noise 会话（2026-11-13）
+
+- 以 `33d5e4f` 为基线保留原绑定。实机确认 SDK Token、官方 Access/Refresh Token 和 setup 标记均在；配对前缀一致不等于完整 Token 比较。原凭据遇到 HTTP 401 后，官方刷新成功，随后 `/fetch_vms` 返回 200 和 1 台 VM，未重写 SDK Token、清空 NVS 或重新配对。用户确认第二台 Android 和华为使用同一本人账号，最终收礼人换号仍须走官方授权。
+- 华为兼容热点和已有代理共享提供网络出口。挂件只增加可撤销的局域网 CONNECT 路由，覆盖 Muse API 及动态 `*.metaaivm.com`；官方 TLS 证书、SNI、Token Header、VM 选择、WebSocket 和 Noise 协议保留。实机记录 TLS 成功、`/v1/noise` 升级、Noise msg3、`control WebSocket connected`、`link.register acked` 及 `sessionReady=true`。未在 VPS 新建公网代理，未改电脑网络共享。
+- 通过共享 HTTPS 锁串行化 Noise 初始握手与其他 HTTPS 请求，所有失败出口用 C++ 析构释放锁。Noise 请求、响应 Header 和注册 JSON 转入 PSRAM；Muse 像素头像的 11,784 B CPU 缓冲移入外部静态区，不改音频 DMA 或任务栈。Map 的 DIRAM 为 162,508 B、外部静态区 45,500 B；镜像仍为 3,870,720 B，4 MiB 槽余 316 KiB。已只写当前应用槽，照片、显示设置和绑定核对保留。
+- 启动后同时保留官方控制和聊天连接仍有高峰：音频就绪后 DRAM 为 29,375 B，但第二次 VM 查询期间历史最低值仍降至 532 B。稳定会话的已有 60 秒观测中，DRAM 为 19,655 B、连续 DMA 块 8,192 B，PSRAM 随缓存变化，没有故障。不能把运行期余量代替冷启动最低值或正式版验收。
+- `muse-diagnostics.py` 支持全程连接/内存采样，强制检查静音、功放关闭、音量零和无通话；不录音、不提交消息、不播放。CONNECT 主机定向测试覆盖拒绝、超时、短写、残余 TLS 字节和失败清理。修复固件准备脚本固定 `.deps/esp-idf` 的 CI 问题，优先使用实际 `IDF_PATH` 并核对锁定 commit。
+- 续跑恢复华为热点后，设备没有重启或重新授权，自行恢复 VM TLS、WebSocket 和 Noise。300.2 秒、21 个样本中，恢复后的 20 个样本均已就绪，VPS 同步回到 online；DRAM 最低 13,203 B、末值 19,367 B，连续 DMA 最低 8,192 B，PSRAM 最低 660,480 B，未捕获异常。该窗口未降低既有的 532 B 历史低水位。
+- 使用官方串口 `chat=` 的纯文字路径完成一个真实回合：收到 ack、sent、text、message_done 和 complete=true，返回两字节 OK。没有录音、TTS 或播放；前后均静音、音量零、功放关、无通话，照片和显示设置一致。DRAM 前后同为 19,367 B，PSRAM 从 721,784 B 回到 783,316 B。文字结果只记录事件和长度，没有保存聊天正文。
+- 华为的 BLE Console 配网与官方 Home Link 配对不同。现有成功 Android 绑定无需重做；华为 App 能否列出并使用同账号的既有设备仍待核实，不据 Console 成功宣称 Home Link 兼容性已解决。[官方流程说明](https://github.com/facebookincubator/muse-gadget-sdk/issues/50)。语音输入和真实通话尚未验收，持续保持持久静音。

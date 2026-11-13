@@ -48,6 +48,8 @@ for (const file of [
   "sw_miao.h",
   "sw_memory.c",
   "sw_memory.h",
+  "sw_muse_proxy.c",
+  "sw_muse_proxy.h",
 ])
   await writeChanged(
     `${component}/${file}`,
@@ -57,7 +59,7 @@ for (const file of [
 let cmake = git(["show", "HEAD:esp32/components/muse/CMakeLists.txt"]);
 cmake = cmake.replace(
   '"muse_app.c"',
-  '"muse_app.c"\n        "sw_companion.c"\n        "sw_model.c"\n        "sw_update_core.c"\n        "sw_updater.c"\n        "sw_updater_ui.c"\n        "sw_sync.c"\n        "sw_miao.c"\n        "sw_memory.c"',
+  '"muse_app.c"\n        "sw_companion.c"\n        "sw_model.c"\n        "sw_update_core.c"\n        "sw_updater.c"\n        "sw_updater_ui.c"\n        "sw_sync.c"\n        "sw_miao.c"\n        "sw_memory.c"\n        "sw_muse_proxy.c"',
 );
 cmake = cmake.replace(
   "idf_component_register(",
@@ -145,10 +147,52 @@ const tokenHook = "bool sdk_token_console_command(const char *line) {";
 if (!tokenConsole.includes(tokenHook))
   throw new Error("Upstream console hook changed");
 tokenConsole =
-  '#include "sw_companion.h"\n' +
+  '#include "cJSON.h"\n#include "config_store.h"\n#include "sw_companion.h"\n' +
   tokenConsole.replace(
     tokenHook,
-    tokenHook + "\n    if (sw_companion_console(line)) return true;",
+    String.raw`/* Report key presence without copying account credentials out of NVS. */
+static bool sw_muse_credential_status(const char *line) {
+    if (strncmp(line, "sw:", 3)) return false;
+    cJSON *request = cJSON_Parse(line + 3);
+    cJSON *op = cJSON_GetObjectItemCaseSensitive(request, "op");
+    cJSON *id = cJSON_GetObjectItemCaseSensitive(request, "id");
+    if (!cJSON_IsString(op) || strcmp(op->valuestring, "muse.credentials") ||
+        !cJSON_IsNumber(id) || id->valuedouble != id->valueint || id->valueint < 0) {
+        cJSON_Delete(request);
+        return false;
+    }
+    const char *const keys[] = {"sdk_token", "pair_sdk_hint", "access_token",
+                               "refresh_token", "auth_token", "username", "vm_url"};
+    config_key_lookup_t found[sizeof(keys) / sizeof(keys[0])];
+    unsigned errors = 0;
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
+        found[i] = config_key_lookup(keys[i]);
+        if (found[i] == CONFIG_KEY_LOOKUP_ERROR) ++errors;
+    }
+    const char *hint_matches = "null";
+    if (found[1] == CONFIG_KEY_FOUND)
+        hint_matches = identity_sdk_token_changed_since_pairing(NULL, 0) ? "false" : "true";
+    printf("@sw {\"id\":%d,\"ok\":true,\"sdkTokenSyntaxValid\":%s,"
+           "\"sdkTokenKeyPresent\":%s,\"pairingSdkHintKeyPresent\":%s,"
+           "\"pairingSdkHintMatches\":%s,\"accessTokenKeyPresent\":%s,"
+           "\"refreshTokenKeyPresent\":%s,\"legacyAuthTokenKeyPresent\":%s,"
+           "\"usernameKeyPresent\":%s,\"preferredVmKeyPresent\":%s,"
+           "\"setupComplete\":%s,\"lookupErrors\":%u}\n",
+           id->valueint, identity_sdk_token_valid(identity_sdk_token()) ? "true" : "false",
+           found[0] == CONFIG_KEY_FOUND ? "true" : "false",
+           found[1] == CONFIG_KEY_FOUND ? "true" : "false", hint_matches,
+           found[2] == CONFIG_KEY_FOUND ? "true" : "false",
+           found[3] == CONFIG_KEY_FOUND ? "true" : "false",
+           found[4] == CONFIG_KEY_FOUND ? "true" : "false",
+           found[5] == CONFIG_KEY_FOUND ? "true" : "false",
+           found[6] == CONFIG_KEY_FOUND ? "true" : "false",
+           config_setup_complete() ? "true" : "false", errors);
+    fflush(stdout);
+    cJSON_Delete(request);
+    return true;
+}
+
+` + tokenHook + "\n    if (sw_muse_credential_status(line)) return true;\n    if (sw_companion_console(line)) return true;",
   );
 tokenConsole = tokenConsole.replace(
   'ESP_LOGI(TAG, "stored SDK token %.12s, restarting to use it", token);',
@@ -256,6 +300,8 @@ await writeChanged(`${sdk}/main/muse_glue.h`,
   glueHeader.replace(linkReady + ";", linkReady + ";\nvoid muse_glue_wait_local_boot(void);"));
 await writeChanged(`${sdk}/main/muse_glue.c`, glue);
 const vmApi = git(["show", "HEAD:esp32/main/vm_api.c"]);
+const refreshTokenLog = 'ESP_LOGI(TAG, "refresh carries SDK token %.12s", s_sdk_token);';
+if (!vmApi.includes(refreshTokenLog)) throw new Error("Upstream refresh log changed");
 const vmClient = "    esp_http_client_handle_t client = esp_http_client_init(&cfg);\n" +
   "    if (!client) return VM_API_ERR_FAILED;";
 const vmCleanup = "    esp_http_client_cleanup(client);";
@@ -281,6 +327,7 @@ if (![vmClient, vmCleanup, vmBuffers, vmRequest, vmHandler, vmRetry, vmRetryEnd]
     .every((hook) => vmApi.includes(hook)))
   throw new Error("Upstream VM HTTPS client changed");
 await writeChanged(`${sdk}/main/vm_api.c`, '#include "sw_memory.h"\n#include "sw_sync.h"\n' + vmApi
+  .replace(refreshTokenLog, 'ESP_LOGI(TAG, "refresh carries configured SDK token");')
   .replace(vmHandler, `static esp_err_t sw_vm_bundle_attach(void *conf) {
     sw_memory_mark("vm.tls-config", 0, 0, 0);
     return esp_crt_bundle_attach(conf);
@@ -322,6 +369,12 @@ await writeChanged(`${sdk}/main/vm_api.c`, '#include "sw_memory.h"\n#include "sw
         }`)
   .replace(vmRetryEnd, `                     MAX_FETCH_ATTEMPTS, status);
             return VM_API_ERR_FAILED;`));
+let linkPairing = git(["show", "HEAD:esp32/main/link_pairing.c"]);
+const pairingTokenLog = 'ESP_LOGI(TAG, "pairing_confirmed carries SDK token %.12s", s_sdk_token);';
+if (!linkPairing.includes(pairingTokenLog)) throw new Error("Upstream pairing log changed");
+linkPairing = linkPairing.replace(pairingTokenLog,
+  'ESP_LOGI(TAG, "pairing_confirmed carries configured SDK token");');
+await writeChanged(`${sdk}/main/link_pairing.c`, linkPairing);
 // Restore the pinned source even when reusing a build with the retired PEAP patch.
 await writeChanged(`${sdk}/main/wifi_mgr.c`, git(["show", "HEAD:esp32/main/wifi_mgr.c"]));
 let settingsUi = git(["show", "HEAD:esp32/components/muse/muse_settings_ui.c"]);
@@ -448,6 +501,32 @@ if (!production) {
     "            sw_memory_dma_begin(4);\n" + openCodec + "\n            sw_memory_dma_end(err);");
 }
 await writeChanged(`${component}/muse_audio.c`, audio);
+// The pixel avatar renders in the LVGL task and copies into separate draw
+// buffers. Its palette indices and lookup tables never feed DMA or an ISR.
+let pixel = git(["show", "HEAD:esp32/avatar/muse_pixel.c"]);
+for (const declaration of [
+  "static uint8_t s_fb[W * H];",
+  "static uint8_t s_mask[W * H];",
+  "static int16_t s_pow_dome[POW_LUT_N + 1];",
+  "static int16_t s_pow_base[POW_LUT_N + 1];",
+  "static int16_t s_sqrt[SQRT_LUT_N + 1];",
+  "static uint8_t s_map[MAP_MAX];",
+]) {
+  if (pixel.split(declaration).length !== 2)
+    throw new Error(`Upstream pixel buffer changed: ${declaration}`);
+  pixel = pixel.replace(declaration, declaration.replace("static ", "static SW_PIXEL_BUFFER_ATTR "));
+}
+pixel = `#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#include "sdkconfig.h"
+#endif
+#if defined(ESP_PLATFORM) && CONFIG_MUSE_BOARD_M5STACK_STOPWATCH
+#define SW_PIXEL_BUFFER_ATTR EXT_RAM_BSS_ATTR
+#else
+#define SW_PIXEL_BUFFER_ATTR
+#endif
+` + pixel;
+await writeChanged(`${sdk}/avatar/muse_pixel.c`, pixel);
 let chat = git(["show", "HEAD:esp32/components/muse/muse_chat_session.cpp"]);
 const unsafeCaption = 'snprintf(err, err_cap, "Can\'t reach %s", s_host);';
 if (!chat.includes(unsafeCaption))
@@ -457,6 +536,66 @@ chat = chat.replace(
   'snprintf(err, err_cap, "Can\'t reach %.32s", s_host);',
 );
 await writeChanged(`${component}/muse_chat_session.cpp`, chat);
+let noise = git(["show", "HEAD:esp32/main/noise_control.cpp"]);
+for (const size of ["req_cap", "kHdrCap", "size"]) {
+  const allocation = size === "size" ? "json = (char *)malloc(size);"
+    : `static_cast<char *>(malloc(${size}))`;
+  if (!noise.includes(allocation)) throw new Error(`Upstream Noise buffer changed: ${size}`);
+  const replacement = size === "size"
+    ? "json = (char *)heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);"
+    : `static_cast<char *>(heap_caps_malloc(${size}, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT))`;
+  noise = noise.replace(allocation, replacement);
+}
+noise = 'extern "C" {\n#include "sw_memory.h"\n#include "sw_sync.h"\n}\n' + noise;
+const noiseStart = "static session_result_t run_session(stack_monitor_t *stack) {";
+const noiseConnected = '    s_connected = true;\n    notify_status("ws_connected");';
+if (!noise.includes(noiseStart) || !noise.includes(noiseConnected))
+  throw new Error("Upstream Noise session lifecycle changed");
+noise = noise.replace(noiseStart, noiseStart + String.raw`
+    if (!sw_sync_http_take_muse()) return SESSION_FAILED;
+    struct startup_gate {
+        bool held = true;
+        void release() { if (held) { held = false; sw_sync_http_release(); } }
+        ~startup_gate() { release(); }
+    } https;
+    sw_memory_mark("vm.noise-start", 0, 0, 0);
+`).replace(noiseConnected,
+  '    sw_memory_mark("vm.noise-ready", 0, 0, 0);\n    https.release();\n' + noiseConnected);
+const registerBuild = "        char *reg_json = build_register_json();";
+if (!noise.includes(registerBuild)) throw new Error("Upstream Noise registration changed");
+noise = noise.replace(registerBuild,
+  '        sw_memory_mark("vm.noise-register-before", 0, 0, 0);\n' + registerBuild +
+  '\n        sw_memory_mark("vm.noise-register-after", reg_json != nullptr, 0, 0);');
+await writeChanged(`${sdk}/main/noise_control.cpp`, noise);
+// Route only Muse TLS sockets through an explicitly configured LAN proxy.
+// ESP-TLS still owns the original hostname, certificate checks and handshake.
+const idf = path.resolve(process.env.IDF_PATH || ".deps/esp-idf");
+if (execFileSync("git", ["-c", `safe.directory=${idf.replaceAll("\\", "/")}`,
+    "-C", idf, "rev-parse", "HEAD"], { encoding: "utf8" }).trim() !== lock.espIdf.commit)
+  throw new Error("ESP-IDF commit differs from upstream.lock.json");
+let tlsSource = execFileSync("git", ["-c", `safe.directory=${idf.replaceAll("\\", "/")}`,
+  "-C", idf, "show", "HEAD:components/esp-tls/esp_tls.c"], { encoding: "utf8" });
+const tcpHook = "static inline esp_err_t tcp_connect(const char *host, int hostlen, int port, const esp_tls_cfg_t *cfg, esp_tls_error_handle_t error_handle, int *sockfd)\n{";
+if (!tlsSource.includes(tcpHook)) throw new Error("Pinned ESP-TLS socket hook changed");
+tlsSource = tlsSource.replace(tcpHook, String.raw`
+extern bool sw_muse_proxy_applies(const char *, int, int) __attribute__((weak));
+extern esp_err_t sw_muse_proxy_connect(const char *, int, int, int, int *) __attribute__((weak));
+` + tcpHook + String.raw`
+    if (cfg && !cfg->is_plain_tcp && sw_muse_proxy_applies && sw_muse_proxy_connect &&
+        sw_muse_proxy_applies(host, hostlen, port)) {
+        esp_err_t result = sw_muse_proxy_connect(host, hostlen, port, cfg->timeout_ms, sockfd);
+        if (result == ESP_OK) result = esp_tls_set_socket_options(*sockfd, cfg);
+        if (result == ESP_OK && cfg->non_block)
+            result = esp_tls_set_socket_non_blocking(*sockfd, true);
+        if (result != ESP_OK && *sockfd >= 0) {
+            close(*sockfd);
+            *sockfd = -1;
+        }
+        ESP_LOGI(TAG, "Muse LAN tunnel result: %d", result);
+        return result;
+    }
+`);
+await writeChanged(`${idf}/components/esp-tls/esp_tls.c`, tlsSource);
 let voiceCall = git(["show", "HEAD:esp32/components/muse/muse_voice_call.cpp"]);
 voiceCall = '#include "esp_attr.h"\n' + voiceCall;
 // These session-task buffers never go to I2S DMA. Leave internal RAM for DMA.
