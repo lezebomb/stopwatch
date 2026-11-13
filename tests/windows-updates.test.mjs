@@ -148,6 +148,7 @@ test("real App Server adapter enforces workspace allowlist, owns thread IDs and 
       decision: "decline",
     });
     assert.deepEqual(responses, [{ id: 7, decision: "decline" }]);
+    assert.equal(engine.tasks.get("task-owned").state, "working", "Declining one tool request must not claim the whole turn was interrupted");
     callbacks.onApproval({ id: 7, method: "item/commandExecution/requestApproval", params: { threadId: "owned", command: "test again" } });
     const freshApproval = emitted.filter(e => e.payload.state === "approval").at(-1).payload.approvalId;
     assert.notEqual(freshApproval, approval, "A reused server request ID must not revive an old approval");

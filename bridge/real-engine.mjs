@@ -362,8 +362,8 @@ export class AppServerCodex {
       this.rpc.respondApproval(a.serverId, c.decision);
       this.output(
         task,
-        c.decision === "decline" ? "interrupted" : "working",
-        c.decision === "decline" ? "本次操作已拒绝" : "本次操作已批准",
+        "working",
+        c.decision === "decline" ? "本次操作已拒绝，等待 Codex 响应" : "本次操作已批准",
         { approvalId: null },
       );
       return;
