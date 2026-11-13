@@ -127,6 +127,7 @@ export async function createRelay({
     const command = { v: 1, id: data.id, action: data.action, text: data.text, taskId: data.taskId, approvalId: data.approvalId, decision: data.decision, actor,
       projectId: typeof data.projectId === "string" ? data.projectId : undefined };
     const added = store.command(command);
+    if (added && command.action === "start") store.settings({ codexTaskId: command.id });
     if (added && bridge) send(bridge, { type: "command", command });
     store.audit(actor, `command.${command.action}`);
     return json(res, 202, { queued: true, duplicate: !added, bridgeOnline: online() });

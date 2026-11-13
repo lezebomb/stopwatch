@@ -1,5 +1,10 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { AppServerTransport } from "./app-server.mjs";
+function failureText(value) {
+  try { const parsed = JSON.parse(value); value = parsed.error?.message || parsed.message || value; } catch {}
+  return String(value || "Codex 请求失败").slice(0, 512);
+}
 export class AppServerCodex {
   constructor({
     emit,
@@ -9,6 +14,7 @@ export class AppServerCodex {
     onStatus = () => {},
     transportFactory,
     approvalSeconds = 300,
+    model,
   }) {
     if (
       !workspaces?.length ||
@@ -19,9 +25,10 @@ export class AppServerCodex {
     this.tasks = new Map(tasks.map((t) => [t.id, t]));
     this.workspaces = workspaces;
     this.executable = executable;
+    this.requestedModel = model;
     this.onStatus = (status) => {
       this.lastStatus = { ...status, mode: "production", updated: Date.now(),
-        workspaces: this.workspaces.map(({ id, name }) => ({ id, name })) };
+        model: this.model || null, workspaces: this.workspaces.map(({ id, name }) => ({ id, name })) };
       onStatus(this.lastStatus);
     };
     this.transportFactory = transportFactory;
@@ -69,6 +76,11 @@ export class AppServerCodex {
         });
     try {
       await this.rpc.initialize();
+      if (this.rpc.models) {
+        const models = (await this.rpc.models()).data || [];
+        this.model = this.requestedModel || models.find(m => m.isDefault)?.model;
+        if (!this.model || !models.some(m => m.model === this.model)) throw new Error("选择的 Codex 模型当前不可用");
+      }
       for (const task of this.tasks.values())
         if (task.appServerThreadId) {
           const project = this.authorizedProject(task);
@@ -86,6 +98,7 @@ export class AppServerCodex {
             result = await this.rpc.resume(
               task.appServerThreadId,
               project.path,
+              this.model,
             );
           } catch (error) {
             if (
@@ -235,8 +248,8 @@ export class AppServerCodex {
           : p.turn?.status === "interrupted"
             ? "interrupted"
             : "completed",
-        p.turn?.error?.message || "本轮任务已结束",
-        { approvalId: null, approval: null, error: p.turn?.error?.message || null, result: task.result || "" },
+        p.turn?.error?.message ? failureText(p.turn.error.message) : "本轮任务已结束",
+        { approvalId: null, approval: null, error: p.turn?.error?.message ? failureText(p.turn.error.message) : null, result: task.result || "" },
       );
     } else if (message.method === "item/agentMessage/delta") {
       this.output(task, task.state, "正在生成回复", {
@@ -245,7 +258,7 @@ export class AppServerCodex {
     } else if (message.method === "item/completed" && p.item?.type === "agentMessage") {
       this.output(task, task.state, "回复已生成", { result: String(p.item.text || task.result || "").slice(-32768) });
     } else if (message.method === "error") {
-      this.output(task, p.willRetry ? task.state : "failed", p.error?.message || "Codex 请求失败", { error: p.error?.message || "请求失败" });
+      this.output(task, p.willRetry ? task.state : "failed", failureText(p.error?.message), { error: failureText(p.error?.message) });
     } else if (message.method === "item/started") {
       const item = p.item || {};
       const type = item.type;
@@ -281,7 +294,7 @@ export class AppServerCodex {
       );
       return;
     }
-    const approvalId = `${this.generation}:${request.id}`;
+    const approvalId = randomUUID();
     const timer = setTimeout(() => {
       this.approvals.delete(approvalId);
       this.rpc.respondApproval(request.id, "decline");
@@ -315,7 +328,7 @@ export class AppServerCodex {
         (w) => w.id === (c.projectId || this.workspaces[0].id),
       );
       if (!project) throw new Error("工作区不在授权范围");
-      const result = await this.rpc.start(project.path);
+      const result = await this.rpc.start(project.path, this.model);
       if (!result.thread?.id)
         throw new Error("App Server did not return a thread");
       const task = {
@@ -330,7 +343,7 @@ export class AppServerCodex {
         history: [],
       };
       this.output(task, "thinking", "正在开始新任务");
-      const turn = await this.rpc.turn(result.thread.id, c.text);
+      const turn = await this.rpc.turn(result.thread.id, c.text, this.model);
       this.output(this.tasks.get(task.id), "working", "任务已开始", {
         turnId: turn.turn?.id,
       });
@@ -368,8 +381,8 @@ export class AppServerCodex {
     if (c.action === "continue") {
       if (["thinking", "working", "testing", "approval"].includes(task.state))
         throw new Error("任务仍在运行，请追加指令或先中断");
-      await this.rpc.resume(task.appServerThreadId, task.projectPath);
-      const result = await this.rpc.turn(task.appServerThreadId, c.text);
+      await this.rpc.resume(task.appServerThreadId, task.projectPath, this.model);
+      const result = await this.rpc.turn(task.appServerThreadId, c.text, this.model);
       this.output(task, "working", "会话已继续", {
         turnId: result.turn?.id,
         result: "",

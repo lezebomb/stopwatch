@@ -47,6 +47,7 @@ const bridge = connectBridge({
       tasks,
       workspaces: config.workspaces,
       executable: config.codex,
+      model: config.model,
       onStatus: (s) => {
         codexOnline = s.online;
         emit("bridgeStatus", { ...s, mode: "production" });

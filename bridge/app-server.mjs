@@ -45,16 +45,17 @@ export class AppServerTransport {
       }
       this.pending.clear();
     };
-    this.child.on("exit", () => {
+    let disconnected = false;
+    const closed = () => {
       rejectAll();
-      onDisconnect();
-    });
-    this.child.on("error", () => {
-      rejectAll();
-      onDisconnect();
-    });
+      if (!disconnected) { disconnected = true; onDisconnect(); }
+    };
+    this.child.stdin.on("error", closed);
+    this.child.on("exit", closed);
+    this.child.on("error", closed);
   }
   request(method, params) {
+    if (this.disposed || this.child.stdin.destroyed) return Promise.reject(new Error("App Server disconnected"));
     const id = this.next++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -87,26 +88,30 @@ export class AppServerTransport {
   read(threadId) {
     return this.request("thread/read", { threadId, includeTurns: true });
   }
-  start(cwd) {
+  models() { return this.request("model/list", {}); }
+  start(cwd, model) {
     return this.request("thread/start", {
       cwd,
+      ...(model ? { model } : {}),
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
       sandbox: "workspace-write",
     });
   }
-  resume(threadId, cwd) {
+  resume(threadId, cwd, model) {
     return this.request("thread/resume", {
       threadId,
       ...(cwd ? { cwd } : {}),
+      ...(model ? { model } : {}),
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
       sandbox: "workspace-write",
     });
   }
-  turn(threadId, text) {
+  turn(threadId, text, model) {
     return this.request("turn/start", {
       threadId,
+      ...(model ? { model } : {}),
       input: [{ type: "text", text, text_elements: [] }],
     });
   }
@@ -124,6 +129,7 @@ export class AppServerTransport {
     return this.request("account/rateLimits/read", {});
   }
   close() {
+    this.disposed = true;
     this.child.kill();
   }
 }

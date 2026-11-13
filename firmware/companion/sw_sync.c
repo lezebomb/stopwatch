@@ -65,7 +65,7 @@ const char *sw_sync_codex_command_state(void) {
 }
 bool sw_sync_codex_submit(const char *action, const char *task, const char *approval, const char *decision) {
   if (!action || (strcmp(action, "focus") && strcmp(action, "start") && strcmp(action, "continue") && strcmp(action, "interrupt") && strcmp(action, "approve")) ||
-      !task || strlen(task) > 64 || !atomic_load(&worker)) return false;
+      !task || strlen(task) > 64 || !atomic_load(&worker) || !muse_wifi_connected() || muse_state_asleep()) return false;
   codex_command_t next = {0};
   next.deadline = esp_timer_get_time() + 60000000;
   strlcpy(next.action, action, sizeof(next.action)); strlcpy(next.task, task, sizeof(next.task));

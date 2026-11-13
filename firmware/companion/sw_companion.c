@@ -1408,6 +1408,9 @@ static void show(void) {
     else
       strlcpy(connection, online ? quota_text : "尚未同步 · 额度不可用",
               sizeof(connection));
+    const char *command_state = sw_sync_codex_command_state();
+    if (!strcmp(command_state, "sending")) strlcpy(connection, "正在提交指令", sizeof(connection));
+    else if (!strcmp(command_state, "failed")) strlcpy(connection, "指令未送达，请检查网络或权限", sizeof(connection));
     lv_label_set_text_fmt(
         caption, "%s\n%s%s%s%s%s\n%s\n%.180s", online ? phases[p] : "Codex 离线",
         project, *project ? " · " : "", title, p == 6 && *error ? "\n" : "",

@@ -258,6 +258,7 @@ function receive(event, silent = false) {
   if (event.type === "quota") state.quota = event.payload;
   if (event.type === "bridgeStatus") {
     state.codex = event.payload;
+    if (!event.payload.online) state.quota = null;
     if (Array.isArray(event.payload.workspaces)) state.workspaces = event.payload.workspaces;
   }
   if (event.type === "settings") state.settings = event.payload;
@@ -521,12 +522,14 @@ function render() {
 }
 async function command(action, extra = {}) {
   try {
+    const id = crypto.randomUUID();
     await api("commands", {
-      id: crypto.randomUUID(),
+      id,
       action,
       taskId: active()?.id,
       ...extra,
     });
+    if (action === "start") state.selected = id;
     toast(state.bridgeOnline ? (state.mode === "production" ? "已发给电脑" : "已发送到 Mock 桥接") : "已排队，桥接恢复后发送");
   } catch (e) {
     toast(e.message);

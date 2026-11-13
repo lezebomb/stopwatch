@@ -148,6 +148,9 @@ test("real App Server adapter enforces workspace allowlist, owns thread IDs and 
       decision: "decline",
     });
     assert.deepEqual(responses, [{ id: 7, decision: "decline" }]);
+    callbacks.onApproval({ id: 7, method: "item/commandExecution/requestApproval", params: { threadId: "owned", command: "test again" } });
+    const freshApproval = emitted.filter(e => e.payload.state === "approval").at(-1).payload.approvalId;
+    assert.notEqual(freshApproval, approval, "A reused server request ID must not revive an old approval");
     await assert.rejects(
       engine.command({
         action: "approve",
@@ -157,6 +160,7 @@ test("real App Server adapter enforces workspace allowlist, owns thread IDs and 
       }),
       /过期/,
     );
+    await engine.command({ action: "approve", taskId: "task-owned", approvalId: freshApproval, decision: "decline" });
   } finally {
     engine.close();
   }
@@ -239,4 +243,24 @@ test("restoration rejects changed workspaces and isolates missing threads while 
   } finally {
     engine.close();
   }
+});
+
+
+test("bridge chooses the account recommended model instead of an obsolete global default", async () => {
+  const calls = [];
+  const rpc = {
+    initialize: async () => ({}),
+    models: async () => ({ data: [{ model: "account-default", isDefault: true }] }),
+    quota: async () => ({ rateLimits: {} }),
+    start: async (cwd, model) => { calls.push(model); return { thread: { id: "owned-new" } }; },
+    turn: async (thread, text, model) => { calls.push(model); return { turn: { id: "turn-new" } }; },
+    close() {},
+  };
+  const engine = new AppServerCodex({ emit() {}, workspaces: [{ id: "safe", name: "Safe", path: path.resolve("allowed") }], transportFactory: () => rpc });
+  try {
+    for (let i = 0; i < 20 && !engine.ready; i++) await new Promise(r => setTimeout(r, 5));
+    assert(engine.ready);
+    await engine.command({ action: "start", id: "new-task", text: "bounded test", projectId: "safe" });
+    assert.deepEqual(calls, ["account-default", "account-default"]);
+  } finally { engine.close(); }
 });

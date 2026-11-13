@@ -10,6 +10,8 @@ param(
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Security
 if(-not $AuthorizeExecution){throw '必须明确授权工作区。'}
+$expectedRoot=[IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'StopWatchCompanion'))
+if([IO.Path]::GetFullPath($InstallRoot) -ne $expectedRoot){throw '安装必须位于当前用户的 StopWatchCompanion 目录。'}
 $profile=Get-Content -LiteralPath (Join-Path $PackageRoot 'install-profile.json') -Raw|ConvertFrom-Json
 if(-not $profile.production){throw '开发演示包不能安装或绑定正式账号。'}
 if($profile.localInstallation -and -not $AcceptLocalBuild){throw '本地联调包没有自动更新信任根，必须明确接受。'}

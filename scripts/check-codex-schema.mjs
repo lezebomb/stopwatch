@@ -27,6 +27,7 @@ const required = [
   "turn/steer",
   "turn/interrupt",
   "account/rateLimits/read",
+  "model/list",
 ];
 for (const method of required)
   assert(methods.includes(method), `Missing real RPC method ${method}`);
