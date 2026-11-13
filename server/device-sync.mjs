@@ -66,6 +66,7 @@ export function createDeviceSync(store, directory, bridgeOnline, { allowExecutio
       codex: {
         online,
         canControl: !!(deviceId && allowExecution && store.deviceControl(deviceId)),
+        receipt: deviceId ? store.receipts(deviceId)[0] || null : null,
         tasks: tasks.slice(0, 4).map(item => ({ id: item.id.slice(0, 64), title: String(item.title || "").slice(0, 60), project: String(item.project || "").slice(0, 30), state: item.state })),
         task: task ? {
           id: task.id.slice(0, 64),
@@ -74,7 +75,7 @@ export function createDeviceSync(store, directory, bridgeOnline, { allowExecutio
           project: String(task.project || "").slice(0, 60),
           operation: String(task.operation || "").slice(0, 90),
           result: String(task.result || "").slice(-140),
-          approval: task.state === "approval" && task.approvalId ? { id: task.approvalId.slice(0, 64), command: String(task.approval?.command || "本次操作").slice(0, 80), reason: String(task.approval?.reason || "").slice(0, 40), expiresAt: task.approval?.expiresAt || 0 } : null,
+          approval: task.state === "approval" && task.approvalId ? { id: task.approvalId.slice(0, 64), command: String(task.approval?.command || "本次操作").slice(0, 80), reason: "摘要不可批准，请在手机完整核对", requiresPhone: true, expiresAt: task.approval?.expiresAt || 0 } : null,
           ...(task.state === "failed" ? { error: String(task.operation || task.result || "执行失败").slice(0, 60) } : {}),
           updated: task.updated || task.created || null,
         } : null,

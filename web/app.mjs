@@ -11,6 +11,7 @@ const VERSION = releaseConfig.version;
 import { installDemo } from "./demo.mjs";
 import { watchVersion } from "./version-watch.mjs";
 import { MiaoPlayer } from "./miao-player.mjs";
+import { createCommandDispatcher } from "./command-dispatch.mjs";
 const WEB_MODE = typeof __SW_WEB_MODE__ === "undefined" ? "local" : __SW_WEB_MODE__;
 const PREVIEW = typeof __SW_PREVIEW__ !== "undefined" && __SW_PREVIEW__;
 const demo = PREVIEW ? await installDemo() : null;
@@ -31,6 +32,8 @@ const state = {
   tasks: [],
   workspaces: [],
   projectId: null,
+  sandbox: "workspace-write",
+  commandReceipts: [],
   photos: [],
   events: [],
   settings: { ...defaultSettings },
@@ -55,6 +58,11 @@ const state = {
   tapTime: 0,
   tick: 0,
 };
+const requestedTask = new URLSearchParams(location.search).get("task");
+if (requestedTask) { state.selected = requestedTask; state.page = "tasks"; }
+let reviewedApproval = null;
+const inputDrafts = new Map();
+const receiptLabels = { received: "中转已接收", accepted: "电脑已接收", executing: "正在执行", succeeded: "执行成功", failed: "执行失败", interrupted: "已中断", uncertain: "执行状态待核对" };
 let ws,
   reconnect,
   canvas,
@@ -111,7 +119,7 @@ async function api(route, data, method = "POST") {
       method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
     } : {});
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "请求失败");
+    if (!response.ok) throw Object.assign(new Error(result.error || "请求失败"), { status: response.status });
     return result;
   } finally {
     if (writing) apiWrites--;
@@ -130,6 +138,7 @@ function merge(snapshot) {
     "mode",
     "executionEnabled",
     "codex",
+    "commandReceipts",
   ])
     if (key in snapshot) state[key] = snapshot[key];
   if (Array.isArray(snapshot.workspaces)) state.workspaces = snapshot.workspaces;
@@ -264,6 +273,13 @@ function receive(event, silent = false) {
   if (event.type === "settings") state.settings = event.payload;
   if (event.type === "photos") state.photos = event.payload.photos;
   if (event.type === "commandError" && !silent) toast(event.payload.message);
+  if (event.type === "commandStatus") {
+    const previous = state.commandReceipts.find(r => r.commandId === event.payload.commandId);
+    const rank = { received: 0, accepted: 1, executing: 2, uncertain: 3, succeeded: 4, failed: 4, interrupted: 4 };
+    if (!previous || rank[event.payload.stage] >= rank[previous.stage] && rank[previous.stage] !== 4) {
+      state.commandReceipts = [event.payload, ...state.commandReceipts.filter(r => r.commandId !== event.payload.commandId)].slice(0, 20);
+    }
+  }
   if (!silent) renderPreservingFocus();
 }
 function renderPreservingFocus() {
@@ -363,7 +379,7 @@ function tasks() {
       .join("") || '<p class="empty">还没有会话</p>'
   }</div></div><section class="card"><div class="card-head"><h2>任务详情</h2><span class="task-status">${task ? labels[task.state] : "等待第一条指令"}</span></div>${
     task
-      ? `<h3 class="task-title">${escape(task.title)}</h3><p class="muted small">${escape(task.operation)}</p>${task.state === "approval" ? `<div class="approval"><strong>${state.mode === "production" ? "请确认本次操作" : "请确认本次模拟操作"}</strong><code>${escape(task.approval?.command)}</code><p class="small">${escape(task.approval?.reason)}</p><div class="actions"><button data-decision="accept">批准本次</button><button class="danger" data-decision="decline">拒绝</button></div></div>` : ""}${task.result ? `<div class="result">${escape(task.result)}</div>` : ""}<div class="timeline">${taskEvents()
+      ? `<h3 class="task-title">${escape(task.title)}</h3><p class="muted small">${escape(task.project)} · ${task.sandbox === "read-only" ? "只读沙箱" : "工作区沙箱"}</p><p class="muted small">${escape(task.operation)}</p>${commandReceiptCard(task)}${task.state === "approval" ? approvalCard(task) : ""}${task.result ? `<div class="result">${escape(task.result)}</div>` : ""}<div class="timeline">${taskEvents()
           .filter((e) => e.payload.id === task.id)
           .slice(0, 8)
           .map(
@@ -372,9 +388,18 @@ function tasks() {
           )
           .join(
             "",
-          )}</div><form id="continue-form"><label for="continuation">${running ? "追加指令" : "继续这个会话"}</label><textarea id="continuation" required maxlength="8000" placeholder="输入后续要求"></textarea><div class="actions"><button ${task.state === "approval" ? "disabled" : ""}>${running ? "追加到当前任务" : "继续任务"}</button><button type="button" class="danger" id="interrupt" ${!running && task.state !== "approval" ? "disabled" : ""}>中断任务</button></div></form>`
+          )}</div><form id="continue-form" data-task-context="${escape(task.id)}"><label for="continuation">${running ? "追加指令" : "继续这个会话"}</label><textarea id="continuation" required maxlength="8000" placeholder="输入后续要求"></textarea><div class="actions"><button ${task.state === "approval" ? "disabled" : ""}>${running ? "追加到当前任务" : "继续任务"}</button><button type="button" class="danger" id="interrupt" ${!running && task.state !== "approval" ? "disabled" : ""}>中断任务</button></div></form>`
       : '<div class="empty">创建一个任务后，可以在这里查看执行过程、最终结果，以及需要你确认的操作。</div>'
   }</section></div>`;
+}
+function approvalCard(task) {
+  const a = task.approval || {}, production = state.mode === "production";
+  const reviewed = reviewedApproval?.id === task.approvalId && reviewedApproval?.digest === a.digest;
+  return `<div class="approval"><strong>核对完整操作</strong><pre class="approval-details">${escape(a.command)}</pre><p>${escape(a.reason)}</p>${production ? `<pre class="approval-details">${escape(a.details || "完整内容不可用，不能远程批准。请到电脑核对。")}</pre>${a.complete ? `<label class="approval-review"><input id="approval-reviewed" type="checkbox" ${reviewed ? "checked" : ""}>我已核对完整操作和请求权限</label>` : ""}` : ""}<div class="actions"><button data-decision="accept" ${production && (!a.complete || !reviewed) ? "disabled" : ""}>批准本次</button><button class="danger" data-decision="decline">拒绝</button></div></div>`;
+}
+function commandReceiptCard(task) {
+  const receipts = state.commandReceipts.filter(r => r.taskId === task?.id).slice(0, 3);
+  return receipts.map(r => `<p class="small command-receipt" role="status">${escape(receiptLabels[r.stage] || r.stage)}${r.message ? ` · ${escape(r.message)}` : ""}</p>`).join("");
 }
 function photos() {
   const bytes = state.photos.reduce((sum, p) => sum + p.bytes, 0);
@@ -420,9 +445,9 @@ function guidePage() {
   return `<div class="guide-grid">${guide.map(([title, text], i) => `<article class="guide-card"><div class="number">GUIDE / ${String(i + 1).padStart(2, "0")}</div><h2>${title}</h2><p>${text}</p></article>`).join("")}</div>`;
 }
 function render() {
-  const drafts = [...root.querySelectorAll("textarea")].map(el => [el.id, el.value]);
+  for (const el of root.querySelectorAll("textarea")) inputDrafts.set(`${el.id}:${el.closest("[data-task-context]")?.dataset.taskContext || ""}`, el.value);
   const editing = document.activeElement?.tagName === "TEXTAREA" ?
-    { id: document.activeElement.id, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
+    { id: document.activeElement.id, context: document.activeElement.closest("[data-task-context]")?.dataset.taskContext || "", start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
   if (!state.paired) return;
   if (state.page === "tasks") markRead();
   const nav = [
@@ -474,6 +499,13 @@ function render() {
         if (state.projectId) select.value = state.projectId;
         select.onchange = () => { state.projectId = select.value; };
         prompt.before(label, select);
+        const modeLabel = document.createElement("label"), mode = document.createElement("select");
+        modeLabel.textContent = "任务权限";
+        mode.id = "task-sandbox";
+        mode.innerHTML = '<option value="workspace-write">允许修改此工作区 · 敏感操作审批</option><option value="read-only">只读沙箱 · 禁止写入与网络</option>';
+        mode.value = state.sandbox;
+        mode.onchange = () => { state.sandbox = mode.value; };
+        prompt.before(modeLabel, mode);
       }
     }
     if (state.page === "settings") {
@@ -514,25 +546,30 @@ function render() {
     .querySelectorAll(".quota-fill")
     .forEach((el) => (el.style.width = `${el.dataset.width}%`));
   bind();
-  for (const [id, value] of drafts) { const field = document.getElementById(id); if (field) field.value = value; }
-  if (editing) { const field = document.getElementById(editing.id); if (field) { field.focus({ preventScroll: true }); field.setSelectionRange(editing.start, editing.end); } }
+  for (const field of root.querySelectorAll("textarea")) {
+    const key = `${field.id}:${field.closest("[data-task-context]")?.dataset.taskContext || ""}`;
+    if (inputDrafts.has(key)) field.value = inputDrafts.get(key);
+  }
+  if (editing) { const field = document.getElementById(editing.id); if (field && (field.closest("[data-task-context]")?.dataset.taskContext || "") === editing.context) { field.focus({ preventScroll: true }); field.setSelectionRange(editing.start, editing.end); } }
   canvas = document.querySelector("#screen");
   ctx = canvas?.getContext("2d");
   if (canvas) bindWatch();
 }
+const dispatchCommand = createCommandDispatcher(data => api("commands", data));
 async function command(action, extra = {}) {
   try {
-    const id = crypto.randomUUID();
-    await api("commands", {
-      id,
+    const result = await dispatchCommand({
       action,
-      taskId: active()?.id,
+      ...(action === "start" ? {} : { taskId: active()?.id }),
       ...extra,
     });
-    if (action === "start") state.selected = id;
-    toast(state.bridgeOnline ? (state.mode === "production" ? "已发给电脑" : "已发送到 Mock 桥接") : "已排队，桥接恢复后发送");
+    if (action === "start") state.selected = result.id;
+    if (result.receipt) state.commandReceipts = [result.receipt, ...state.commandReceipts.filter(r => r.commandId !== result.id)].slice(0, 20);
+    toast(state.mode === "production" ? "中转已接收，请查看电脑回执与执行结果" : "模拟指令已接收");
+    return true;
   } catch (e) {
     toast(e.message);
+    return false;
   }
 }
 function bind() {
@@ -540,21 +577,27 @@ function bind() {
     const el = document.getElementById(id);
     if (el) el.addEventListener(event, handler);
   };
-  on("task-form", "submit", (e) => {
+  on("task-form", "submit", async (e) => {
     e.preventDefault();
-    command("start", { text: document.querySelector("#prompt").value,
-      projectId: document.querySelector("#task-workspace")?.value || undefined });
-    document.querySelector("#prompt").value = "";
+    const text = document.querySelector("#prompt").value;
+    if (await command("start", { text,
+      projectId: document.querySelector("#task-workspace")?.value || undefined, sandbox: state.sandbox })) {
+      inputDrafts.set("prompt:", "");
+      if (document.querySelector("#prompt")?.value === text) document.querySelector("#prompt").value = "";
+    }
   });
-  on("continue-form", "submit", (e) => {
+  on("continue-form", "submit", async (e) => {
     e.preventDefault();
-    command(
+    const taskId = active()?.id, text = document.querySelector("#continuation").value;
+    if (await command(
       ["thinking", "working", "testing"].includes(active()?.state)
         ? "steer"
         : "continue",
-      { text: document.querySelector("#continuation").value },
-    );
-    document.querySelector("#continuation").value = "";
+      { text },
+    )) {
+      inputDrafts.set(`continuation:${taskId}`, "");
+      if (active()?.id === taskId && document.querySelector("#continuation")?.value === text) document.querySelector("#continuation").value = "";
+    }
   });
   on("interrupt", "click", () => command("interrupt"));
   on("quick-interrupt", "click", () => command("interrupt"));
@@ -572,8 +615,15 @@ function bind() {
         command("approve", {
           approvalId: active()?.approvalId,
           decision: el.dataset.decision,
+          reviewed: el.dataset.decision === "accept" && document.querySelector("#approval-reviewed")?.checked === true,
+          approvalDigest: active()?.approval?.digest,
         })),
   );
+  on("approval-reviewed", "change", e => {
+    reviewedApproval = e.target.checked ? { id: active()?.approvalId, digest: active()?.approval?.digest } : null;
+    const button = document.querySelector('[data-decision="accept"]');
+    if (button) button.disabled = !e.target.checked;
+  });
   document.querySelectorAll("[data-device-control]").forEach(el => {
     el.onclick = async () => {
       const enabled = el.dataset.enabled !== "true";

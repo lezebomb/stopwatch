@@ -108,6 +108,7 @@ export async function createRelay({
     deviceOnline: deviceSync.present(),
     deviceNote: deviceSync.present() ? "挂件最近已同步" : "暂无在线挂件",
     tasks: store.tasks(),
+    commandReceipts: store.receipts(),
     quota: codexOnline() ? store.snapshot("quota") : null,
     codex: { ...store.snapshot("bridgeStatus"), online: codexOnline() },
     workspaces: store.snapshot("bridgeStatus")?.workspaces || [],
@@ -121,16 +122,25 @@ export async function createRelay({
   function enqueue(data, actor, res) {
     if (!allowedCommands.includes(data.action) || !/^[\w-]{8,80}$/.test(data.id || "")) return json(res, 400, { error: "无效命令" });
     if (["start", "continue", "steer"].includes(data.action) && (typeof data.text !== "string" || !data.text.trim() || data.text.length > 8000)) return json(res, 400, { error: "指令不能为空或超过 8000 字" });
+    if (data.sandbox !== undefined && !["read-only", "workspace-write"].includes(data.sandbox)) return json(res, 400, { error: "不支持的沙箱模式" });
+    const command = { v: 1, id: data.id, action: data.action, text: data.text, taskId: data.taskId, approvalId: data.approvalId, decision: data.decision, actor,
+      projectId: typeof data.projectId === "string" ? data.projectId : undefined,
+      sandbox: data.action === "start" ? data.sandbox || "workspace-write" : undefined,
+      ...(data.action === "approve" ? { reviewed: data.reviewed === true, approvalDigest: data.approvalDigest } : {}) };
+    const previous = store.savedCommand(command.id);
+    if (previous) {
+      if (JSON.stringify(previous) !== JSON.stringify(command)) return json(res, 409, { error: "幂等键已用于其他命令" });
+      return json(res, 202, { queued: true, duplicate: true, bridgeOnline: online(), receipt: store.receipt(command.id) });
+    }
     const task = store.tasks().find(t => t.id === data.taskId);
     if (data.action !== "start" && !task) return json(res, 404, { error: "任务不存在" });
     if (data.action === "approve" && (!["accept", "decline"].includes(data.decision) || typeof data.approvalId !== "string" || task.approvalId !== data.approvalId || task.state !== "approval" || task.approval?.expiresAt <= Date.now())) return json(res, 409, { error: "审批已失效，请刷新任务" });
-    const command = { v: 1, id: data.id, action: data.action, text: data.text, taskId: data.taskId, approvalId: data.approvalId, decision: data.decision, actor,
-      projectId: typeof data.projectId === "string" ? data.projectId : undefined };
+    if (mode === "production" && data.action === "approve" && data.decision === "accept" && (!task.approval?.complete || data.reviewed !== true || data.approvalDigest !== task.approval.digest)) return json(res, 409, { error: "请在手机完整核对当前操作后批准" });
     const added = store.command(command);
     if (added && command.action === "start") store.settings({ codexTaskId: command.id });
     if (added && bridge) send(bridge, { type: "command", command });
     store.audit(actor, `command.${command.action}`);
-    return json(res, 202, { queued: true, duplicate: !added, bridgeOnline: online() });
+    return json(res, 202, { queued: true, duplicate: !added, bridgeOnline: online(), receipt: store.receipt(command.id) });
   }
   const server = http.createServer(async (req, res) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -229,9 +239,10 @@ export async function createRelay({
         if (!allowExecution || !store.deviceControl(device.id)) return json(res, 403, { error: "请先在手机明确授权挂件快捷操作" });
         if (!codexOnline()) return json(res, 409, { error: "电脑或 Codex 离线" });
         if (!["start", "continue", "interrupt", "approve"].includes(data.action)) return json(res, 400, { error: "不支持的快捷操作" });
+        if (data.action === "approve" && data.decision !== "decline") return json(res, 403, { error: "挂件只显示摘要，批准请在手机查看完整请求" });
         const task = store.tasks().find(t => t.id === data.taskId);
         data.text = data.action === "start" ? "检查当前工作区的 Git 状态并简短报告，不修改文件。" : "请继续当前任务，并简短汇报结果。";
-        if (data.action === "start") data.projectId = task?.projectId;
+        if (data.action === "start") { data.projectId = task?.projectId; data.sandbox = "read-only"; }
         return enqueue(data, device.id, res);
       }
       if (url.pathname === "/api/device/sync" || devicePhoto) {
@@ -537,7 +548,7 @@ export async function createRelay({
       });
     }
   });
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 65536 });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 512 * 1024 });
   server.on("upgrade", (req, socket, head) => {
     const host = req.headers.host;
     if (!hostAllowed(req)) return socket.destroy();
@@ -584,7 +595,7 @@ export async function createRelay({
               return store.ack(data.id);
             if (data.type === "event" && validEvent(data.event)) {
               if (
-                ["task", "quota", "bridgeStatus", "commandError"].includes(
+                ["task", "quota", "bridgeStatus", "commandError", "commandStatus"].includes(
                   data.event.type,
                 ) &&
                 data.event.payload.mode !== mode

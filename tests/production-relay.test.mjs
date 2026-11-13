@@ -202,7 +202,7 @@ test("device sync delivers uploaded RGB565 and prevents device credentials from 
     assert.deepEqual(Buffer.from(await suffix.arrayBuffer()), bytes.subarray(offset));
     assert.equal((await call(`device/photos/${id}`, { headers: { ...device, Range: `bytes=${bytes.length}-` } })).status, 416);
     assert.equal((await call(`device/photos/${id}`, { headers: { ...operator, Range: `bytes=${offset}-` } })).status, 401);
-    assert.deepEqual(snapshot.codex, { online: false, canControl: false, tasks: [], task: null, quota: null });
+    assert.deepEqual(snapshot.codex, { online: false, canControl: false, receipt: null, tasks: [], task: null, quota: null });
     assert.equal((await (await call("state", { headers: operator })).json()).deviceOnline, true);
     const settings = await post("settings", { displayMode: "smart", sleepAfter: 0, eggPhoto: id, eggDate: "02-29", utcOffset: -300 }, operator);
     assert.equal(settings.status, 200);

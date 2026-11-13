@@ -71,7 +71,7 @@ export function connectBridge({
     if (stopped) return;
     ws = new WebSocket(`${url}/bridge`, {
       headers: { Authorization: `Bearer ${token}`, "X-StopWatch-Mode": mode },
-      maxPayload: 65536,
+      maxPayload: 512 * 1024,
     });
     ws.on("open", () => {
       attempts = 0;
@@ -118,8 +118,9 @@ export function connectBridge({
               .get(c.id);
             if (seen) {
               if (seen.status === "processing")
-                emit("commandError", {
+                emit("commandStatus", {
                   commandId: c.id,
+                  taskId: c.taskId || (c.action === "start" ? c.id : null), stage: "uncertain",
                   message:
                     "桥接在执行确认前重启；已避免重复执行，请核对会话结果",
                   mode,
@@ -132,7 +133,11 @@ export function connectBridge({
             ).run(c.id);
             try {
               await engine.command(c);
+              emit("commandStatus", { commandId: c.id, taskId: c.taskId || (c.action === "start" ? c.id : null), stage: "accepted", mode });
             } catch (error) {
+              const uncertain = ["RPC_TIMEOUT", "RPC_DISCONNECTED"].includes(error.code);
+              engine.commandFailed?.(c, error, uncertain);
+              emit("commandStatus", { commandId: c.id, taskId: c.taskId || (c.action === "start" ? c.id : null), stage: uncertain ? "uncertain" : "failed", message: error.message, mode });
               emit("commandError", {
                 commandId: c.id,
                 message: error.message,

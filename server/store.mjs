@@ -25,6 +25,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS photos(id TEXT PRIMARY KEY, name TEXT, bytes INTEGER, created INTEGER);
       CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, time INTEGER, actor TEXT, action TEXT);`);
     this.db.exec("CREATE TABLE IF NOT EXISTS device_controls(id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0)");
+    const columns = this.db.prepare("PRAGMA table_info(commands)").all().map(c => c.name);
+    if (!columns.includes("receipt")) this.db.exec("ALTER TABLE commands ADD COLUMN receipt TEXT");
     this.db
       .prepare("INSERT OR IGNORE INTO settings VALUES (1, ?)")
       .run(JSON.stringify(defaultSettings));
@@ -119,6 +121,11 @@ export class Store {
     ) };
   }
   event(event) {
+    if (event.type === "commandStatus") {
+      const receipt = this.commandStatus(event.payload) || this.receipt(event.payload.commandId);
+      if (!receipt) return null;
+      event = { ...event, payload: { ...receipt, mode: event.payload.mode } };
+    }
     const result = this.db
       .prepare(
         "INSERT OR IGNORE INTO events(id,type,payload,time) VALUES (?,?,?,?) RETURNING seq",
@@ -195,9 +202,32 @@ export class Store {
     )
       throw new Error("MVP 最多保留 100 个会话");
     this.db
-      .prepare("INSERT INTO commands VALUES (?,?,0)")
+      .prepare("INSERT INTO commands(id,value,done) VALUES (?,?,0)")
       .run(command.id, JSON.stringify(command));
+    this.commandStatus({ commandId: command.id, stage: "received", taskId: command.taskId || (command.action === "start" ? command.id : null) });
     return true;
+  }
+  savedCommand(id) {
+    const row = this.db.prepare("SELECT value FROM commands WHERE id=?").get(id);
+    return row ? JSON.parse(row.value) : null;
+  }
+  receipt(id) {
+    const row = this.db.prepare("SELECT receipt FROM commands WHERE id=?").get(id);
+    return row?.receipt ? JSON.parse(row.receipt) : null;
+  }
+  receipts(actor) {
+    return this.db.prepare("SELECT receipt FROM commands WHERE receipt IS NOT NULL AND (? IS NULL OR json_extract(value,'$.actor')=?) ORDER BY rowid DESC LIMIT 20")
+      .all(actor || null, actor || null).map(row => JSON.parse(row.receipt));
+  }
+  commandStatus(update) {
+    const rank = { received: 0, accepted: 1, executing: 2, uncertain: 3, succeeded: 4, failed: 4, interrupted: 4 };
+    if (!Object.hasOwn(rank, update.stage) || typeof update.commandId !== "string" || !this.savedCommand(update.commandId)) return;
+    const previous = this.receipt(update.commandId);
+    if (previous && (rank[previous.stage] === 4 || rank[update.stage] < rank[previous.stage] && !(previous.stage === "uncertain" && update.stage === "executing"))) return;
+    const receipt = { commandId: update.commandId, stage: update.stage, taskId: update.taskId || previous?.taskId || null,
+      message: typeof update.message === "string" ? update.message.slice(0, 512) : null, updated: Date.now() };
+    this.db.prepare("UPDATE commands SET receipt=? WHERE id=?").run(JSON.stringify(receipt), update.commandId);
+    return receipt;
   }
   pending() {
     return this.db

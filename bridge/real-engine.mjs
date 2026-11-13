@@ -1,5 +1,5 @@
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { AppServerTransport } from "./app-server.mjs";
 function failureText(value) {
   try { const parsed = JSON.parse(value); value = parsed.error?.message || parsed.message || value; } catch {}
@@ -51,6 +51,24 @@ export class AppServerCodex {
     this.emit("task", updated);
     return updated;
   }
+  receipt(commandId, task, stage, message) {
+    this.emit("commandStatus", { commandId, taskId: task.id, stage, message, mode: "production" });
+  }
+  settle(task, status) {
+    const stage = status === "failed" ? "failed" : status === "interrupted" ? "interrupted" : "succeeded";
+    for (const id of task.commandIds || []) this.receipt(id, task, stage);
+  }
+  attach(task, command, reset = false) {
+    if (!command.id) return task;
+    return this.output(task, task.state, task.operation, {
+      commandIds: [...new Set([...(reset ? [] : task.commandIds || []), command.id])].slice(-32),
+    });
+  }
+  commandFailed(command, error, uncertain) {
+    const task = this.tasks.get(command.action === "start" ? command.id : command.taskId);
+    if (!task || !["start", "continue"].includes(command.action) || !task.commandIds?.includes(command.id)) return;
+    this.output(task, uncertain ? task.state : "failed", uncertain ? "指令执行状态待核对，未重复发送" : failureText(error.message), { uncertain });
+  }
   async connect() {
     if (this.closed) return;
     clearTimeout(this.retry);
@@ -99,6 +117,7 @@ export class AppServerCodex {
               task.appServerThreadId,
               project.path,
               this.model,
+              task.sandbox || "workspace-write",
             );
           } catch (error) {
             if (
@@ -127,6 +146,7 @@ export class AppServerCodex {
           }
           const turn = result.thread?.turns?.at(-1);
           const status = turn?.status;
+          if (["completed", "failed", "interrupted"].includes(status)) this.settle(task, status);
           this.output(
             task,
             status === "inProgress"
@@ -233,9 +253,13 @@ export class AppServerCodex {
       return;
     }
     if (!task) return;
-    if (message.method === "turn/started")
-      this.output(task, "working", "Codex 正在执行", { turnId: p.turn?.id });
-    else if (message.method === "turn/completed") {
+    if (message.method === "turn/started") {
+      this.output(task, "working", "Codex 正在执行", { turnId: p.turn?.id, uncertain: false });
+      for (const id of task.commandIds || []) this.receipt(id, task, "executing");
+    } else if (message.method === "turn/completed") {
+      if (!["completed", "failed", "interrupted"].includes(p.turn?.status)) return;
+      if (task.turnId && p.turn?.id !== task.turnId) return;
+      this.settle(task, p.turn?.status);
       for (const [id, a] of this.approvals)
         if (a.taskId === task.id) {
           clearTimeout(a.timer);
@@ -249,7 +273,7 @@ export class AppServerCodex {
             ? "interrupted"
             : "completed",
         p.turn?.error?.message ? failureText(p.turn.error.message) : "本轮任务已结束",
-        { approvalId: null, approval: null, error: p.turn?.error?.message ? failureText(p.turn.error.message) : null, result: task.result || "" },
+        { approvalId: null, approval: null, uncertain: false, error: p.turn?.error?.message ? failureText(p.turn.error.message) : null, result: task.result || "" },
       );
     } else if (message.method === "item/agentMessage/delta") {
       this.output(task, task.state, "正在生成回复", {
@@ -294,28 +318,38 @@ export class AppServerCodex {
       );
       return;
     }
+    if (task.sandbox === "read-only") {
+      this.rpc.respondApproval(request.id, "decline");
+      return;
+    }
     const approvalId = randomUUID();
+    const details = JSON.stringify({ method: request.method, ...p }, null, 2);
+    const complete = Buffer.byteLength(details) <= 16384;
+    const approvalDigest = createHash("sha256").update(details).digest("hex");
     const timer = setTimeout(() => {
       this.approvals.delete(approvalId);
       this.rpc.respondApproval(request.id, "decline");
       this.output(
         this.tasks.get(task.id),
-        "failed",
-        "审批超时，已拒绝本次操作",
-        { approvalId: null },
+        "working",
+        "审批超时已拒绝，等待 Codex 返回结果",
+        { approvalId: null, approval: null },
       );
     }, this.approvalSeconds * 1000);
     this.approvals.set(approvalId, {
       serverId: request.id,
       taskId: task.id,
       generation: this.generation,
+      approvalDigest, complete,
       timer,
     });
     this.output(task, "approval", "等待你确认本次操作", {
       approvalId,
       approval: {
-        command: p.command || "文件修改",
+        command: complete ? p.command || `文件修改 ${p.grantRoot || ""}` : "操作内容过长，请在电脑核对",
         reason: p.reason || "请求访问工作区",
+        details: complete ? details : null,
+        complete, digest: approvalDigest, requiresPhone: true,
         expiresAt: Date.now() + this.approvalSeconds * 1000,
       },
     });
@@ -328,7 +362,8 @@ export class AppServerCodex {
         (w) => w.id === (c.projectId || this.workspaces[0].id),
       );
       if (!project) throw new Error("工作区不在授权范围");
-      const result = await this.rpc.start(project.path, this.model);
+      const sandbox = c.sandbox === "read-only" ? "read-only" : "workspace-write";
+      const result = await this.rpc.start(project.path, this.model, sandbox);
       if (!result.thread?.id)
         throw new Error("App Server did not return a thread");
       const task = {
@@ -337,19 +372,21 @@ export class AppServerCodex {
         projectId: project.id,
         projectPath: project.path,
         project: project.name,
+        sandbox,
         title: c.text.slice(0, 36),
         prompt: c.text,
         created: Date.now(),
         history: [],
+        commandIds: [c.id],
       };
       this.output(task, "thinking", "正在开始新任务");
-      const turn = await this.rpc.turn(result.thread.id, c.text, this.model);
-      this.output(this.tasks.get(task.id), "working", "任务已开始", {
-        turnId: turn.turn?.id,
-      });
+      const turn = await this.rpc.turn(result.thread.id, c.text, this.model, sandbox);
+      const current = this.tasks.get(task.id);
+      if (!["completed", "failed", "interrupted", "approval"].includes(current.state))
+        this.output(current, "working", "任务已开始", { turnId: turn.turn?.id });
       return;
     }
-    const task = this.tasks.get(c.taskId);
+    let task = this.tasks.get(c.taskId);
     if (!task?.appServerThreadId) throw new Error("只能控制本桥接创建的会话");
     if (task.restoreBlocked || !this.authorizedProject(task))
       throw new Error("会话的工作区不在当前授权范围");
@@ -357,36 +394,45 @@ export class AppServerCodex {
       const a = this.approvals.get(c.approvalId);
       if (!a || a.taskId !== task.id || a.generation !== this.generation)
         throw new Error("审批已过期或连接已变化");
+      if (c.decision === "accept" && (!a.complete || c.reviewed !== true || c.approvalDigest !== a.approvalDigest))
+        throw new Error("请在手机完整阅读当前请求后批准");
       clearTimeout(a.timer);
       this.approvals.delete(c.approvalId);
+      task = this.attach(task, c);
       this.rpc.respondApproval(a.serverId, c.decision);
       this.output(
         task,
         "working",
         c.decision === "decline" ? "本次操作已拒绝，等待 Codex 响应" : "本次操作已批准",
-        { approvalId: null },
+        { approvalId: null, approval: null },
       );
       return;
     }
     if (c.action === "interrupt") {
       if (!task.turnId) throw new Error("没有可中断的轮次");
+      task = this.attach(task, c);
       await this.rpc.interrupt(task.appServerThreadId, task.turnId);
       return;
     }
     if (c.action === "steer") {
       if (!task.turnId) throw new Error("没有可追加指令的轮次");
+      task = this.attach(task, c);
       await this.rpc.steer(task.appServerThreadId, task.turnId, c.text);
+      const latest = this.tasks.get(task.id);
+      if (["completed", "failed", "interrupted"].includes(latest.state)) this.settle(latest, latest.state);
+      else this.receipt(c.id, latest, "executing");
       return;
     }
     if (c.action === "continue") {
       if (["thinking", "working", "testing", "approval"].includes(task.state))
         throw new Error("任务仍在运行，请追加指令或先中断");
-      await this.rpc.resume(task.appServerThreadId, task.projectPath, this.model);
-      const result = await this.rpc.turn(task.appServerThreadId, c.text, this.model);
-      this.output(task, "working", "会话已继续", {
-        turnId: result.turn?.id,
-        result: "",
-      });
+      await this.rpc.resume(task.appServerThreadId, task.projectPath, this.model, task.sandbox || "workspace-write");
+      task = this.attach(task, c, true);
+      task = this.output(task, "thinking", "正在继续会话", { turnId: null, result: "" });
+      const result = await this.rpc.turn(task.appServerThreadId, c.text, this.model, task.sandbox || "workspace-write");
+      const current = this.tasks.get(task.id);
+      if (!["completed", "failed", "interrupted", "approval"].includes(current.state))
+        this.output(current, "working", "会话已继续", { turnId: result.turn?.id });
       return;
     }
     throw new Error("不支持的远程操作");

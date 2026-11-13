@@ -8,6 +8,10 @@
   --line: #dce1d7;
   --gold: #e9bb57;
 }
+.approval-details { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 22rem; overflow-y: auto; padding: .8rem; background: #f4f4ee; font-size: .8rem; }
+.approval-review { display: flex; gap: .6rem; align-items: flex-start; margin: 1rem 0; }
+.approval-review input { width: auto; margin-top: .2rem; }
+.command-receipt { border-left: 3px solid var(--green); padding-left: .8rem; }
 * {
   box-sizing: border-box;
 }

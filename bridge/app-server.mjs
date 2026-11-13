@@ -32,7 +32,7 @@ export class AppServerTransport {
             clearTimeout(request.timer);
             this.pending.delete(msg.id);
             msg.error
-              ? request.reject(new Error(msg.error.message))
+              ? request.reject(Object.assign(new Error(msg.error.message), { code: msg.error.code, definite: true }))
               : request.resolve(msg.result);
           }
         }
@@ -41,7 +41,7 @@ export class AppServerTransport {
     const rejectAll = () => {
       for (const p of this.pending.values()) {
         clearTimeout(p.timer);
-        p.reject(new Error("App Server disconnected"));
+        p.reject(Object.assign(new Error("App Server disconnected"), { code: "RPC_DISCONNECTED" }));
       }
       this.pending.clear();
     };
@@ -55,12 +55,12 @@ export class AppServerTransport {
     this.child.on("error", closed);
   }
   request(method, params) {
-    if (this.disposed || this.child.stdin.destroyed) return Promise.reject(new Error("App Server disconnected"));
+    if (this.disposed || this.child.stdin.destroyed) return Promise.reject(Object.assign(new Error("App Server disconnected"), { code: "RPC_DISCONNECTED" }));
     const id = this.next++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`RPC timeout: ${method}`));
+        reject(Object.assign(new Error(`RPC timeout: ${method}`), { code: "RPC_TIMEOUT" }));
       }, 30000);
       this.pending.set(id, { resolve, reject, timer });
       this.child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
@@ -89,29 +89,30 @@ export class AppServerTransport {
     return this.request("thread/read", { threadId, includeTurns: true });
   }
   models() { return this.request("model/list", {}); }
-  start(cwd, model) {
+  start(cwd, model, sandbox = "workspace-write") {
     return this.request("thread/start", {
       cwd,
       ...(model ? { model } : {}),
-      approvalPolicy: "on-request",
+      approvalPolicy: sandbox === "read-only" ? "never" : "on-request",
       approvalsReviewer: "user",
-      sandbox: "workspace-write",
+      sandbox,
     });
   }
-  resume(threadId, cwd, model) {
+  resume(threadId, cwd, model, sandbox = "workspace-write") {
     return this.request("thread/resume", {
       threadId,
       ...(cwd ? { cwd } : {}),
       ...(model ? { model } : {}),
-      approvalPolicy: "on-request",
+      approvalPolicy: sandbox === "read-only" ? "never" : "on-request",
       approvalsReviewer: "user",
-      sandbox: "workspace-write",
+      sandbox,
     });
   }
-  turn(threadId, text, model) {
+  turn(threadId, text, model, sandbox = "workspace-write") {
     return this.request("turn/start", {
       threadId,
       ...(model ? { model } : {}),
+      ...(sandbox === "read-only" ? { approvalPolicy: "never", sandboxPolicy: { type: "readOnly", networkAccess: false } } : {}),
       input: [{ type: "text", text, text_elements: [] }],
     });
   }
