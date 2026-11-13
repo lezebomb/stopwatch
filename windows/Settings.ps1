@@ -52,7 +52,31 @@ function Uninstall-OwnedProgram {
  [Windows.Forms.MessageBox]::Show(('程序已卸载，私人数据保留在用户目录。'+"`n"+$result),'StopWatch') | Out-Null
  $form.Close()
 }
-$form=New-Object Windows.Forms.Form;$form.Text='StopWatch 后台设置';$form.Size=New-Object Drawing.Size(480,360);$form.StartPosition='CenterScreen'
+function Edit-Workspaces {
+ $file=Join-Path $root 'config.json';$configuration=Get-Content -LiteralPath $file -Raw|ConvertFrom-Json
+ $editor=New-Object Windows.Forms.Form;$editor.Text='授权工作区';$editor.Size=New-Object Drawing.Size(600,330);$editor.StartPosition='CenterScreen'
+ $hint=New-Object Windows.Forms.Label;$hint.Text='每行一个完整目录；仅这些工作区可执行远程任务。移除的工作区将停止恢复。';$hint.SetBounds(20,15,550,42);$editor.Controls.Add($hint)
+ $input=New-Object Windows.Forms.TextBox;$input.Multiline=$true;$input.SetBounds(20,62,540,135);$input.Text=($configuration.workspaces.path -join "`r`n");$editor.Controls.Add($input)
+ $save=New-Object Windows.Forms.Button;$save.Text='明确授权这些工作区并重启后台';$save.SetBounds(20,217,540,35);$editor.Controls.Add($save)
+ $save.Add_Click({try{
+  $entries=@();$seen=@{}
+  foreach($line in ($input.Text -split '[\r\n]+' | Where-Object {$_.Trim()})){
+   $folder=(Resolve-Path -LiteralPath $line.Trim()).Path
+   if(-not(Test-Path -LiteralPath $folder -PathType Container)){throw '必须选择现有文件夹。'}
+   if($seen.ContainsKey($folder)){continue};$seen[$folder]=$true
+   $old=$configuration.workspaces|Where-Object {$_.path -eq $folder}|Select-Object -First 1
+   $workspaceId=if($old){$old.id}else{'workspace-'+[Guid]::NewGuid().ToString('N').Substring(0,12)}
+   $entries+=@{id=$workspaceId;name=[IO.Path]::GetFileName($folder);path=$folder}
+  }
+  if($entries.Count -lt 1 -or $entries.Count -gt 8){throw '需要 1 至 8 个工作区。'}
+  Stop-OwnedBridge;$configuration.workspaces=$entries
+  $temporary=$file+'.new';[IO.File]::WriteAllText($temporary,($configuration|ConvertTo-Json -Depth 7),(New-Object Text.UTF8Encoding($false)));Move-Item -LiteralPath $temporary -Destination $file -Force
+  Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/wscript.exe') -ArgumentList ('"'+(Join-Path $root 'app/Launch.vbs')+'"') -WindowStyle Hidden
+  $editor.Close()
+ }catch{[Windows.Forms.MessageBox]::Show($_.Exception.Message,'授权未保存')|Out-Null}})
+ [void]$editor.ShowDialog();$editor.Dispose()
+}
+$form=New-Object Windows.Forms.Form;$form.Text='StopWatch 后台设置';$form.Size=New-Object Drawing.Size(480,400);$form.StartPosition='CenterScreen'
 $label=New-Object Windows.Forms.Label;$label.Location=New-Object Drawing.Point(25,20);$label.Size=New-Object Drawing.Size(420,120);$form.Controls.Add($label)
 $timer=New-Object Windows.Forms.Timer
 $timer.Interval=2000
@@ -68,5 +92,5 @@ $timer.Add_Tick({
 })
 $timer.Start()
 $y=150
-foreach($item in @(@('启动',{Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/wscript.exe') -ArgumentList ('"'+(Join-Path $root 'app/Launch.vbs')+'"') -WindowStyle Hidden}),@('停止',{Stop-OwnedBridge}),@('撤销本机与云端授权',{Stop-OwnedBridge;$message=Revoke-OwnedCredential;[Windows.Forms.MessageBox]::Show($message,'StopWatch') | Out-Null}),@('卸载程序（保留私人数据）',{Uninstall-OwnedProgram}))){$button=New-Object Windows.Forms.Button;$button.Text=$item[0];$button.Location=New-Object Drawing.Point(25,$y);$button.Size=New-Object Drawing.Size(420,30);$button.Add_Click({try{& $this.Tag}catch{[Windows.Forms.MessageBox]::Show($_.Exception.Message,'操作未完成') | Out-Null}});$button.Tag=$item[1];$form.Controls.Add($button);$y+=35}
+foreach($item in @(@('管理授权工作区',{Edit-Workspaces}),@('启动',{Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/wscript.exe') -ArgumentList ('"'+(Join-Path $root 'app/Launch.vbs')+'"') -WindowStyle Hidden}),@('停止',{Stop-OwnedBridge}),@('撤销本机与云端授权',{Stop-OwnedBridge;$message=Revoke-OwnedCredential;[Windows.Forms.MessageBox]::Show($message,'StopWatch') | Out-Null}),@('卸载程序（保留私人数据）',{Uninstall-OwnedProgram}))){$button=New-Object Windows.Forms.Button;$button.Text=$item[0];$button.Location=New-Object Drawing.Point(25,$y);$button.Size=New-Object Drawing.Size(420,30);$button.Add_Click({try{& $this.Tag}catch{[Windows.Forms.MessageBox]::Show($_.Exception.Message,'操作未完成') | Out-Null}});$button.Tag=$item[1];$form.Controls.Add($button);$y+=35}
 $form.Add_FormClosed({$timer.Stop()});[void]$form.ShowDialog()

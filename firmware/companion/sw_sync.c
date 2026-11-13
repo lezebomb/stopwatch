@@ -1,6 +1,8 @@
 #include "sw_sync.h"
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
+#include "esp_attr.h"
+#include "esp_random.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -46,6 +48,37 @@ static nvs_handle_t nvs;
 static StaticSemaphore_t http_lock_storage;
 static SemaphoreHandle_t http_lock;
 static atomic_uint muse_http_waiters;
+static EXT_RAM_BSS_ATTR sw_codex_view_t codex_view;
+typedef struct { char action[12], task[65], approval[65], decision[8], id[40]; unsigned attempts; int64_t deadline; } codex_command_t;
+static codex_command_t codex_pending;
+static portMUX_TYPE codex_lock = portMUX_INITIALIZER_UNLOCKED;
+static atomic_int codex_command_state;
+
+void sw_sync_codex_view(sw_codex_view_t *out) {
+  portENTER_CRITICAL(&codex_lock);
+  memcpy(out, &codex_view, sizeof(*out));
+  portEXIT_CRITICAL(&codex_lock);
+}
+const char *sw_sync_codex_command_state(void) {
+  static const char *const names[] = {"idle", "sending", "sent", "failed"};
+  return names[atomic_load(&codex_command_state)];
+}
+bool sw_sync_codex_submit(const char *action, const char *task, const char *approval, const char *decision) {
+  if (!action || (strcmp(action, "focus") && strcmp(action, "start") && strcmp(action, "continue") && strcmp(action, "interrupt") && strcmp(action, "approve")) ||
+      !task || strlen(task) > 64 || !atomic_load(&worker)) return false;
+  codex_command_t next = {0};
+  next.deadline = esp_timer_get_time() + 60000000;
+  strlcpy(next.action, action, sizeof(next.action)); strlcpy(next.task, task, sizeof(next.task));
+  if (approval) strlcpy(next.approval, approval, sizeof(next.approval));
+  if (decision) strlcpy(next.decision, decision, sizeof(next.decision));
+  snprintf(next.id, sizeof(next.id), "sw-%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
+  portENTER_CRITICAL(&codex_lock);
+  bool allowed = atomic_load(&codex_command_state) != 1 && !codex_pending.action[0] && (codex_view.can_control || !strcmp(action, "focus"));
+  if (allowed) { codex_pending = next; atomic_store(&codex_command_state, 1); }
+  portEXIT_CRITICAL(&codex_lock);
+  if (allowed) xTaskNotifyGive(atomic_load(&worker));
+  return allowed;
+}
 
 void sw_sync_http_init(void) {
   http_lock = xSemaphoreCreateMutexStatic(&http_lock_storage);
@@ -424,6 +457,33 @@ static void save_task(cJSON *root) {
                       : 0;
   if (!time)
     return;
+  sw_codex_view_t *view = heap_caps_calloc(1, sizeof(*view), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (view) {
+    const char *id = string(task, "id");
+    if (id) strlcpy(view->id, id, sizeof(view->id));
+    view->online = cJSON_IsTrue(online);
+    view->can_control = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(codex, "canControl"));
+    const char *state_name = string(task, "state");
+    view->running = state_name && (!strcmp(state_name, "thinking") || !strcmp(state_name, "working") || !strcmp(state_name, "testing"));
+    cJSON *approval = cJSON_GetObjectItemCaseSensitive(task, "approval");
+    const char *approval_id = string(approval, "id");
+    const char *detail = string(approval, "command");
+    if (approval_id) strlcpy(view->approval, approval_id, sizeof(view->approval));
+    if (!detail || !*detail) detail = string(task, "result");
+    if (!detail || !*detail) detail = string(task, "operation");
+    if (detail) strlcpy(view->detail, detail, sizeof(view->detail));
+    cJSON *items = cJSON_GetObjectItemCaseSensitive(codex, "tasks"), *item;
+    cJSON_ArrayForEach(item, items) {
+      if (view->count == 4) break;
+      const char *item_id = string(item, "id"), *title = string(item, "title");
+      if (!item_id) continue;
+      strlcpy(view->ids[view->count], item_id, 65);
+      if (title) strlcpy(view->titles[view->count], title, 128);
+      view->count++;
+    }
+    portENTER_CRITICAL(&codex_lock); memcpy(&codex_view, view, sizeof(*view)); portEXIT_CRITICAL(&codex_lock);
+    free(view);
+  }
   sw_companion_sync_task(cJSON_IsTrue(online), string(task, "state"),
                          string(task, "title"), string(task, "project"),
                          string(task, "id"), string(task, "error"), remaining,
@@ -468,6 +528,9 @@ static void sync_worker(void *arg) {
   int64_t due = 0, last_request = -10000000;
   for (;;) {
     const int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&codex_lock);
+    if (codex_pending.action[0] && now >= codex_pending.deadline) { codex_pending.action[0] = 0; atomic_store(&codex_command_state, 3); }
+    portEXIT_CRITICAL(&codex_lock);
     bool ready = net_ready();
     char code[TOKEN_LENGTH + 1] = {0};
     portENTER_CRITICAL(&pair_lock);
@@ -486,6 +549,25 @@ static void sync_worker(void *arg) {
       atomic_store(&pair_state, paired ? PAIR_OK : PAIR_FAILED);
       atomic_store(&state, credentials.token[0] ? WAITING : UNPAIRED);
       due = 0;
+    }
+    if (credentials.token[0] && ready && atomic_load(&codex_command_state) == 1) {
+      codex_command_t *command = heap_caps_calloc(1, sizeof(*command), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (command) {
+        portENTER_CRITICAL(&codex_lock); *command = codex_pending; codex_pending.action[0] = 0; portEXIT_CRITICAL(&codex_lock);
+        cJSON *request = cJSON_CreateObject();
+        cJSON_AddStringToObject(request, "id", command->id); cJSON_AddStringToObject(request, "action", command->action);
+        cJSON_AddStringToObject(request, "taskId", command->task); cJSON_AddStringToObject(request, "approvalId", command->approval);
+        cJSON_AddStringToObject(request, "decision", command->decision);
+        char *body = cJSON_PrintUnformatted(request); cJSON_Delete(request);
+        int status = 0;
+        cJSON *reply = body ? get_json("/api/device/commands", credentials.token, body, &status) : NULL;
+        bool ok = reply && (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(reply, "queued")) || cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(reply, "selected")));
+        cJSON_Delete(reply); free(body);
+        if (!ok && (status == 0 || status >= 500) && ++command->attempts < 3) {
+          portENTER_CRITICAL(&codex_lock); codex_pending = *command; portEXIT_CRITICAL(&codex_lock);
+        } else atomic_store(&codex_command_state, ok ? 2 : 3);
+        free(command); due = 0;
+      }
     }
     if (credentials.token[0] && ready && now >= due) {
       last_request = esp_timer_get_time();
@@ -508,7 +590,7 @@ static void sync_worker(void *arg) {
         free(album);
       }
       cJSON_Delete(root);
-      unsigned interval = atomic_load(&focused) ? 12 : 60;
+      unsigned interval = atomic_load(&focused) ? (muse_state_power().usb ? 3 : 12) : 60;
       if (result == SW_SYNC_ALBUM_AUTH) {
         mbedtls_platform_zeroize(&credentials, sizeof(credentials));
         nvs_erase_key(nvs, "credential");

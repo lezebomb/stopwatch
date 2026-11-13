@@ -19,7 +19,11 @@ export class AppServerCodex {
     this.tasks = new Map(tasks.map((t) => [t.id, t]));
     this.workspaces = workspaces;
     this.executable = executable;
-    this.onStatus = onStatus;
+    this.onStatus = (status) => {
+      this.lastStatus = { ...status, mode: "production", updated: Date.now(),
+        workspaces: this.workspaces.map(({ id, name }) => ({ id, name })) };
+      onStatus(this.lastStatus);
+    };
     this.transportFactory = transportFactory;
     this.approvalSeconds = approvalSeconds;
     this.approvals = new Map();
@@ -183,9 +187,14 @@ export class AppServerCodex {
     this.ready = false;
     for (const pending of this.approvals.values()) clearTimeout(pending.timer);
     this.approvals.clear();
+    for (const task of this.tasks.values())
+      if (task.approvalId) this.output(task, "interrupted", "连接中断，旧审批已失效", { approvalId: null, approval: null });
     this.onStatus({ state: "codex-offline", online: false });
     clearTimeout(this.retry);
     this.retry = setTimeout(() => this.connect(), 3000);
+  }
+  relayConnected() {
+    if (this.lastStatus) this.emit("bridgeStatus", this.lastStatus);
   }
   ownThread(threadId) {
     return [...this.tasks.values()].find(
@@ -226,13 +235,17 @@ export class AppServerCodex {
           : p.turn?.status === "interrupted"
             ? "interrupted"
             : "completed",
-        "本轮任务已结束",
-        { approvalId: null, result: task.result || "" },
+        p.turn?.error?.message || "本轮任务已结束",
+        { approvalId: null, approval: null, error: p.turn?.error?.message || null, result: task.result || "" },
       );
     } else if (message.method === "item/agentMessage/delta") {
       this.output(task, task.state, "正在生成回复", {
         result: ((task.result || "") + (p.delta || "")).slice(-32768),
       });
+    } else if (message.method === "item/completed" && p.item?.type === "agentMessage") {
+      this.output(task, task.state, "回复已生成", { result: String(p.item.text || task.result || "").slice(-32768) });
+    } else if (message.method === "error") {
+      this.output(task, p.willRetry ? task.state : "failed", p.error?.message || "Codex 请求失败", { error: p.error?.message || "请求失败" });
     } else if (message.method === "item/started") {
       const item = p.item || {};
       const type = item.type;
@@ -353,6 +366,8 @@ export class AppServerCodex {
       return;
     }
     if (c.action === "continue") {
+      if (["thinking", "working", "testing", "approval"].includes(task.state))
+        throw new Error("任务仍在运行，请追加指令或先中断");
       await this.rpc.resume(task.appServerThreadId, task.projectPath);
       const result = await this.rpc.turn(task.appServerThreadId, c.text);
       this.output(task, "working", "会话已继续", {

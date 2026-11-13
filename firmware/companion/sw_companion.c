@@ -1,6 +1,7 @@
 #include "sw_companion.h"
 #include "cJSON.h"
 #include "esp_heap_caps.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_random.h"
@@ -45,6 +46,8 @@ LV_FONT_DECLARE(muse_font_cjk_noto_16);
 static lv_font_t companion_font;
 static lv_obj_t *root, *photo_obj, *caption, *status_label, *pet_face, *menu;
 static lv_obj_t *setup_panel, *setup_status;
+static lv_obj_t *phone_button, *codex_button, *codex_panel;
+static EXT_RAM_BSS_ATTR sw_codex_view_t codex_ui, codex_choices;
 static lv_obj_t *cover_frame;
 static atomic_bool setup_active;
 static atomic_int setup_requested;
@@ -679,6 +682,23 @@ static bool device_console_locked(const char *line) {
   const char *error = "invalid-command";
   if (id <= 0 || !request)
     goto done;
+  if (!strcmp(op, "codex.status") || !strcmp(op, "codex.control")) {
+    sw_codex_view_t *view = heap_caps_calloc(1, sizeof(*view), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!view) goto done;
+    sw_sync_codex_view(view);
+    if (!strcmp(op, "codex.control")) {
+      cJSON *action = cJSON_GetObjectItemCaseSensitive(request, "action");
+      cJSON *target = cJSON_GetObjectItemCaseSensitive(request, "taskId");
+      cJSON *decision = cJSON_GetObjectItemCaseSensitive(request, "decision");
+      bool queued = cJSON_IsString(action) && sw_sync_codex_submit(action->valuestring,
+          cJSON_IsString(target) ? target->valuestring : view->id, view->approval,
+          cJSON_IsString(decision) ? decision->valuestring : "");
+      free(view); error = queued ? NULL : "remote-action-unavailable"; goto done;
+    }
+    printf("@sw {\"id\":%d,\"ok\":true,\"taskId\":\"%s\",\"taskCount\":%u,\"canControl\":%s,\"commandState\":\"%s\"}\n", id, view->id, view->count,
+           view->can_control ? "true" : "false", sw_sync_codex_command_state());
+    free(view); fflush(stdout); cJSON_Delete(request); return true;
+  }
   if (!strcmp(op, "muse.proxy.set")) {
     cJSON *host = cJSON_GetObjectItemCaseSensitive(request, "host");
     cJSON *port = cJSON_GetObjectItemCaseSensitive(request, "port");
@@ -1271,6 +1291,53 @@ static void tick_phone_setup(uint32_t now, bool critical_battery) {
   if (strcmp(hint, lv_label_get_text(setup_status)))
     lv_label_set_text(setup_status, hint);
 }
+static void codex_close(lv_event_t *event) {
+  (void)event;
+  if (codex_panel) { lv_obj_delete(codex_panel); codex_panel = NULL; }
+}
+static void codex_action(lv_event_t *event) {
+  const char *action = lv_event_get_user_data(event);
+  const char *decision = "";
+  if (!strcmp(action, "accept") || !strcmp(action, "decline")) { decision = action; action = "approve"; }
+  sw_sync_codex_submit(action, codex_choices.id, codex_choices.approval, decision);
+  codex_close(NULL);
+}
+static void codex_select(lv_event_t *event) {
+  unsigned index = (unsigned)(uintptr_t)lv_event_get_user_data(event);
+  if (index < codex_choices.count) sw_sync_codex_submit("focus", codex_choices.ids[index], NULL, NULL);
+  codex_close(NULL);
+}
+static void codex_row(lv_obj_t *parent, const char *text, lv_event_cb_t callback, void *data) {
+  lv_obj_t *button = lv_button_create(parent);
+  navigation_style(button); lv_obj_set_size(button, 292, 42);
+  lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, data);
+  lv_obj_t *label = lv_label_create(button); lv_obj_set_width(label, 270);
+  lv_label_set_long_mode(label, LV_LABEL_LONG_DOT); lv_label_set_text(label, text); lv_obj_center(label);
+}
+static void codex_open(lv_event_t *event) {
+  (void)event;
+  if (codex_panel) return;
+  sw_sync_codex_view(&codex_choices);
+  codex_panel = lv_obj_create(lv_screen_active()); lv_obj_set_size(codex_panel, 466, 466); lv_obj_center(codex_panel);
+  lv_obj_set_style_bg_color(codex_panel, lv_color_hex(0x122521), 0); lv_obj_set_style_text_font(codex_panel, &companion_font, 0);
+  lv_obj_remove_flag(codex_panel, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_t *list = lv_obj_create(codex_panel); lv_obj_set_size(list, 330, 300); lv_obj_center(list);
+  lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN); lv_obj_remove_flag(list, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_t *label = lv_label_create(list); lv_obj_set_width(label, 292);
+  lv_label_set_text(label, codex_choices.detail[0] ? codex_choices.detail : "请先从手机创建任务");
+  for (unsigned i = 0; i < codex_choices.count; i++) codex_row(list, codex_choices.titles[i], codex_select, (void *)(uintptr_t)i);
+  if (codex_choices.online && codex_choices.can_control) {
+    if (codex_choices.approval[0]) {
+      codex_row(list, "批准屏幕所示本次操作", codex_action, "accept");
+      codex_row(list, "拒绝本次操作", codex_action, "decline");
+    } else {
+      if (codex_choices.running) codex_row(list, "中断当前任务", codex_action, "interrupt");
+      else codex_row(list, "继续当前任务", codex_action, "continue");
+      codex_row(list, "新建只读检查任务", codex_action, "start");
+    }
+  } else { label = lv_label_create(list); lv_obj_set_width(label, 292); lv_label_set_text(label, "请在手机授权快捷操作\n离线时不发送任务"); }
+  codex_row(list, "返回", codex_close, NULL);
+}
 static void show(void) {
   sw_sync_focus(screen == SW_CODEX);
   muse_power_t power = muse_state_power();
@@ -1279,6 +1346,11 @@ static void show(void) {
                power.usb || power.charging);
   lv_obj_set_flag(root, LV_OBJ_FLAG_HIDDEN, screen == SW_MUSE);
   lv_obj_set_flag(menu, LV_OBJ_FLAG_HIDDEN, screen != SW_MUSE);
+  lv_obj_set_flag(codex_button, LV_OBJ_FLAG_HIDDEN, screen != SW_CODEX);
+  lv_obj_set_flag(phone_button, LV_OBJ_FLAG_HIDDEN, screen == SW_CODEX);
+  if (screen != SW_CODEX) codex_close(NULL);
+  lv_obj_set_height(caption, LV_SIZE_CONTENT);
+  lv_label_set_long_mode(caption, LV_LABEL_LONG_WRAP);
   if (screen == SW_MUSE)
     return;
   unsigned hidden = egg_index();
@@ -1299,6 +1371,7 @@ static void show(void) {
     lv_label_set_text(caption, "轻点换照片 · 左右滑动切换");
     load_photo();
   } else if (screen == SW_CODEX) {
+    sw_sync_codex_view(&codex_ui);
     char title[sizeof(task_title)], project[sizeof(task_project)],
         error[sizeof(task_error)];
     char connection[88], quota_text[32];
@@ -1336,9 +1409,10 @@ static void show(void) {
       strlcpy(connection, online ? quota_text : "尚未同步 · 额度不可用",
               sizeof(connection));
     lv_label_set_text_fmt(
-        caption, "%s\n%s%s%s%s%s\n%s", online ? phases[p] : "Codex 离线",
+        caption, "%s\n%s%s%s%s%s\n%s\n%.180s", online ? phases[p] : "Codex 离线",
         project, *project ? " · " : "", title, p == 6 && *error ? "\n" : "",
-        p == 6 ? error : "", connection);
+        p == 6 ? error : "", connection, codex_ui.detail);
+    lv_obj_set_height(caption, 105); lv_label_set_long_mode(caption, LV_LABEL_LONG_DOT);
   } else
     lv_label_set_text(
         caption,
@@ -1658,7 +1732,7 @@ void sw_companion_init(void) {
   lv_obj_t *settings_label = lv_label_create(settings_button);
   lv_label_set_text(settings_label, "设置");
   lv_obj_center(settings_label);
-  lv_obj_t *phone_button = lv_button_create(root);
+  phone_button = lv_button_create(root);
   navigation_style(phone_button);
   lv_obj_set_size(phone_button, 128, 42);
   lv_obj_align(phone_button, LV_ALIGN_CENTER, -80, -145);
@@ -1666,6 +1740,10 @@ void sw_companion_init(void) {
   lv_obj_t *phone_label = lv_label_create(phone_button);
   lv_label_set_text(phone_label, "手机配网");
   lv_obj_center(phone_label);
+  codex_button = lv_button_create(root); navigation_style(codex_button);
+  lv_obj_set_size(codex_button, 128, 42); lv_obj_align(codex_button, LV_ALIGN_CENTER, -80, -145);
+  lv_obj_add_event_cb(codex_button, codex_open, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *codex_label = lv_label_create(codex_button); lv_label_set_text(codex_label, "任务操作"); lv_obj_center(codex_label);
   setup_panel = lv_obj_create(lv_screen_active());
   lv_obj_set_size(setup_panel, 466, 466);
   lv_obj_center(setup_panel);

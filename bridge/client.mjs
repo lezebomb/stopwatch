@@ -36,6 +36,7 @@ export function connectBridge({
     attempts = 0,
     authorizationBlocked = false,
     queue = Promise.resolve();
+  let lastPong = 0;
   const send = (value) => {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(value));
   };
@@ -75,9 +76,15 @@ export function connectBridge({
     ws.on("open", () => {
       attempts = 0;
       onStatus(true);
-      heartbeat = setInterval(() => send({ type: "heartbeat" }), 10000);
+      lastPong = Date.now();
+      heartbeat = setInterval(() => {
+        if (Date.now() - lastPong > 35000) return ws.terminate();
+        ws.ping();
+        send({ type: "heartbeat" });
+      }, 10000);
       for (const row of db.prepare("SELECT value FROM outbox").all())
         send({ type: "event", event: JSON.parse(row.value) });
+      engine.relayConnected?.();
       if (mode === "mock")
         emit("quota", {
           mode: "mock",
@@ -93,6 +100,7 @@ export function connectBridge({
           },
         });
     });
+    ws.on("pong", () => { lastPong = Date.now(); });
     ws.on("message", (raw) => {
       try {
         const data = JSON.parse(raw.toString());
@@ -153,7 +161,10 @@ export function connectBridge({
     });
     ws.on("close", (code) => {
       clearInterval(heartbeat);
-      if (code === 4001) authorizationBlocked = true;
+      if (code === 4001 || code === 4002) {
+        authorizationBlocked = true;
+        engine.close();
+      }
       onStatus(
         false,
         authorizationBlocked ? { state: "revoked", online: false } : {},

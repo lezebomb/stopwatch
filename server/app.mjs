@@ -99,7 +99,8 @@ export async function createRelay({
     return saved;
   };
   const online = () => !!bridge && Date.now() - bridgeLastSeen < 35000;
-  const deviceSync = createDeviceSync(store, directory, online);
+  const codexOnline = () => online() && bridge.codexReady === true;
+  const deviceSync = createDeviceSync(store, directory, codexOnline, { allowExecution });
   const status = () => ({
     mode,
     executionEnabled: mode === "production" && allowExecution,
@@ -107,15 +108,29 @@ export async function createRelay({
     deviceOnline: deviceSync.present(),
     deviceNote: deviceSync.present() ? "挂件最近已同步" : "暂无在线挂件",
     tasks: store.tasks(),
-    quota: store.snapshot("quota"),
-    codex: store.snapshot("bridgeStatus"),
+    quota: codexOnline() ? store.snapshot("quota") : null,
+    codex: { ...store.snapshot("bridgeStatus"), online: codexOnline() },
+    workspaces: store.snapshot("bridgeStatus")?.workspaces || [],
     settings: store.settings(),
     photos: store.photos(),
     photoBudget: PHOTO_BUDGET,
     photoLimit: PHOTO_LIMIT,
-    sessions: store.db.prepare("SELECT id,role,revoked FROM sessions").all(),
+    sessions: store.db.prepare("SELECT id,role,revoked FROM sessions").all().map(s => ({ ...s, deviceControl: s.role === "device" && store.deviceControl(s.id) })),
     cursor: store.events().at(-1)?.seq || 0,
   });
+  function enqueue(data, actor, res) {
+    if (!allowedCommands.includes(data.action) || !/^[\w-]{8,80}$/.test(data.id || "")) return json(res, 400, { error: "无效命令" });
+    if (["start", "continue", "steer"].includes(data.action) && (typeof data.text !== "string" || !data.text.trim() || data.text.length > 8000)) return json(res, 400, { error: "指令不能为空或超过 8000 字" });
+    const task = store.tasks().find(t => t.id === data.taskId);
+    if (data.action !== "start" && !task) return json(res, 404, { error: "任务不存在" });
+    if (data.action === "approve" && (!["accept", "decline"].includes(data.decision) || typeof data.approvalId !== "string" || task.approvalId !== data.approvalId || task.state !== "approval" || task.approval?.expiresAt <= Date.now())) return json(res, 409, { error: "审批已失效，请刷新任务" });
+    const command = { v: 1, id: data.id, action: data.action, text: data.text, taskId: data.taskId, approvalId: data.approvalId, decision: data.decision, actor,
+      projectId: typeof data.projectId === "string" ? data.projectId : undefined };
+    const added = store.command(command);
+    if (added && bridge) send(bridge, { type: "command", command });
+    store.audit(actor, `command.${command.action}`);
+    return json(res, 202, { queued: true, duplicate: !added, bridgeOnline: online() });
+  }
   const server = http.createServer(async (req, res) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
@@ -133,7 +148,7 @@ export async function createRelay({
       if (
         !["GET", "HEAD"].includes(req.method) &&
         origin !== originFor(req) &&
-        !["/api/bridge/enroll", "/api/bridge/revoke-self", "/api/device/enroll"].includes(
+        !["/api/bridge/enroll", "/api/bridge/revoke-self", "/api/device/enroll", "/api/device/commands"].includes(
           url.pathname,
         )
       )
@@ -201,6 +216,23 @@ export async function createRelay({
         return json(res, 200, { id: session.id, role: session.role });
       }
       const devicePhoto = /^\/api\/device\/photos\/([a-f0-9-]{36})$/.exec(url.pathname);
+      if (url.pathname === "/api/device/commands" && req.method === "POST" && mode === "production") {
+        const token = /^Bearer ([A-Za-z0-9_-]{32})$/.exec(req.headers.authorization || "")?.[1];
+        const device = token && store.session(token);
+        if (device?.role !== "device") return json(res, 401, { error: "挂件授权必需" });
+        const data = JSON.parse((await body(req, 2048)).toString());
+        if (data.action === "focus" && store.tasks().some(t => t.id === data.taskId)) {
+          store.settings({ codexTaskId: data.taskId });
+          return json(res, 200, { selected: true });
+        }
+        if (!allowExecution || !store.deviceControl(device.id)) return json(res, 403, { error: "请先在手机明确授权挂件快捷操作" });
+        if (!codexOnline()) return json(res, 409, { error: "电脑或 Codex 离线" });
+        if (!["start", "continue", "interrupt", "approve"].includes(data.action)) return json(res, 400, { error: "不支持的快捷操作" });
+        const task = store.tasks().find(t => t.id === data.taskId);
+        data.text = data.action === "start" ? "检查当前工作区的 Git 状态并简短报告，不修改文件。" : "请继续当前任务，并简短汇报结果。";
+        if (data.action === "start") data.projectId = task?.projectId;
+        return enqueue(data, device.id, res);
+      }
       if (url.pathname === "/api/device/sync" || devicePhoto) {
         if (mode !== "production" || req.method !== "GET")
           return json(res, 404, { error: "接口不存在" });
@@ -210,7 +242,7 @@ export async function createRelay({
           return json(res, 401, { error: "需要有效的挂件授权" });
         try {
           if (!devicePhoto) {
-            const snapshot = await deviceSync.snapshot();
+            const snapshot = await deviceSync.snapshot(device.id);
             if (!store.session(token)) return json(res, 401, { error: "挂件授权已失效" });
             store.touch(token);
             deviceSync.markSeen(device.id);
@@ -244,6 +276,13 @@ export async function createRelay({
         res.setHeader("Set-Cookie", sessionCookie(cookie(req)));
         if (req.method !== "GET" && session.role !== "operator")
           return json(res, 403, { error: "只读设备不可执行操作" });
+        if (url.pathname === "/api/device/permissions" && req.method === "POST") {
+          const data = JSON.parse((await body(req, 1024)).toString());
+          if (typeof data.enabled !== "boolean" || !store.db.prepare("SELECT id FROM sessions WHERE id=? AND role='device' AND revoked=0 AND expires>?").get(data.id, Date.now())) return json(res, 400, { error: "有效挂件必需" });
+          store.deviceControl(data.id, data.enabled);
+          store.audit(session.id, data.enabled ? "device.control.granted" : "device.control.revoked");
+          return json(res, 200, { enabled: data.enabled });
+        }
         if (url.pathname === "/api/bridge/tickets" && req.method === "POST") {
           const ticket = store.ticket("bridge");
           store.audit(session.id, "bridge.ticket.created");
@@ -322,6 +361,7 @@ export async function createRelay({
           if (Number.isInteger(data.utcOffset) && data.utcOffset >= -720 && data.utcOffset <= 840)
             patch.utcOffset = data.utcOffset;
           const previous = store.settings();
+          if (data.codexTaskId === null || store.tasks().some(t => t.id === data.codexTaskId)) patch.codexTaskId = data.codexTaskId;
           if (data.eggPhoto === null || (typeof data.eggPhoto === "string" && store.photos().some(p => p.id === data.eggPhoto)))
             patch.eggPhoto = data.eggPhoto;
           if (typeof data.eggMessage === "string")
@@ -362,50 +402,7 @@ export async function createRelay({
           if (++rate.count > 40)
             return json(res, 429, { error: "指令过于频繁，请稍后重试" });
           const data = JSON.parse((await body(req)).toString());
-          if (
-            !allowedCommands.includes(data.action) ||
-            !/^[\w-]{8,80}$/.test(data.id || "")
-          )
-            return json(res, 400, { error: "无效命令" });
-          if (
-            ["start", "continue", "steer"].includes(data.action) &&
-            (typeof data.text !== "string" ||
-              !data.text.trim() ||
-              data.text.length > 8000)
-          )
-            return json(res, 400, { error: "指令不能为空或超过 8000 字" });
-          if (
-            data.action !== "start" &&
-            (typeof data.taskId !== "string" ||
-              !store.tasks().some((t) => t.id === data.taskId))
-          )
-            return json(res, 404, { error: "任务不存在" });
-          if (
-            data.action === "approve" &&
-            (!["accept", "decline"].includes(data.decision) ||
-              typeof data.approvalId !== "string")
-          )
-            return json(res, 400, { error: "审批必须指定本次请求及决定" });
-          const command = {
-            v: 1,
-            id: data.id,
-            action: data.action,
-            text: data.text,
-            taskId: data.taskId,
-            approvalId: data.approvalId,
-            decision: data.decision,
-            actor: session.id,
-            projectId:
-              typeof data.projectId === "string" ? data.projectId : undefined,
-          };
-          const added = store.command(command);
-          if (added && bridge) send(bridge, { type: "command", command });
-          store.audit(session.id, `command.${command.action}`);
-          return json(res, 202, {
-            queued: true,
-            duplicate: !added,
-            bridgeOnline: online(),
-          });
+          return enqueue(data, session.id, res);
         }
         if (url.pathname === "/api/photos" && req.method === "POST") {
           const input = await body(req, 8 * 1024 * 1024);
@@ -564,11 +561,13 @@ export async function createRelay({
       wss.handleUpgrade(req, socket, head, (ws) => {
         if (bridge) bridge.close(4002, "replaced");
         bridge = ws;
+        ws.codexReady = false;
         ws.sessionId = enrolled?.id;
         ws.credential = validSession ? candidate : null;
         bridgeLastSeen = Date.now();
         broadcast({ type: "bridge", online: true });
         ws.on("message", (raw) => {
+          if (bridge !== ws) return;
           try {
             const data = JSON.parse(raw.toString());
             bridgeLastSeen = Date.now();
@@ -605,6 +604,7 @@ export async function createRelay({
                   ].includes(data.event.payload.state))
               )
                 return ws.close(1008, "invalid task");
+              if (data.event.type === "bridgeStatus") ws.codexReady = data.event.payload.online === true;
               publish(data.event);
               send(ws, { type: "eventAck", id: data.event.id });
             }

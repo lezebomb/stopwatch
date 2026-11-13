@@ -24,6 +24,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY, value TEXT, done INTEGER DEFAULT 0);
       CREATE TABLE IF NOT EXISTS photos(id TEXT PRIMARY KEY, name TEXT, bytes INTEGER, created INTEGER);
       CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, time INTEGER, actor TEXT, action TEXT);`);
+    this.db.exec("CREATE TABLE IF NOT EXISTS device_controls(id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0)");
     this.db
       .prepare("INSERT OR IGNORE INTO settings VALUES (1, ?)")
       .run(JSON.stringify(defaultSettings));
@@ -94,6 +95,11 @@ export class Store {
   revoke(id) {
     this.db.prepare("UPDATE sessions SET revoked=1 WHERE id=?").run(id);
     this.audit(id, "revoked");
+    this.db.prepare("DELETE FROM device_controls WHERE id=?").run(id);
+  }
+  deviceControl(id, enabled) {
+    if (typeof enabled === "boolean") this.db.prepare("INSERT OR REPLACE INTO device_controls VALUES (?,?)").run(id, enabled ? 1 : 0);
+    return this.db.prepare("SELECT enabled FROM device_controls WHERE id=?").get(id)?.enabled === 1;
   }
   audit(actor, action) {
     this.db

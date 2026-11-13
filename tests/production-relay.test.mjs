@@ -202,7 +202,7 @@ test("device sync delivers uploaded RGB565 and prevents device credentials from 
     assert.deepEqual(Buffer.from(await suffix.arrayBuffer()), bytes.subarray(offset));
     assert.equal((await call(`device/photos/${id}`, { headers: { ...device, Range: `bytes=${bytes.length}-` } })).status, 416);
     assert.equal((await call(`device/photos/${id}`, { headers: { ...operator, Range: `bytes=${offset}-` } })).status, 401);
-    assert.deepEqual(snapshot.codex, { online: false, task: null, quota: null });
+    assert.deepEqual(snapshot.codex, { online: false, canControl: false, tasks: [], task: null, quota: null });
     assert.equal((await (await call("state", { headers: operator })).json()).deviceOnline, true);
     const settings = await post("settings", { displayMode: "smart", sleepAfter: 0, eggPhoto: id, eggDate: "02-29", utcOffset: -300 }, operator);
     assert.equal(settings.status, 200);
@@ -220,5 +220,48 @@ test("device sync delivers uploaded RGB565 and prevents device credentials from 
   } finally {
     await relay.close();
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("device quick controls require a separate operator grant and a fresh live bridge", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "sw-device-control-"));
+  const origin = "https://console.example.invalid";
+  const relay = await createRelay({ directory, port: 0, mode: "production", publicOrigin: origin, allowExecution: true });
+  const headers = { Host: "console.example.invalid", "X-Forwarded-Proto": "https", Origin: origin, "Content-Type": "application/json" };
+  const operator = relay.store.pair(relay.store.ticket().code);
+  const viewer = relay.store.pair(relay.store.ticket("viewer").code);
+  const device = relay.store.pair(relay.store.ticket("device").code);
+  const credential = relay.store.pair(relay.store.ticket("bridge").code);
+  const call = (route, value, auth) => localFetch(relay.url + "/api/" + route, { method: value ? "POST" : "GET", headers: { ...headers, ...auth }, body: value ? JSON.stringify(value) : undefined });
+  const op = { Cookie: `sw_session=${operator.token}` }, dev = { Authorization: `Bearer ${device.token}` };
+  let ws, replacement;
+  try {
+    assert.equal((await call("device/commands", { action: "start", id: "device-command-1" }, dev)).status, 403);
+    assert.equal((await call("device/permissions", { id: device.id, enabled: true }, { Cookie: `sw_session=${viewer.token}` })).status, 403);
+    assert.equal((await call("device/permissions", { id: device.id, enabled: true }, op)).status, 200);
+    assert.equal((await call("device/commands", { action: "start", id: "device-command-1" }, dev)).status, 409);
+    const connect = () => new Promise((resolve, reject) => {
+      const socket = new WebSocket(relay.url.replace("http", "ws") + "/bridge", { headers: { ...headers, Authorization: `Bearer ${credential.token}`, "X-StopWatch-Mode": "production" } });
+      socket.once("open", () => resolve(socket)); socket.once("error", reject);
+    });
+    ws = await connect();
+    const ack = new Promise(resolve => ws.once("message", resolve));
+    ws.send(JSON.stringify({ type: "event", event: { v: 1, id: "bridge-ready-control", type: "bridgeStatus", payload: { mode: "production", online: true } } }));
+    await ack;
+    assert.equal((await (await call("device/sync", null, dev)).json()).codex.canControl, true);
+    const received = new Promise(resolve => ws.once("message", raw => resolve(JSON.parse(raw))));
+    assert.equal((await call("device/commands", { action: "start", id: "device-command-1", text: "arbitrary command must not pass" }, dev)).status, 202);
+    assert.match((await received).command.text, /不修改文件/);
+    assert.equal((await call("device/commands", { action: "steer", id: "device-command-2", text: "arbitrary" }, dev)).status, 400);
+    replacement = await connect();
+    const state = await (await call("state", null, op)).json();
+    assert.equal(state.codex.online, false);
+    assert.equal(state.quota, null);
+    assert.equal((await call("device/permissions", { id: device.id, enabled: false }, op)).status, 200);
+    assert.equal((await call("device/commands", { action: "start", id: "device-command-3" }, dev)).status, 403);
+  } finally {
+    ws?.terminate(); replacement?.terminate(); await relay.close();
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

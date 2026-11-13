@@ -1,13 +1,15 @@
 import { build } from "esbuild";
-import { mkdir, cp, readFile, writeFile, access } from "node:fs/promises";
+import { mkdir, cp, readFile, writeFile, access, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import config from "../release/config.json" with { type: "json" };
 const development = process.argv.includes("--development");
+const localInstallation = process.argv.includes("--local-install");
+if (development && localInstallation) throw new Error("Choose development or local installation");
 if (process.platform !== "win32")
   throw new Error("Windows runtime packaging must run on Windows");
-if (!development) await access(config.productionPublicKey);
-else await import("./update-dev-key.mjs");
+if (!development && !localInstallation) await access(config.productionPublicKey);
+else if (development) await import("./update-dev-key.mjs");
 const root = path.resolve("windows/package");
 await mkdir(`${root}/runtime`, { recursive: true });
 await mkdir(`${root}/app`, { recursive: true });
@@ -43,13 +45,15 @@ await cp("windows/Install.vbs", `${root}/Install-StopWatch.vbs`);
 // The VBS launchers use Windows PowerShell 5.1, which needs a BOM for UTF-8.
 for (const [file, directory] of [
   ["Install-StopWatch.ps1", "setup"],
+  ["Install-Core.ps1", "setup"],
   ["Settings.ps1", "app"],
   ["Decrypt-Credential.ps1", "app"],
 ]) {
   const source = await readFile(`windows/${file}`, "utf8");
   await writeFile(`${root}/${directory}/${file}`, "\uFEFF" + source.replace(/^\uFEFF/, ""));
 }
-await cp(
+if (localInstallation) await unlink(`${root}/release-public.pem`).catch(e => { if (e.code !== "ENOENT") throw e; });
+else await cp(
   development ? ".data/update-dev-public.pem" : config.productionPublicKey,
   `${root}/release-public.pem`,
 );
@@ -60,13 +64,14 @@ await writeFile(
   `${root}/install-profile.json`,
   JSON.stringify({
     production: !development,
+    localInstallation,
     version: config.version,
     origin: config.productionOrigin,
-    updateManifestUrl: config.bridgeManifestUrl,
+    updateManifestUrl: localInstallation ? null : config.bridgeManifestUrl,
     runtime: process.version,
     scope: "CurrentUser",
   }),
 );
 console.log(
-  `Packaged ${development ? "DEVELOPMENT (installation blocked)" : "production"} Windows companion at ${root}; no installation or startup registration performed.`,
+  `Packaged ${development ? "DEVELOPMENT (installation blocked)" : localInstallation ? "LOCAL AUTHORIZED (updates unconfigured)" : "production"} Windows companion at ${root}; no installation or startup registration performed.`,
 );

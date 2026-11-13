@@ -58,5 +58,15 @@ void sw_sync_start(void);
 bool sw_sync_worker_ready(void);
 void sw_sync_focus(bool focused);
 bool sw_sync_enroll(const char *code);
+typedef struct {
+  char id[65], approval[65], detail[448];
+  char ids[4][65], titles[4][128];
+  unsigned count;
+  bool online, can_control, running;
+} sw_codex_view_t;
+void sw_sync_codex_view(sw_codex_view_t *out);
+bool sw_sync_codex_submit(const char *action, const char *task, const char *approval,
+                           const char *decision);
+const char *sw_sync_codex_command_state(void);
 const char *sw_sync_state(void);
 const char *sw_sync_pair_state(void);

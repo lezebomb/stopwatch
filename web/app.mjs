@@ -29,6 +29,8 @@ const state = {
   mode: "mock",
   page: location.pathname === "/simulator" ? "overview" : "overview",
   tasks: [],
+  workspaces: [],
+  projectId: null,
   photos: [],
   events: [],
   settings: { ...defaultSettings },
@@ -129,7 +131,8 @@ function merge(snapshot) {
     "executionEnabled",
     "codex",
   ])
-    if (snapshot[key] != null) state[key] = snapshot[key];
+    if (key in snapshot) state[key] = snapshot[key];
+  if (Array.isArray(snapshot.workspaces)) state.workspaces = snapshot.workspaces;
   if (snapshot.session) state.session = snapshot.session;
   if (cover !== state.settings.defaultPhoto || !state.paired)
     state.photo = Math.max(
@@ -212,6 +215,7 @@ function connect() {
         const deviceOnline = typeof data.deviceOnline === "boolean" ? data.deviceOnline : state.deviceOnline;
         if (state.bridgeOnline === data.online && state.deviceOnline === deviceOnline) return;
         state.bridgeOnline = data.online;
+        if (!data.online) { state.codex = { ...state.codex, online: false }; state.quota = null; }
         state.deviceOnline = deviceOnline;
         render();
       }
@@ -219,6 +223,9 @@ function connect() {
   };
   ws.onclose = (event) => {
     state.connected = false;
+    state.bridgeOnline = false;
+    state.codex = { ...state.codex, online: false };
+    state.quota = null;
     if (event.code === 4001) {
       state.paired = false;
       renderPair();
@@ -249,7 +256,10 @@ function receive(event, silent = false) {
     }
   }
   if (event.type === "quota") state.quota = event.payload;
-  if (event.type === "bridgeStatus") state.codex = event.payload;
+  if (event.type === "bridgeStatus") {
+    state.codex = event.payload;
+    if (Array.isArray(event.payload.workspaces)) state.workspaces = event.payload.workspaces;
+  }
   if (event.type === "settings") state.settings = event.payload;
   if (event.type === "photos") state.photos = event.payload.photos;
   if (event.type === "commandError" && !silent) toast(event.payload.message);
@@ -399,7 +409,7 @@ function settings() {
     .filter((s) => !s.revoked)
     .map(
       (s) =>
-        `<div class="setting-row"><span>${escape(s.id.slice(0, 8))} · ${roleName[s.role] || "其他"} ${s.id === state.session?.id ? "（当前）" : ""}</span><button class="danger" data-revoke="${s.id}">撤销</button></div>`,
+        `<div class="setting-row"><span>${escape(s.id.slice(0, 8))} · ${roleName[s.role] || "其他"} ${s.id === state.session?.id ? "（当前）" : ""}</span>${s.role === "device" && canPair ? `<button class="secondary" data-device-control="${s.id}" data-enabled="${!!s.deviceControl}">${s.deviceControl ? "关闭挂件操作" : "授权挂件操作"}</button>` : ""}<button class="danger" data-revoke="${s.id}">撤销</button></div>`,
     )
     .join(
       "",
@@ -409,6 +419,9 @@ function guidePage() {
   return `<div class="guide-grid">${guide.map(([title, text], i) => `<article class="guide-card"><div class="number">GUIDE / ${String(i + 1).padStart(2, "0")}</div><h2>${title}</h2><p>${text}</p></article>`).join("")}</div>`;
 }
 function render() {
+  const drafts = [...root.querySelectorAll("textarea")].map(el => [el.id, el.value]);
+  const editing = document.activeElement?.tagName === "TEXTAREA" ?
+    { id: document.activeElement.id, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
   if (!state.paired) return;
   if (state.page === "tasks") markRead();
   const nav = [
@@ -449,6 +462,18 @@ function render() {
           "指令将在你明确授权的电脑与工作区执行；敏感操作按次审批。";
       const submit = root.querySelector("#task-form button");
       if (submit) submit.textContent = "创建任务 ↗";
+      const prompt = root.querySelector("#prompt");
+      if (prompt) {
+        prompt.placeholder = "输入要在已授权工作区完成的任务";
+        const label = document.createElement("label");
+        label.textContent = "执行工作区";
+        const select = document.createElement("select");
+        select.id = "task-workspace";
+        select.innerHTML = state.workspaces.map(w => `<option value="${escape(w.id)}">${escape(w.name || w.id)}</option>`).join("");
+        if (state.projectId) select.value = state.projectId;
+        select.onchange = () => { state.projectId = select.value; };
+        prompt.before(label, select);
+      }
     }
     if (state.page === "settings") {
       const button = document.createElement("button");
@@ -488,6 +513,8 @@ function render() {
     .querySelectorAll(".quota-fill")
     .forEach((el) => (el.style.width = `${el.dataset.width}%`));
   bind();
+  for (const [id, value] of drafts) { const field = document.getElementById(id); if (field) field.value = value; }
+  if (editing) { const field = document.getElementById(editing.id); if (field) { field.focus({ preventScroll: true }); field.setSelectionRange(editing.start, editing.end); } }
   canvas = document.querySelector("#screen");
   ctx = canvas?.getContext("2d");
   if (canvas) bindWatch();
@@ -512,7 +539,8 @@ function bind() {
   };
   on("task-form", "submit", (e) => {
     e.preventDefault();
-    command("start", { text: document.querySelector("#prompt").value });
+    command("start", { text: document.querySelector("#prompt").value,
+      projectId: document.querySelector("#task-workspace")?.value || undefined });
     document.querySelector("#prompt").value = "";
   });
   on("continue-form", "submit", (e) => {
@@ -531,6 +559,7 @@ function bind() {
     (el) =>
       (el.onclick = () => {
         state.selected = el.dataset.task;
+        if (state.mode === "production") api("settings", { codexTaskId: state.selected }).catch(e => toast(e.message));
         render();
       }),
   );
@@ -542,6 +571,14 @@ function bind() {
           decision: el.dataset.decision,
         })),
   );
+  document.querySelectorAll("[data-device-control]").forEach(el => {
+    el.onclick = async () => {
+      const enabled = el.dataset.enabled !== "true";
+      if (enabled && !confirm("允许这台挂件新建检查任务、继续、中断，并在屏幕确认后处理本次审批？可随时撤销。")) return;
+      try { await api("device/permissions", { id: el.dataset.deviceControl, enabled }); merge(await api("state")); render(); }
+      catch (e) { toast(e.message); }
+    };
+  });
   on("mark-read", "click", () => {
     markRead();
     render();
