@@ -67,6 +67,7 @@ export class AppServerCodex {
   commandFailed(command, error, uncertain) {
     const task = this.tasks.get(command.action === "start" ? command.id : command.taskId);
     if (!task || !["start", "continue"].includes(command.action) || !task.commandIds?.includes(command.id)) return;
+    if (["completed", "failed", "interrupted"].includes(task.state)) return;
     this.output(task, uncertain ? task.state : "failed", uncertain ? "指令执行状态待核对，未重复发送" : failureText(error.message), { uncertain });
   }
   async connect() {
@@ -130,6 +131,10 @@ export class AppServerCodex {
               restoreBlocked: true,
               approvalId: null,
             });
+            continue;
+          }
+          if (task.sandbox === "read-only" && (result.sandbox?.type !== "readOnly" || result.approvalPolicy !== "never")) {
+            this.output(task, "interrupted", "只读沙箱恢复未确认，已停止控制", { restoreBlocked: true, approvalId: null });
             continue;
           }
           if (
@@ -364,6 +369,8 @@ export class AppServerCodex {
       if (!project) throw new Error("工作区不在授权范围");
       const sandbox = c.sandbox === "read-only" ? "read-only" : "workspace-write";
       const result = await this.rpc.start(project.path, this.model, sandbox);
+      if (sandbox === "read-only" && (result.sandbox?.type !== "readOnly" || result.approvalPolicy !== "never"))
+        throw new Error("App Server 未确认只读沙箱，已拒绝开始任务");
       if (!result.thread?.id)
         throw new Error("App Server did not return a thread");
       const task = {
@@ -409,12 +416,14 @@ export class AppServerCodex {
       return;
     }
     if (c.action === "interrupt") {
+      if (!["thinking", "working", "testing", "approval"].includes(task.state)) throw new Error("任务已结束，无需中断");
       if (!task.turnId) throw new Error("没有可中断的轮次");
       task = this.attach(task, c);
       await this.rpc.interrupt(task.appServerThreadId, task.turnId);
       return;
     }
     if (c.action === "steer") {
+      if (!["thinking", "working", "testing"].includes(task.state)) throw new Error("当前轮次已结束或正等待审批");
       if (!task.turnId) throw new Error("没有可追加指令的轮次");
       task = this.attach(task, c);
       await this.rpc.steer(task.appServerThreadId, task.turnId, c.text);
@@ -426,7 +435,9 @@ export class AppServerCodex {
     if (c.action === "continue") {
       if (["thinking", "working", "testing", "approval"].includes(task.state))
         throw new Error("任务仍在运行，请追加指令或先中断");
-      await this.rpc.resume(task.appServerThreadId, task.projectPath, this.model, task.sandbox || "workspace-write");
+      const resumed = await this.rpc.resume(task.appServerThreadId, task.projectPath, this.model, task.sandbox || "workspace-write");
+      if (task.sandbox === "read-only" && (resumed.sandbox?.type !== "readOnly" || resumed.approvalPolicy !== "never"))
+        throw new Error("App Server 未确认只读沙箱，已拒绝继续任务");
       task = this.attach(task, c, true);
       task = this.output(task, "thinking", "正在继续会话", { turnId: null, result: "" });
       const result = await this.rpc.turn(task.appServerThreadId, c.text, this.model, task.sandbox || "workspace-write");

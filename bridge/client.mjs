@@ -113,6 +113,9 @@ export function connectBridge({
         queue = queue
           .then(async () => {
             if (stopped) return;
+            // The relay may reconnect before owned threads finish restoring.
+            // Do not claim/ack work yet; the ready transition resends it.
+            if (mode === "production" && engine.ready === false) return;
             const seen = db
               .prepare("SELECT status FROM seen WHERE id=?")
               .get(c.id);

@@ -51,6 +51,23 @@ test("read-only is enforced in official thread/resume/turn protocol fields", asy
   assert.deepEqual(calls[2].params.sandboxPolicy, { type: "readOnly", networkAccess: false });
 });
 
+test("read-only task refuses a server response that restores write access", async () => {
+  let writable = false;
+  const policy = () => ({ sandbox: { type: writable ? "workspaceWrite" : "readOnly" }, approvalPolicy: "never", thread: { id: "owned-readonly", turns: [] } });
+  const engine = new AppServerCodex({ emit() {}, workspaces: [{ id: "safe", path: path.resolve(".data/codex-e2e/workspace-a"), name: "Safe" }],
+    transportFactory: () => ({ initialize: async () => ({}), quota: async () => ({}), close() {},
+      start: async () => policy(), resume: async () => policy(), turn: async () => ({ turn: { id: "read-turn" } }),
+    }),
+  });
+  try {
+    for (let n = 0; n < 20 && !engine.ready; n++) await new Promise(r => setTimeout(r, 5));
+    await engine.command({ id: "readonly-command", action: "start", sandbox: "read-only", text: "inspect" });
+    engine.notify({ method: "turn/completed", params: { threadId: "owned-readonly", turn: { id: "read-turn", status: "completed" } } });
+    writable = true;
+    await assert.rejects(engine.command({ id: "readonly-continue", action: "continue", taskId: "readonly-command", text: "inspect again" }), /未确认只读沙箱/);
+  } finally { engine.close(); }
+});
+
 test("full approval digest is mandatory; oversized requests cannot be accepted; turn events determine success", async () => {
   let callbacks;
   const events = [], responses = [];

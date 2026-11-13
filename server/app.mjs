@@ -616,9 +616,11 @@ export async function createRelay({
                   ].includes(data.event.payload.state))
               )
                 return ws.close(1008, "invalid task");
+              const becameReady = data.event.type === "bridgeStatus" && data.event.payload.online === true && !ws.codexReady;
               if (data.event.type === "bridgeStatus") ws.codexReady = data.event.payload.online === true;
               publish(data.event);
               send(ws, { type: "eventAck", id: data.event.id });
+              if (becameReady) for (const command of store.pending()) send(ws, { type: "command", command });
             }
           } catch {
             ws.close(1008, "invalid protocol");
