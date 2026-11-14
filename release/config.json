@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "hardware": "m5stack-stopwatch-c152",
   "partitionLayout": "c152-16m-dual4m-photos7m-v1",
   "dataSchema": 1,

@@ -1,6 +1,6 @@
 # StopWatch · 小小挂件，长期陪伴
 
-基于 M5Stack StopWatch C152 和官方 Muse SDK，在 v0.1 上扩展签名 OTA、自动发布、在线演示及 Windows 后台交付。当前开发版本 **0.2.1**。
+基于 M5Stack StopWatch C152 和官方 Muse SDK，在 v0.1 上扩展签名 OTA、自动发布、在线演示及 Windows 后台交付。当前发布准备版本 **0.2.3**。
 
 **实机进展** 已验证照片、配网、授权和无线相册。Codex 已通过公网完成网页下单、双工作区真实执行、追加、中断、按次审批、挂件快捷下单和无线 Miao 联动，用户级 Windows 后台已安装。Muse 云端 Noise 与文字对话已通过，已在国内热点通过受认证的 VPS 加密出口独立连接，手机无需代理共享。挂件持续静音，录音、通话、Windows 真正重启登录及正式签名 OTA 尚待验收。[硬件测试记录](HARDWARE_TEST.md)
 
@@ -89,7 +89,7 @@ npm.cmd audit
 
 ## 手机扫码配网
 
-挂件照片页左上角「手机配网」显示二维码，用 Android Chrome 打开 [蓝牙配网页](https://lezebomb.github.io/stopwatch/setup/)，选择 MuseGadget 并输入挂件显示的六位配对码，然后在手机输入已有 Wi-Fi 或手机热点的名称、密码。无需电脑或 APK；网络由官方 Muse SDK 保存（最多8个）并按范围自动重连。手机热点可以保持开启，必须兼容2.4GHz。手机网页不能替设备连接5GHz热点。
+挂件照片页左上角「手机配网」显示二维码，用 Android Chrome 打开 [蓝牙配网页](https://fym.lezebomb.top/setup/)，选择 MuseGadget 并输入挂件显示的六位配对码，然后在手机输入已有 Wi-Fi 或手机热点的名称、密码。无需电脑或 APK；网络由官方 Muse SDK 保存（最多8个）并按范围自动重连。手机热点可以保持开启，必须兼容2.4GHz。手机网页不能替设备连接5GHz热点。
 
 本页仅做本地加密蓝牙配网，与 Pages Mock 控制台分离；不上传/持久保存密码，没有任务执行或账号授权入口。需要支持 Web Bluetooth 的浏览器；优先 Android Chrome，Edge按功能检测提示。进入配网页临时开启挂件端手机配网蓝牙并保持唤醒，返回、5分钟到期或重启即结束。照片页尊重用户的 Wi-Fi 开关，休眠和唤醒后的重连由 Muse SDK 管理；首次 Muse 账号授权仍单独进行。真实手机 BLE 配对与联网以 HARDWARE_TEST 现场结果为准。
 

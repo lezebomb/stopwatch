@@ -14,3 +14,13 @@ export function releaseAssetUrl(config, repository, tag, asset) {
     throw new Error("Release mirror must be the reviewed production /updates origin");
   return `${base.href}/releases/${tag}/${asset}`;
 }
+export function annotatedReleaseTime(ref, annotation, tag, build) {
+  if(ref?.object?.type!=="tag"||!/^[a-f0-9]{40}$/.test(ref.object.sha)||
+      annotation?.sha!==ref.object.sha||annotation.tag!==tag||
+      annotation.object?.type!=="commit"||annotation.object.sha!==build||
+      !/^[a-f0-9]{40}$/.test(build))throw new Error("Annotated stable tag must target the exact checked commit");
+  if(typeof annotation.tagger?.date!=="string")throw new Error("Invalid annotated release time");
+  const time=new Date(annotation.tagger.date);
+  if(!Number.isFinite(time.getTime()))throw new Error("Invalid annotated release time");
+  return time.toISOString();
+}

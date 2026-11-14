@@ -7,11 +7,17 @@ import {generateKeyPairSync} from "node:crypto";
 import http from "node:http";
 import config from "../release/config.json" with {type:"json"};
 import {signedManifest,sha256,verifyManifest} from "../updates/security.mjs";
-import {releaseAssetUrl,releaseComponents} from "../updates/release.mjs";
+import {releaseAssetUrl,releaseComponents,annotatedReleaseTime} from "../updates/release.mjs";
 import {mirrorRelease} from "../scripts/release-mirror.mjs";
 import {serveUpdate} from "../server/update-files.mjs";
 const key=generateKeyPairSync("rsa",{modulusLength:3072});
 const origin=config.productionOrigin;
+test("release preflight verifies remote annotation despite a peeled local checkout",()=>{
+  const sha="c".repeat(40),build="d".repeat(40),ref={object:{type:"tag",sha}},annotation={sha,tag:"v0.2.3",tagger:{date:"2026-11-14T08:00:00Z"},object:{type:"commit",sha:build}};
+  assert.equal(annotatedReleaseTime(ref,annotation,"v0.2.3",build),"2026-11-14T08:00:00.000Z");
+  assert.throws(()=>annotatedReleaseTime({object:{type:"commit",sha:build}},annotation,"v0.2.3",build),/Annotated/);
+  assert.throws(()=>annotatedReleaseTime(ref,annotation,"v0.2.3","e".repeat(40)),/Annotated/);
+});
 function fixture(version="0.2.1"){
   const data=new Map(),assets=[],tag="v"+version,publishedAt=new Date(Date.now()-60000).toISOString();
   for(const [kind,[name,manifest]] of Object.entries(releaseComponents)){
@@ -44,6 +50,13 @@ test("durable signed pointer rejects rollback even after metadata loss",()=>temp
   await rm(path.join(root,"current.json"));const old=fixture("0.2.1");
   await assert.rejects(mirrorRelease({root,key:key.publicKey,request:old.request}),/rollback/);
   assert.throws(()=>releaseAssetUrl({...config,artifactBaseUrl:"https://evil.invalid/updates"},"lezebomb/stopwatch","v0.2.1","miao.pack"),/reviewed/);
+}));
+test("Linux publication atomically promotes all components and retains the old release",{skip:process.platform!=="linux"},()=>temp(async root=>{
+  const first=fixture();await mirrorRelease({root,key:key.publicKey,request:first.request});
+  const next=fixture("0.2.2");await mirrorRelease({root,key:key.publicKey,request:next.request});
+  for(const [kind,[name]] of Object.entries(releaseComponents))
+    assert.equal(await readFile(path.join(root,"stable",name),"utf8"),kind+"0.2.2");
+  assert.equal(await readFile(path.join(root,"releases/v0.2.1/stopwatch-firmware.bin"),"utf8"),"firmware0.2.1");
 }));
 test("public release serving supports bounded ranges and cannot expose private files",()=>temp(async root=>{
   await mkdir(path.join(root,"releases/v0.2.1"),{recursive:true});

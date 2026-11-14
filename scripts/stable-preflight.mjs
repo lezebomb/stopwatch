@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { appendFile, readFile } from "node:fs/promises";
 import config from "../release/config.json" with { type: "json" };
 import { compareVersion, fingerprint } from "../updates/security.mjs";
+import { annotatedReleaseTime } from "../updates/release.mjs";
 
 const { GITHUB_REF, GITHUB_REPOSITORY, GITHUB_TOKEN, GITHUB_OUTPUT } = process.env;
 const tag = `v${config.version}`;
@@ -13,8 +14,19 @@ if (!origin || origin.protocol !== "https:" || origin.origin !== config.producti
 const key = await readFile(config.productionPublicKey, "utf8");
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
 const build = git("rev-parse", "HEAD");
-if (git("cat-file", "-t", GITHUB_REF) !== "tag") throw new Error("Use an annotated stable tag");
-const published = new Date(git("for-each-ref", "--format=%(taggerdate:iso-strict)", GITHUB_REF)).toISOString();
+// checkout can replace its local annotated ref with the event's peeled commit.
+// Verify the authoritative remote tag object; never weaken the annotation or
+// exact-commit requirement to accommodate that local checkout behavior.
+async function gitObject(suffix) {
+  const response=await fetch(`https://api.github.com/repos/${GITHUB_REPOSITORY}/git/${suffix}`,{
+    headers:{Authorization:`Bearer ${GITHUB_TOKEN}`,"X-GitHub-Api-Version":"2022-11-28"},
+  });
+  if(!response.ok)throw new Error(`Cannot verify stable tag (${response.status})`);
+  return response.json();
+}
+const ref=await gitObject(`ref/tags/${encodeURIComponent(tag)}`);
+if(ref.object?.type!=="tag")throw new Error("Use an annotated stable tag");
+const published=annotatedReleaseTime(ref,await gitObject(`tags/${ref.object.sha}`),tag,build);
 const response = await fetch(`https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha=${build}&per_page=1`, {
   headers: { Authorization: `Bearer ${GITHUB_TOKEN}`, "X-GitHub-Api-Version": "2022-11-28" },
 });
