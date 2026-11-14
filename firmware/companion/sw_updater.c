@@ -13,6 +13,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
 #include "mbedtls/pk.h"
@@ -68,7 +69,8 @@ static volatile bool production_configured = SW_UPDATE_PRODUCTION;
 /* Strings stay in rodata. Retain the existing development link coverage. */
 static const char *volatile manifest_url = SW_UPDATE_MANIFEST_URL;
 static const char *volatile resource_url = SW_RESOURCE_MANIFEST_URL;
-static _Atomic(TaskHandle_t) update_task;
+static StaticSemaphore_t wake_storage;
+static SemaphoreHandle_t update_wake;
 typedef struct {
   char version[32], url[768], build[65];
   uint8_t hash[32];
@@ -156,9 +158,9 @@ void sw_update_request_check(void) {
     return;
   }
   atomic_store(&manual, true);
-  TaskHandle_t task = atomic_load(&update_task);
-  if (task)
-    xTaskNotifyGive(task);
+  /* The manual worker may exit concurrently. Never notify a borrowed task
+   * handle after its TCB can have been freed. This semaphore lives forever. */
+  if (update_wake) xSemaphoreGive(update_wake);
 }
 bool sw_update_request_install(const char *version) {
   if (!production_configured || !version || strlen(version) >= sizeof(requested_version) ||
@@ -810,16 +812,18 @@ static __attribute__((noinline)) void poll_updates(void) {
         (user_check || resource_due || !resource_wall || utc < resource_wall ||
          utc - resource_wall >= policy.check_s);
     if (action == SW_UP_WAIT && !check_miao) {
-      if (user_check)
+      if (user_check) {
+        atomic_store(&manual, true); /* Preserve the request through stability wait. */
         state("deferred", "等待稳定网络、空闲或重试间隔");
-      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(have_candidate ? 1000 : 30000));
+      }
+      xSemaphoreTake(update_wake, pdMS_TO_TICKS(have_candidate ? 1000 : 30000));
       continue;
     }
     if (!request_allowed() || !tls_headroom()) {
       if (user_check)
         atomic_store(&manual, true);
       state("deferred", "等待 Muse 空闲和更新所需内存");
-      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(30000));
+      xSemaphoreTake(update_wake, pdMS_TO_TICKS(30000));
       continue;
     }
     bool ok = true;
@@ -885,7 +889,7 @@ static __attribute__((noinline)) void poll_updates(void) {
     status.failures = failures;
     portEXIT_CRITICAL(&lock);
     if (!automatic && !requested[0] && !atomic_load(&manual)) return;
-    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(have_candidate ? 1000 : 30000));
+    xSemaphoreTake(update_wake, pdMS_TO_TICKS(have_candidate ? 1000 : 30000));
   }
 }
 static void worker(void *arg) {
@@ -902,11 +906,9 @@ static void worker(void *arg) {
 static void download_worker(void *arg) {
   (void)arg;
   atomic_store(&ota_stack_external, esp_ptr_external_ram((const void *)esp_cpu_get_sp()));
-  atomic_store(&update_task, xTaskGetCurrentTaskHandle());
   poll_updates();
   /* Manual check returns and releases its PSRAM stack/TCB. The official
    * dispatcher stays initialized for subsequent Flash calls. */
-  atomic_store(&update_task, NULL);
   atomic_store(&ota_worker_started, false);
   atomic_store(&ota_stack_external, false);
   vTaskDeleteWithCaps(NULL);
@@ -964,6 +966,7 @@ void sw_update_maintenance(void) {
   }
 }
 void sw_update_start(bool storage_ok) {
+  update_wake = xSemaphoreCreateBinaryStatic(&wake_storage);
   storage_ready = storage_ok;
   policy = sw_update_defaults();
   psa_crypto_init();

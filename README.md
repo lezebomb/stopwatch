@@ -1,6 +1,6 @@
 # StopWatch · 小小挂件，长期陪伴
 
-基于 M5Stack StopWatch C152 和官方 Muse SDK，在 v0.1 上扩展签名 OTA、自动发布、在线演示及 Windows 后台交付。当前发布准备版本 **0.2.3**。
+基于 M5Stack StopWatch C152 和官方 Muse SDK，在 v0.1 上扩展签名 OTA、自动发布、在线演示及 Windows 后台交付。当前发布准备版本 **0.2.4**。
 
 **实机进展** 已验证照片、配网、授权和无线相册。Codex 已通过公网完成网页下单、双工作区真实执行、追加、中断、按次审批、挂件快捷下单和无线 Miao 联动，用户级 Windows 后台已安装。Muse 云端 Noise 与文字对话已通过，已在国内热点通过受认证的 VPS 加密出口独立连接，手机无需代理共享。挂件持续静音，录音、通话、Windows 真正重启登录及正式签名 OTA 尚待验收。[硬件测试记录](HARDWARE_TEST.md)
 
