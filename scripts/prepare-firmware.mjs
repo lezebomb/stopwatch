@@ -702,6 +702,7 @@ for (const operation of ["READ", "WRITE"]) {
 await writeChanged(`${idf}/components/esp-tls/esp_tls_mbedtls.c`, tlsMbed);
 let wsTransport = '#include <stdbool.h>\n#include <stddef.h>\n#include <stdlib.h>\n' + String.raw`
 extern void *sw_muse_egress_alloc(size_t, bool *) __attribute__((weak));
+extern void sw_muse_egress_control(void *, int) __attribute__((weak));
 static void *sw_ws_alloc(size_t size, bool zero) {
     bool handled = false;
     void *p = sw_muse_egress_alloc ? sw_muse_egress_alloc(size, &handled) : NULL;
@@ -712,6 +713,10 @@ wsTransport = patchPinned(wsTransport, 'transport_ws_t *ws = calloc(1, sizeof(tr
   'transport_ws_t *ws = sw_ws_alloc(sizeof(transport_ws_t), true);', "outer WS context");
 wsTransport = patchPinned(wsTransport, 'ws->buffer = malloc(WS_BUFFER_SIZE);',
   'ws->buffer = sw_ws_alloc(WS_BUFFER_SIZE, false);', "outer WS buffer", 2);
+wsTransport = patchPinned(wsTransport,
+  '    if (ws->frame_state.opcode == WS_OPCODE_PING) {',
+  '    if (sw_muse_egress_control) sw_muse_egress_control(t, ws->frame_state.opcode);\n\n    if (ws->frame_state.opcode == WS_OPCODE_PING) {',
+  "observe official WS control handling");
 for (const [before, after] of [
   ['ESP_LOGD(TAG, "Authorization: %s", ws->auth);', 'ESP_LOGD(TAG, "Authorization: [redacted]");'],
   ['ESP_LOGD(TAG, "headers: %s", ws->headers);', 'ESP_LOGD(TAG, "Additional headers: [redacted]");'],

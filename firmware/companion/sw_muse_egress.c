@@ -27,7 +27,7 @@ typedef struct {
   TaskHandle_t owner;
   esp_transport_handle_t ssl, ws;
   int fd;
-  bool creating, api, ready, failed;
+  bool creating, api, ready, failed, closing;
   char gateway[161], path[320], auth[40];
 } connection_t;
 static connection_t *connections[CONNECTIONS];
@@ -175,6 +175,18 @@ static int tunnel_send(void *ctx,const unsigned char *data,size_t size) {
   if(count!=(int)size) return MBEDTLS_ERR_NET_SEND_FAILED;
   atomic_fetch_add(&sent,count);return count;
 }
+void sw_muse_egress_control(void *ws,int opcode) {
+  // IDF clears header_received after auto-handling a control frame, so its
+  // public opcode getter cannot identify that frame after read() returns.
+  portENTER_CRITICAL(&lock);
+  for(unsigned i=0;i<CONNECTIONS;i++) if(connections[i] && connections[i]->ws==ws) {
+    if(opcode==WS_TRANSPORT_OPCODES_CLOSE) connections[i]->closing=true;
+    if(opcode==WS_TRANSPORT_OPCODES_PING || opcode==WS_TRANSPORT_OPCODES_PONG)
+      atomic_store(&control_seen,true);
+    break;
+  }
+  portEXIT_CRITICAL(&lock);
+}
 static int tunnel_recv(void *ctx,unsigned char *data,size_t size) {
   connection_t *c=ctx;int ready=esp_transport_poll_read(c->ws,100);
   if(!ready) return MBEDTLS_ERR_SSL_WANT_READ;
@@ -186,12 +198,7 @@ static int tunnel_recv(void *ctx,unsigned char *data,size_t size) {
   // IDF consumes PING/PONG internally and returns zero, also on a read timeout.
   // TCP FIN is already an error from the parent SSL transport. Only a WS CLOSE
   // frame is an orderly inner TLS EOF; other zero reads must keep the session.
-  if(!count) {
-    ws_transport_opcodes_t opcode=esp_transport_ws_get_read_opcode(c->ws);
-    if(opcode==WS_TRANSPORT_OPCODES_PING || opcode==WS_TRANSPORT_OPCODES_PONG)
-      atomic_store(&control_seen,true);
-    if(opcode!=WS_TRANSPORT_OPCODES_CLOSE) return MBEDTLS_ERR_SSL_WANT_READ;
-  }
+  if(!count && !c->closing) return MBEDTLS_ERR_SSL_WANT_READ;
   if(count>0) atomic_fetch_add(&received,count);
   return count;
 }

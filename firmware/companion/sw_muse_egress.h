@@ -10,6 +10,7 @@ void sw_muse_egress_direct_failed(void);
 esp_err_t sw_muse_egress_connect(const char *host, int length, int timeout_ms, int *fd);
 void sw_muse_egress_bind(void *tls, int fd, const char *host, int length, int port);
 void sw_muse_egress_bio(void *tls, void *ssl);
+void sw_muse_egress_control(void *ws, int opcode);
 int sw_muse_egress_pending(void *tls);
 void sw_muse_egress_result(void *tls, int result);
 bool sw_muse_egress_release(void *tls);
