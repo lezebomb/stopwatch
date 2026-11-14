@@ -56,6 +56,9 @@ bool sw_sync_http_try_take(void);
 void sw_sync_http_release(void);
 void sw_sync_start(void);
 bool sw_sync_worker_ready(void);
+/* Local network adapter only: device credential, never a Muse account token.
+ * Caller must wipe the 33-byte output and never log or expose it over USB. */
+bool sw_sync_muse_credential(char token[33]);
 void sw_sync_focus(bool focused);
 bool sw_sync_enroll(const char *code);
 typedef struct {

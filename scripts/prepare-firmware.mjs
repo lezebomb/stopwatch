@@ -50,6 +50,8 @@ for (const file of [
   "sw_memory.h",
   "sw_muse_proxy.c",
   "sw_muse_proxy.h",
+  "sw_muse_egress.c",
+  "sw_muse_egress.h",
 ])
   await writeChanged(
     `${component}/${file}`,
@@ -59,15 +61,15 @@ for (const file of [
 let cmake = git(["show", "HEAD:esp32/components/muse/CMakeLists.txt"]);
 cmake = cmake.replace(
   '"muse_app.c"',
-  '"muse_app.c"\n        "sw_companion.c"\n        "sw_model.c"\n        "sw_update_core.c"\n        "sw_updater.c"\n        "sw_updater_ui.c"\n        "sw_sync.c"\n        "sw_miao.c"\n        "sw_memory.c"\n        "sw_muse_proxy.c"',
+  '"muse_app.c"\n        "sw_companion.c"\n        "sw_model.c"\n        "sw_update_core.c"\n        "sw_updater.c"\n        "sw_updater_ui.c"\n        "sw_sync.c"\n        "sw_miao.c"\n        "sw_memory.c"\n        "sw_muse_proxy.c"\n        "sw_muse_egress.c"',
 );
 cmake = cmake.replace(
   "idf_component_register(",
-  'list(APPEND muse_priv_requires spiffs app_update)\nlist(APPEND embed "update_public.pem" "sw_miao_pack.bin" "sw_miao_idle.bin")\nidf_component_register(',
+  'list(APPEND muse_priv_requires spiffs app_update tcp_transport)\nlist(APPEND embed "update_public.pem" "sw_miao_pack.bin" "sw_miao_idle.bin")\nidf_component_register(',
 );
 const museManifest = git(["show", "HEAD:esp32/components/muse/idf_component.yml"]);
 if (!museManifest.includes("dependencies:\n")) throw new Error("Upstream Muse dependency manifest changed");
-await writeChanged(`${component}/idf_component.yml`, museManifest.replace("dependencies:\n", 'dependencies:\n  espressif/zlib: "1.3.2~2"\n'));
+await writeChanged(`${component}/idf_component.yml`, museManifest.replace("dependencies:\n", 'dependencies:\n  espressif/zlib: "1.3.2~2"\n  espressif/esp_flash_dispatcher: "1.0.3"\n'));
 const production = process.env.SW_PRODUCTION === "1";
 const relayOrigin = production ? releaseConfig.productionOrigin || "" : process.env.SW_DEVICE_RELAY_ORIGIN || "";
 if (relayOrigin) {
@@ -506,6 +508,14 @@ for (const signature of ["void muse_audio_chirp(int rising)", "void muse_audio_l
 const pcmMute = "bool mute = !muse_settings_speaker_on();";
 if (!audio.includes(pcmMute)) throw new Error("Upstream PCM mute hook changed");
 audio = audio.replace(pcmMute, "bool mute = sw_companion_audio_silent() || !muse_settings_speaker_on();");
+// The muted chirp's 2,880-byte CPU buffer must not reserve internal RAM.
+// muse_audio_write copies synchronously into the driver's own DMA buffers.
+if (audio.split("    static int16_t buf[N];").length !== 2 ||
+    audio.split("    muse_audio_write(buf, N);").length !== 2)
+  throw new Error("Upstream chirp staging buffer changed");
+audio = audio.replace("    static int16_t buf[N];",
+  "    int16_t *buf = heap_caps_malloc(N * sizeof(*buf), MUSE_BIG_CAPS);\n    if (!buf) return;")
+  .replace("    muse_audio_write(buf, N);", "    muse_audio_write(buf, N);\n    free(buf);");
 if (!production) {
   const openCodec = "            err = open_codecs();   /* logs its own failure */";
   if (!audio.includes(openCodec)) throw new Error("Upstream codec startup changed");
@@ -585,14 +595,54 @@ const idf = path.resolve(process.env.IDF_PATH || ".deps/esp-idf");
 if (execFileSync("git", ["-c", `safe.directory=${idf.replaceAll("\\", "/")}`,
     "-C", idf, "rev-parse", "HEAD"], { encoding: "utf8" }).trim() !== lock.espIdf.commit)
   throw new Error("ESP-IDF commit differs from upstream.lock.json");
-let tlsSource = execFileSync("git", ["-c", `safe.directory=${idf.replaceAll("\\", "/")}`,
-  "-C", idf, "show", "HEAD:components/esp-tls/esp_tls.c"], { encoding: "utf8" });
+const idfOriginal = file => execFileSync("git", ["-c", `safe.directory=${idf.replaceAll("\\", "/")}`,
+  "-C", idf, "show", `HEAD:${file}`], { encoding: "utf8" });
+function patchPinned(source, before, after, label, count = 1) {
+  if (source.split(before).length !== count + 1) throw new Error(`Pinned IDF ${label} changed`);
+  return source.replaceAll(before, after);
+}
+let tlsSource = idfOriginal("components/esp-tls/esp_tls.c");
 const tcpHook = "static inline esp_err_t tcp_connect(const char *host, int hostlen, int port, const esp_tls_cfg_t *cfg, esp_tls_error_handle_t error_handle, int *sockfd)\n{";
 if (!tlsSource.includes(tcpHook)) throw new Error("Pinned ESP-TLS socket hook changed");
-tlsSource = tlsSource.replace(tcpHook, String.raw`
+tlsSource = patchPinned(tlsSource, '#include "esp_tls.h"', '#include "esp_tls.h"\n' + String.raw`
 extern bool sw_muse_proxy_applies(const char *, int, int) __attribute__((weak));
 extern esp_err_t sw_muse_proxy_connect(const char *, int, int, int, int *) __attribute__((weak));
-` + tcpHook + String.raw`
+extern bool sw_muse_egress_target(const char *, int, int) __attribute__((weak));
+extern bool sw_muse_egress_ready(void) __attribute__((weak));
+extern bool sw_muse_egress_direct_due(void) __attribute__((weak));
+extern void sw_muse_egress_direct_failed(void) __attribute__((weak));
+extern esp_err_t sw_muse_egress_connect(const char *, int, int, int *) __attribute__((weak));
+extern bool sw_muse_egress_abort_fd(int) __attribute__((weak));
+extern void sw_muse_egress_bind(void *, int, const char *, int, int) __attribute__((weak));
+extern void sw_muse_egress_result(void *, int) __attribute__((weak));
+extern void *sw_muse_egress_alloc(size_t, bool *) __attribute__((weak));
+`, "egress declarations");
+const directHook = tcpHook.replace("tcp_connect(", "sw_tcp_connect_direct(");
+tlsSource = tlsSource.replace(tcpHook, directHook.replace("\n{", ";\n") + tcpHook + String.raw`
+    if (cfg && !cfg->is_plain_tcp && sw_muse_egress_target && sw_muse_egress_ready &&
+        sw_muse_egress_connect && sw_muse_egress_direct_due && sw_muse_egress_direct_failed &&
+        sw_muse_egress_target(host, hostlen, port) && sw_muse_egress_ready()) {
+        esp_err_t result = ESP_FAIL;
+        if (sw_muse_egress_direct_due()) {
+            esp_tls_cfg_t direct = *cfg;
+            direct.non_block = false;
+            if (direct.timeout_ms <= 0 || direct.timeout_ms > 2000) direct.timeout_ms = 2000;
+            result = sw_tcp_connect_direct(host, hostlen, port, &direct, error_handle, sockfd);
+            if (result == ESP_OK && cfg->non_block) result = esp_tls_set_socket_non_blocking(*sockfd, true);
+            if (result == ESP_OK) return result;
+            if (*sockfd >= 0) { close(*sockfd); *sockfd = -1; }
+            sw_muse_egress_direct_failed();
+        }
+        result = sw_muse_egress_connect(host, hostlen, cfg->timeout_ms, sockfd);
+        if (result == ESP_OK) result = esp_tls_set_socket_options(*sockfd, cfg);
+        if (result == ESP_OK && cfg->non_block) result = esp_tls_set_socket_non_blocking(*sockfd, true);
+        if (result != ESP_OK && *sockfd >= 0) {
+            if (!sw_muse_egress_abort_fd || !sw_muse_egress_abort_fd(*sockfd)) close(*sockfd);
+            *sockfd = -1;
+        }
+        if (result == ESP_OK) esp_tls_get_and_clear_last_error(error_handle, NULL, NULL);
+        return result;
+    }
     if (cfg && !cfg->is_plain_tcp && sw_muse_proxy_applies && sw_muse_proxy_connect &&
         sw_muse_proxy_applies(host, hostlen, port)) {
         esp_err_t result = sw_muse_proxy_connect(host, hostlen, port, cfg->timeout_ms, sockfd);
@@ -606,8 +656,69 @@ extern esp_err_t sw_muse_proxy_connect(const char *, int, int, int, int *) __att
         ESP_LOGI(TAG, "Muse LAN tunnel result: %d", result);
         return result;
     }
-`);
+    return sw_tcp_connect_direct(host, hostlen, port, cfg, error_handle, sockfd);
+}
+` + directHook);
+tlsSource = patchPinned(tlsSource,
+  '    esp_tls_t *tls = (esp_tls_t *)calloc(1, sizeof(esp_tls_t));',
+  `    bool external = false;
+    esp_tls_t *tls = sw_muse_egress_alloc ? sw_muse_egress_alloc(sizeof(esp_tls_t), &external) : NULL;
+    if (!external) tls = calloc(1, sizeof(esp_tls_t));`, "outer TLS allocation");
+tlsSource = patchPinned(tlsSource, '        if (tls->is_tls == false) {',
+  `        if (tls->is_tls && sw_muse_egress_bind)
+            sw_muse_egress_bind(tls, tls->sockfd, hostname, hostlen, port);
+        if (tls->is_tls == false) {`, "connection ownership");
+tlsSource = patchPinned(tlsSource, '    return _esp_tls_handshake(tls, cfg);',
+  `    int result = _esp_tls_handshake(tls, cfg);
+    if (sw_muse_egress_result && result) sw_muse_egress_result(tls, result);
+    return result;`, "handshake result");
+tlsSource = patchPinned(tlsSource,
+  '                ESP_LOGW(TAG, "Failed to open new connection in specified timeout");',
+  '                if (sw_muse_egress_result) sw_muse_egress_result(tls, -1);\n' +
+  '                ESP_LOGW(TAG, "Failed to open new connection in specified timeout");', "direct TLS timeout");
 await writeChanged(`${idf}/components/esp-tls/esp_tls.c`, tlsSource);
+let tlsMbed = '#include <stdbool.h>\n' + String.raw`
+extern void sw_muse_egress_bio(void *, void *) __attribute__((weak));
+extern int sw_muse_egress_pending(void *) __attribute__((weak));
+extern bool sw_muse_egress_release(void *) __attribute__((weak));
+extern void sw_muse_egress_result(void *, int) __attribute__((weak));
+` + idfOriginal("components/esp-tls/esp_tls_mbedtls.c");
+const bio = '    mbedtls_ssl_set_bio(&tls->ssl, &tls->server_fd, mbedtls_net_send, mbedtls_net_recv, NULL);';
+tlsMbed = patchPinned(tlsMbed, bio, bio + '\n    if (sw_muse_egress_bio) sw_muse_egress_bio(tls, &tls->ssl);', "stream BIO");
+tlsMbed = patchPinned(tlsMbed, '    return mbedtls_ssl_get_bytes_avail(&tls->ssl);',
+  `    int available = mbedtls_ssl_get_bytes_avail(&tls->ssl);
+    if (!available && sw_muse_egress_pending && sw_muse_egress_pending(tls)) return 1;
+    return available;`, "nested readable bytes");
+const tlsDelete = 'void esp_mbedtls_conn_delete(esp_tls_t *tls)\n{\n    if (tls != NULL) {\n        esp_mbedtls_cleanup(tls);';
+tlsMbed = patchPinned(tlsMbed, tlsDelete, tlsDelete + `
+        if (sw_muse_egress_release && sw_muse_egress_release(tls)) {
+            tls->server_fd.fd = -1;
+            tls->sockfd = -1; /* the outer transport closed the sole socket */
+        }`, "socket ownership release");
+for (const operation of ["READ", "WRITE"]) {
+  const failed = `ESP_INT_EVENT_TRACKER_CAPTURE(tls->error_handle, ESP_TLS_ERR_TYPE_ESP, ESP_ERR_MBEDTLS_SSL_${operation}_FAILED);`;
+  tlsMbed = patchPinned(tlsMbed, failed, failed + '\n                if (sw_muse_egress_result && ret != MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) sw_muse_egress_result(tls, -1);', `direct ${operation} failure`);
+}
+await writeChanged(`${idf}/components/esp-tls/esp_tls_mbedtls.c`, tlsMbed);
+let wsTransport = '#include <stdbool.h>\n#include <stddef.h>\n#include <stdlib.h>\n' + String.raw`
+extern void *sw_muse_egress_alloc(size_t, bool *) __attribute__((weak));
+static void *sw_ws_alloc(size_t size, bool zero) {
+    bool handled = false;
+    void *p = sw_muse_egress_alloc ? sw_muse_egress_alloc(size, &handled) : NULL;
+    return handled ? p : zero ? calloc(1, size) : malloc(size);
+}
+` + idfOriginal("components/tcp_transport/transport_ws.c");
+wsTransport = patchPinned(wsTransport, 'transport_ws_t *ws = calloc(1, sizeof(transport_ws_t));',
+  'transport_ws_t *ws = sw_ws_alloc(sizeof(transport_ws_t), true);', "outer WS context");
+wsTransport = patchPinned(wsTransport, 'ws->buffer = malloc(WS_BUFFER_SIZE);',
+  'ws->buffer = sw_ws_alloc(WS_BUFFER_SIZE, false);', "outer WS buffer", 2);
+for (const [before, after] of [
+  ['ESP_LOGD(TAG, "Authorization: %s", ws->auth);', 'ESP_LOGD(TAG, "Authorization: [redacted]");'],
+  ['ESP_LOGD(TAG, "headers: %s", ws->headers);', 'ESP_LOGD(TAG, "Additional headers: [redacted]");'],
+  ['ESP_LOGD(TAG, "Write upgrade request\\r\\n%s", ws->buffer);', 'ESP_LOGD(TAG, "Writing upgrade request");'],
+  ['ESP_LOGE(TAG, "Error write Upgrade header %s", ws->buffer);', 'ESP_LOGE(TAG, "Failed to write Upgrade header");'],
+]) wsTransport = patchPinned(wsTransport, before, after, "WS credential log");
+await writeChanged(`${idf}/components/tcp_transport/transport_ws.c`, wsTransport);
 let voiceCall = git(["show", "HEAD:esp32/components/muse/muse_voice_call.cpp"]);
 voiceCall = '#include "esp_attr.h"\n' + voiceCall;
 // These session-task buffers never go to I2S DMA. Leave internal RAM for DMA.

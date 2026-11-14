@@ -14,4 +14,6 @@ void sw_update_request_check(void);
 void sw_update_status(sw_update_status_t *out);
 bool sw_update_boot_ready(void);
 void sw_update_maintenance(void);
+/* USB-only, read-only update/stack diagnostics; no credentials or reset. */
+void sw_update_diagnostics(int id);
 void sw_update_settings_open(lv_event_t *event);

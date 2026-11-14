@@ -15,3 +15,12 @@ $env:GIT_CONFIG_KEY_2 = 'safe.directory'
 $env:GIT_CONFIG_VALUE_2 = (Join-Path $projectRoot '.deps/muse').Replace('\','/')
 . (Join-Path $env:IDF_PATH 'export.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'ESP-IDF export failed' }
+# export.ps1 may skip activation in an already-exported shell. Restore the
+# virtualenv ahead of the bootstrap Python when this helper is called again.
+if ($env:IDF_PYTHON_ENV_PATH) {
+    $idfPythonScripts = Join-Path $env:IDF_PYTHON_ENV_PATH 'Scripts'
+    if (!(Test-Path -LiteralPath (Join-Path $idfPythonScripts 'python.exe'))) {
+        throw 'ESP-IDF Python virtualenv is missing'
+    }
+    $env:PATH = $idfPythonScripts + ';' + $env:PATH
+}

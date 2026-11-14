@@ -2,6 +2,9 @@
 #include "cJSON.h"
 #include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
+#include "esp_cpu.h"
+#include "esp_flash_dispatcher.h"
+#include "esp_memory_utils.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -47,6 +50,9 @@ static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 static sw_update_status_t status;
 static atomic_bool manual, interaction, services;
 static atomic_bool boot_ready, ota_worker_started;
+static atomic_bool flash_dispatcher_ready, ota_stack_external;
+static atomic_uint ota_stack_minimum, flash_stack_minimum;
+static atomic_uint ota_downloaded, ota_size;
 static uint64_t ota_retry_after;
 static atomic_uint ui_beat;
 static bool storage_ready;
@@ -69,6 +75,14 @@ typedef struct {
 #define MIAO_MAX_BYTES 950000u
 #define OTA_TLS_TIMEOUT_MS 5000
 #define OTA_TRANSFER_LIMIT_S 180
+#define OTA_FLASH_CHUNK_BYTES 1024
+/* Espressif's dispatcher runs actual Flash access on its own internal stack.
+ * Keep the original full OTA stack in PSRAM; never execute cache-off Flash
+ * code on it. Internal-stack callers bypass the dispatcher in v1.0.3. */
+#define OTA_FLASH_STACK_BYTES 2048
+#if !CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM
+#error StopWatch OTA requires explicit per-task external-stack support
+#endif
 typedef struct {
   uint64_t sequence;
   uint32_t size;
@@ -80,6 +94,34 @@ static resource_record_t resource;
 static const char *const resource_files[] = {SW_MIAO_SLOT_A, SW_MIAO_SLOT_B};
 static uint64_t seconds(void) {
   return (uint64_t)(esp_timer_get_time() / 1000000);
+}
+static void sample_ota_stack(void) {
+  atomic_store(&ota_stack_minimum, uxTaskGetStackHighWaterMark(NULL));
+  char name[configMAX_TASK_NAME_LEN];
+  strlcpy(name, "flash_dispatcher", sizeof(name));
+  TaskHandle_t flash = xTaskGetHandle(name);
+  if (flash) atomic_store(&flash_stack_minimum, uxTaskGetStackHighWaterMark(flash));
+}
+void sw_update_diagnostics(int id) {
+  sw_update_status_t current;
+  sw_update_status(&current);
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  const esp_partition_t *boot = esp_ota_get_boot_partition();
+  esp_ota_img_states_t image_state = ESP_OTA_IMG_UNDEFINED;
+  if (running) esp_ota_get_state_partition(running, &image_state);
+  printf("@sw {\"id\":%d,\"ok\":true,\"state\":\"%s\",\"failures\":%u,"
+         "\"runningOffset\":%lu,\"bootOffset\":%lu,\"runningState\":%d,"
+         "\"otaStackPSRAM\":%s,\"otaStackBytes\":%u,\"otaStackMinimum\":%u,"
+         "\"flashStackBytes\":%u,\"flashStackMinimum\":%u,"
+         "\"downloaded\":%u,\"size\":%u}\n",
+         id, current.state, current.failures,
+         running ? (unsigned long)running->address : 0UL,
+         boot ? (unsigned long)boot->address : 0UL, (int)image_state,
+         atomic_load(&ota_stack_external) ? "true" : "false",
+         SW_UPDATE_RELEASE_STACK_BYTES, atomic_load(&ota_stack_minimum),
+         OTA_FLASH_STACK_BYTES, atomic_load(&flash_stack_minimum),
+         atomic_load(&ota_downloaded), atomic_load(&ota_size));
+  fflush(stdout);
 }
 static void state(const char *phase, const char *detail) {
   portENTER_CRITICAL(&lock);
@@ -152,7 +194,9 @@ static esp_http_client_handle_t http_open(const char *url, size_t max) {
   esp_http_client_config_t cfg = {.url = url,
                                   .crt_bundle_attach = esp_crt_bundle_attach,
                                   .timeout_ms = OTA_TLS_TIMEOUT_MS,
-                                  .buffer_size = 2048,
+                                  /* Reuse the measured Muse PSRAM threshold. */
+                                  .buffer_size = SW_VM_HTTP_BUFFER_BYTES,
+                                  .buffer_size_tx = SW_VM_HTTP_BUFFER_BYTES,
                                   .max_redirection_count = 4,
                                   .disable_auto_redirect = true,
                                   .transport_type = HTTP_TRANSPORT_OVER_SSL};
@@ -353,6 +397,7 @@ static bool download_resource(const manifest_t *m, uint8_t *data, size_t *used) 
   esp_http_client_handle_t h = http_open(m->url, m->size);
   if (!h)
     return false;
+  sw_update_boot_memory("ota-tls-ready");
   bool received = read_body(h, data, m->size, used, install_allowed);
   esp_http_client_cleanup(h);
   /* Album sync may take the HTTPS gate while holding the photo lock. Release
@@ -477,14 +522,31 @@ typedef struct {
   esp_ota_handle_t handle;
   const esp_partition_t *partition;
   const manifest_t *manifest;
+  uint8_t *flash_buffer;
   bool ended;
 } ota_context_t;
 static int begin(void *p, size_t size) {
   ota_context_t *c = p;
-  return esp_ota_begin(c->partition, size, &c->handle) != ESP_OK;
+  if (size > c->partition->size) return -1;
+  /* The stream enforces the signed exact length. Incremental official erase
+   * avoids monopolizing Flash for the full 4 MiB before the first byte. */
+  sw_update_boot_memory("ota-begin-before");
+  esp_err_t result = esp_ota_begin(c->partition, OTA_WITH_SEQUENTIAL_WRITES, &c->handle);
+  sw_update_boot_memory("ota-begin-ready");
+  return result != ESP_OK;
 }
 static int write_chunk(void *p, const void *data, size_t size) {
-  return esp_ota_write(((ota_context_t *)p)->handle, data, size) != ESP_OK;
+  ota_context_t *c = p;
+  /* Network data stays in PSRAM. Feed Flash an INTERNAL bounded buffer so
+   * its driver never needs a larger temporary bounce allocation. */
+  for (size_t offset = 0; offset < size;) {
+    size_t count = size - offset;
+    if (count > OTA_FLASH_CHUNK_BYTES) count = OTA_FLASH_CHUNK_BYTES;
+    memcpy(c->flash_buffer, (const uint8_t *)data + offset, count);
+    if (esp_ota_write(c->handle, c->flash_buffer, count) != ESP_OK) return -1;
+    offset += count;
+  }
+  return 0;
 }
 static int end_signature(void *p) {
   ota_context_t *c = p;
@@ -523,22 +585,34 @@ static bool install(const manifest_t *m) {
   const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
   if (!part || m->size > part->size)
     return false;
+  atomic_store(&ota_downloaded, 0);
+  atomic_store(&ota_size, m->size);
   uint64_t deadline = seconds() + OTA_TRANSFER_LIMIT_S;
-  esp_http_client_handle_t h = http_open(m->url, m->size);
-  if (!h)
-    return false;
+  esp_http_client_handle_t h = NULL;
+  bool owns_http = false;
   sw_update_stream_t stream = {0};
   ota_context_t ctx = {.partition = part, .manifest = m};
   sw_update_ops_t ops = {&ctx,          begin,    write_chunk,
                          end_signature, activate, abort_update};
   psa_hash_operation_t hash = PSA_HASH_OPERATION_INIT;
   bool success = false;
-  uint8_t *buffer = heap_caps_malloc(4096, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  uint8_t *buffer = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  ctx.flash_buffer = heap_caps_malloc(OTA_FLASH_CHUNK_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   size_t total = 0;
-  if (!buffer || !install_allowed() ||
-      psa_hash_setup(&hash, PSA_ALG_SHA_256) != PSA_SUCCESS ||
+  if (!buffer || !ctx.flash_buffer || !install_allowed() ||
       sw_update_stream_begin(&stream, ops, m->size, part->size))
     goto done;
+  /* Prepare incremental erasure before opening TCP; no full-slot erase with
+   * a live socket accumulating incoming data in internal RAM. */
+  sw_update_boot_memory("ota-erase-ready");
+  h = http_open(m->url, m->size);
+  if (!h) goto done;
+  owns_http = true;
+  sw_update_boot_memory("ota-tls-ready");
+  /* Preserve the original crypto order: TLS handshake before starting the
+   * long-lived streaming hash (including hardware SHA implementations). */
+  if (psa_hash_setup(&hash, PSA_ALG_SHA_256) != PSA_SUCCESS) goto done;
+  sw_update_boot_memory("ota-hash-ready");
   for (;;) {
     if (!install_allowed() || seconds() >= deadline)
       goto done;
@@ -552,6 +626,7 @@ static bool install(const manifest_t *m) {
         sw_update_stream_write(&stream, buffer, (size_t)count))
       goto done;
     total += (size_t)count;
+    atomic_store(&ota_downloaded, total);
     vTaskDelay(pdMS_TO_TICKS(1));
   }
   uint8_t actual[32];
@@ -566,16 +641,23 @@ static bool install(const manifest_t *m) {
   h = NULL;
   free(buffer);
   buffer = NULL;
+  free(ctx.flash_buffer);
+  ctx.flash_buffer = NULL;
   state("verifying", "校验镜像签名与完整性");
   success = sw_update_stream_finish(&stream, m->hash, actual) == 0;
+  sample_ota_stack();
+  ESP_LOGI(TAG, "OTA verification result=%d stack_headroom=%u",
+           success, (unsigned)uxTaskGetStackHighWaterMark(NULL));
+  sw_update_boot_memory("ota-verified");
 done:
   if (!success)
     sw_update_stream_abort(&stream);
   psa_hash_abort(&hash);
   free(buffer);
+  free(ctx.flash_buffer);
   if (h)
     esp_http_client_cleanup(h);
-  sw_sync_http_release();
+  if (owns_http) sw_sync_http_release();
   return success;
 }
 static bool health(void) {
@@ -648,6 +730,7 @@ static __attribute__((noinline)) void poll_updates(void) {
   manifest_t candidate = {0};
   bool have_candidate = false;
   for (;;) {
+    sample_ota_stack();
     bool online = muse_wifi_connected();
     uint64_t now = seconds();
     time_t wall = time(NULL);
@@ -763,9 +846,7 @@ static void worker(void *arg) {
   bool healthy = health();
   ESP_LOGI(TAG, "Startup stack headroom: %u bytes",
            (unsigned)uxTaskGetStackHighWaterMark(NULL));
-  /* The health-only task exits in both profiles. The download task keeps
-   * its original 14336-byte INTERNAL stack, but cannot reserve it before
-   * codec DMA and sw_relay have started. Do not shrink/migrate the OTA stack. */
+  /* Health stays on its own internal stack and exits in both profiles. */
   atomic_store(&boot_ready, healthy);
   sw_memory_mark("updater.exit", SW_UPDATE_DEV_STACK_BYTES, 0, 0);
   if (!healthy || !production_configured) nvs_close(nvs);
@@ -773,33 +854,59 @@ static void worker(void *arg) {
 }
 static void download_worker(void *arg) {
   (void)arg;
+  atomic_store(&ota_stack_external, esp_ptr_external_ram((const void *)esp_cpu_get_sp()));
   atomic_store(&update_task, xTaskGetCurrentTaskHandle());
   poll_updates();
   /* poll_updates owns the original retry/candidate state and normally does
    * not return. Leave the NVS handle alive for the configured manager. */
   atomic_store(&update_task, NULL);
   atomic_store(&ota_worker_started, false);
-  vTaskDelete(NULL);
+  vTaskDeleteWithCaps(NULL);
 }
 bool sw_update_boot_ready(void) { return atomic_load(&boot_ready); }
 void sw_update_maintenance(void) {
   if (!production_configured || !manifest_url[0] || !atomic_load(&boot_ready) ||
       atomic_load(&ota_worker_started) || seconds() < ota_retry_after ||
       !request_allowed()) return;
-  ota_retry_after = seconds() + 30;
-  /* Reserve task + TCB before allowing the existing TLS admission test.
-   * Insufficient memory postpones OTA; it must never break core services. */
-  if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) <
-          SW_UPDATE_RELEASE_STACK_BYTES + 16384 ||
-      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) <
-          SW_UPDATE_RELEASE_STACK_BYTES + 512 ||
-      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) < 8192) {
-    state("deferred", "核心服务已就绪，等待完整 OTA 栈与 TLS 内存");
+  /* Let optional Muse boot/auth work settle before retaining the low-priority
+   * Flash dispatcher. Health confirmation already has its own internal task. */
+  if (seconds() < (uint64_t)policy.stable_s + 30) {
+    if (atomic_load(&manual)) state("deferred", "等待启动服务与网络稳定");
     return;
   }
+  ota_retry_after = seconds() + 30;
+  /* Budget the full PSRAM task stack, internal TCB/dispatcher and TLS margin.
+   * Do not borrow the relay stack, relax TLS admission or preallocate before
+   * audio DMA and core services. Failure leaves the active image untouched. */
+  unsigned dispatcher_bytes = flash_dispatcher_ready ? 0 : OTA_FLASH_STACK_BYTES + 512;
+  if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) <
+          dispatcher_bytes + 16384 ||
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) <
+          (flash_dispatcher_ready ? 4096 : OTA_FLASH_STACK_BYTES + 512) ||
+      heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) <
+          SW_UPDATE_RELEASE_STACK_BYTES + 65536 ||
+      heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) <
+          SW_UPDATE_RELEASE_STACK_BYTES + 512 ||
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) < 8192) {
+    state("deferred", "等待完整 OTA 栈、Flash 调度器与 TLS 内存");
+    return;
+  }
+  if (!flash_dispatcher_ready) {
+    const esp_flash_dispatcher_config_t cfg = {
+        .task_stack_size = OTA_FLASH_STACK_BYTES,
+        .task_priority = 10,
+        .task_core_id = tskNO_AFFINITY,
+        .queue_size = 1};
+    if (esp_flash_dispatcher_init(&cfg) != ESP_OK) {
+      state("deferred", "Flash 调度器未就绪，保留当前固件");
+      return;
+    }
+    flash_dispatcher_ready = true;
+    sw_update_boot_memory("ota-dispatcher-ready");
+  }
   atomic_store(&ota_worker_started, true);
-  if (xTaskCreate(download_worker, "sw_ota", SW_UPDATE_RELEASE_STACK_BYTES,
-                  NULL, 3, NULL) != pdPASS) {
+  if (xTaskCreateWithCaps(download_worker, "sw_ota", SW_UPDATE_RELEASE_STACK_BYTES,
+                  NULL, 3, NULL, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     atomic_store(&ota_worker_started, false);
     state("deferred", "更新任务分配失败，保留核心服务并稍后重试");
   }

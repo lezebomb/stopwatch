@@ -7,6 +7,7 @@ import sharp from "sharp";
 import QRCode from "qrcode";
 import { Store, secret, digest } from "./store.mjs";
 import { createDeviceSync, deviceHardware } from "./device-sync.mjs";
+import { createMuseEgress } from "./muse-egress.mjs";
 import {
   validEvent,
   PHOTO_BYTES,
@@ -54,6 +55,7 @@ export async function createRelay({
   mode = "mock",
   publicOrigin = null,
   allowExecution = false,
+  allowMuseEgress = false,
 } = {}) {
   if (!["mock", "production"].includes(mode))
     throw new Error("Unknown relay profile");
@@ -101,6 +103,8 @@ export async function createRelay({
   const online = () => !!bridge && Date.now() - bridgeLastSeen < 35000;
   const codexOnline = () => online() && bridge.codexReady === true;
   const deviceSync = createDeviceSync(store, directory, codexOnline, { allowExecution });
+  const museEgress = createMuseEgress({ session: token => store.session(token),
+    enabled: mode === "production" && allowMuseEgress });
   const status = () => ({
     mode,
     executionEnabled: mode === "production" && allowExecution,
@@ -552,6 +556,7 @@ export async function createRelay({
   server.on("upgrade", (req, socket, head) => {
     const host = req.headers.host;
     if (!hostAllowed(req)) return socket.destroy();
+    if (museEgress.upgrade(req, socket, head)) return;
     if (req.url === "/bridge") {
       const candidate =
         req.headers.authorization?.replace(/^Bearer /, "") || "";
@@ -685,6 +690,7 @@ export async function createRelay({
     close: async () => {
       clearInterval(heartbeat);
       clearInterval(ticketCleanup);
+      museEgress.close();
       for (const ws of wss.clients) ws.terminate();
       await new Promise((resolve) => server.close(resolve));
       wss.close();

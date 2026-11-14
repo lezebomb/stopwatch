@@ -49,6 +49,9 @@ static nvs_handle_t nvs;
 static StaticSemaphore_t http_lock_storage;
 static SemaphoreHandle_t http_lock;
 static atomic_uint muse_http_waiters;
+static char muse_credential[TOKEN_LENGTH + 1];
+static portMUX_TYPE credential_lock = portMUX_INITIALIZER_UNLOCKED;
+static void cache_muse_credential(const credential_t *credentials);
 static EXT_RAM_BSS_ATTR sw_codex_view_t codex_view;
 typedef struct { char action[12], task[65], approval[65], decision[8], id[40]; unsigned attempts; int64_t deadline; } codex_command_t;
 static codex_command_t codex_pending;
@@ -85,6 +88,22 @@ bool sw_sync_codex_submit(const char *action, const char *task, const char *appr
 
 void sw_sync_http_init(void) {
   http_lock = xSemaphoreCreateMutexStatic(&http_lock_storage);
+  nvs_handle_t saved;
+  credential_t credential = {0};
+  size_t bytes = sizeof(credential);
+  if (nvs_open("sw_relay", NVS_READONLY, &saved) == ESP_OK) {
+    if (nvs_get_blob(saved, "credential", &credential, &bytes) == ESP_OK && bytes == sizeof(credential))
+      cache_muse_credential(&credential);
+    nvs_close(saved);
+  }
+  mbedtls_platform_zeroize(&credential, sizeof(credential));
+}
+
+bool sw_sync_muse_credential(char token[33]) {
+  portENTER_CRITICAL(&credential_lock);
+  memcpy(token, muse_credential, sizeof(muse_credential));
+  portEXIT_CRITICAL(&credential_lock);
+  return token[0] != 0;
 }
 
 bool sw_sync_http_take(void) {
@@ -108,6 +127,16 @@ static bool valid_token(const char *s) {
   return s && strlen(s) == TOKEN_LENGTH &&
          strspn(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456"
                    "789-_") == TOKEN_LENGTH;
+}
+static void cache_muse_credential(const credential_t *credentials) {
+  char token[TOKEN_LENGTH + 1] = {0};
+  if (credentials && memchr(credentials->origin, 0, sizeof(credentials->origin)) &&
+      !strcmp(credentials->origin, SW_RELAY_ORIGIN) && !credentials->token[TOKEN_LENGTH] &&
+      valid_token(credentials->token)) memcpy(token, credentials->token, sizeof(token));
+  portENTER_CRITICAL(&credential_lock);
+  memcpy(muse_credential, token, sizeof(token));
+  portEXIT_CRITICAL(&credential_lock);
+  mbedtls_platform_zeroize(token, sizeof(token));
 }
 
 const char *sw_sync_state(void) {
@@ -523,8 +552,10 @@ static bool enroll(credential_t *credentials, const char *code) {
     memcpy(next.token, token, sizeof(next.token));
     ok = nvs_set_blob(nvs, "credential", &next, sizeof(next)) == ESP_OK &&
          nvs_commit(nvs) == ESP_OK;
-    if (ok)
+    if (ok) {
       *credentials = next;
+      cache_muse_credential(credentials);
+    }
     mbedtls_platform_zeroize(&next, sizeof(next));
     mbedtls_platform_zeroize((void *)token, TOKEN_LENGTH);
   }
@@ -543,6 +574,7 @@ static void sync_worker(void *arg) {
       credentials.token[TOKEN_LENGTH] || !valid_token(credentials.token))
     mbedtls_platform_zeroize(&credentials, sizeof(credentials));
   atomic_store(&state, credentials.token[0] ? WAITING : UNPAIRED);
+  cache_muse_credential(&credentials);
   unsigned backoff = 10;
   int64_t due = 0, last_request = -10000000;
   for (;;) {
@@ -614,6 +646,7 @@ static void sync_worker(void *arg) {
       unsigned interval = atomic_load(&focused) ? (muse_state_power().usb ? 3 : 12) : 60;
       if (result == SW_SYNC_ALBUM_AUTH) {
         mbedtls_platform_zeroize(&credentials, sizeof(credentials));
+        cache_muse_credential(NULL);
         nvs_erase_key(nvs, "credential");
         nvs_commit(nvs);
         sw_companion_sync_task(false, NULL, NULL, NULL, NULL, NULL, -1, 0);

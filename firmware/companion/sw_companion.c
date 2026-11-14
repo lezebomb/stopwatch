@@ -23,6 +23,7 @@
 #include "muse_voice.h"
 #include "muse_wifi.h"
 #include "sw_muse_proxy.h"
+#include "sw_muse_egress.h"
 #include "nvs.h"
 #include "psa/crypto.h"
 #include "src/misc/cache/instance/lv_image_cache.h"
@@ -772,6 +773,11 @@ static bool device_console_locked(const char *line) {
     cJSON_Delete(request);
     return true;
   }
+  if (!strcmp(op, "muse.egress.status")) {
+    sw_muse_egress_status(id);
+    cJSON_Delete(request);
+    return true;
+  }
   if (!strcmp(op, "info")) {
     char hash[65];
     char hashes[USER_SLOTS * 67 + 3];
@@ -870,6 +876,11 @@ static bool device_console_locked(const char *line) {
     sw_update_request_check();
     error = NULL;
     goto done;
+  }
+  if (!strcmp(op, "update.status")) {
+    sw_update_diagnostics(id);
+    cJSON_Delete(request);
+    return true;
   }
   if (!strcmp(op, "task")) {
     cJSON *source = cJSON_GetObjectItemCaseSensitive(request, "source"),

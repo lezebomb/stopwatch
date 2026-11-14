@@ -38,6 +38,10 @@ for (const name of [
     `Irreversible option ${name} must be off`,
   );
 const args = await readFile(`${root}/flash_args`, "utf8");
+const build = await readFile(`${root}/build.ninja`, "utf8");
+for (const api of ["esp_flash_read", "esp_flash_write", "esp_flash_write_encrypted",
+  "esp_flash_erase_region", "esp_flash_erase_chip", "spi_flash_mmap", "spi_flash_munmap"])
+  assert(build.includes(`--wrap=${api}`), `OTA external stack requires Flash dispatcher wrapper ${api}`);
 if (!process.env.SW_ALLOW_FACTORY_ASSETS)
   assert(
     !args.includes("photos.bin"),
