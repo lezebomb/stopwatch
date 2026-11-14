@@ -2,6 +2,8 @@ import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import assert from "node:assert/strict";
 const root = process.argv[2] || "firmware/build";
 const config = await readFile(`${root}/sdkconfig`, "utf8");
+assert(Number(/^CONFIG_ESP_MAIN_TASK_STACK_SIZE=(\d+)\r?$/m.exec(config)?.[1]) >= 9216,
+  "Nested Muse TLS boot path needs the measured 9 KiB main stack budget");
 if (process.env.SW_PRODUCTION === "1") {
   assert(
     /^CONFIG_GADGET_SDK_TOKEN=""\r?$/m.test(config),

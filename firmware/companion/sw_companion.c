@@ -811,6 +811,7 @@ static bool device_console_locked(const char *line) {
         "%s,\"codexPhase\":%u,\"serialStackMinimum\":%u,\"asleep\":%s,"
         "\"brightnessSaved\":%d,\"brightnessPolicy\":%d,\"idleSeconds\":%u,"
         "\"bootOffset\":%lu,\"displayMode\":%u,\"miaoFramesDrawn\":%u,"
+        "\"selectedPhoto\":%u,\"slideshow\":%s,\"slideSeconds\":%u,\"displayingEgg\":%s,"
         "\"relayState\":\"%s\",\"version\":\"%s\",\"otaState\":\"%s\"}\n",
         id, count, hash, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
@@ -825,7 +826,8 @@ static bool device_console_locked(const char *line) {
             : sw_companion_brightness(muse_settings_brightness()),
         (unsigned)muse_state_idle_secs(),
         running ? (unsigned long)running->address : 0UL, display_settings.mode,
-        sw_miao_frames_drawn(), sw_sync_state(), SW_UPDATE_VERSION, update.state);
+        sw_miao_frames_drawn(), photo, slideshow ? "true" : "false", slide_seconds,
+        displaying_egg ? "true" : "false", sw_sync_state(), SW_UPDATE_VERSION, update.state);
     fflush(stdout);
     cJSON_Delete(request);
     return true;

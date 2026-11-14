@@ -20,6 +20,15 @@ if ($Realtime) {
     $defaults += ';sdkconfig.realtime'
     $buildRoot += '-realtime'
 }
+$cachedConfig = Join-Path $buildRoot 'sdkconfig'
+if (Test-Path -LiteralPath $cachedConfig) {
+    $configText = [IO.File]::ReadAllText($cachedConfig)
+    $mainStack = [regex]::Match($configText, '(?m)^CONFIG_ESP_MAIN_TASK_STACK_SIZE=(\d+)\r?$')
+    if ($mainStack.Success -and [int]$mainStack.Groups[1].Value -lt 9216) {
+        $configText = [regex]::Replace($configText, '(?m)^CONFIG_ESP_MAIN_TASK_STACK_SIZE=\d+\r?$', 'CONFIG_ESP_MAIN_TASK_STACK_SIZE=9216')
+        [IO.File]::WriteAllText($cachedConfig, $configText)
+    }
+}
 Push-Location $sdkRoot
 try {
     $buildArguments = @('-B', $buildRoot)

@@ -14,7 +14,6 @@
 #include "mbedtls/net_sockets.h"
 #include "mbedtls/platform_util.h"
 #include "mbedtls/ssl.h"
-#include <errno.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,6 +36,7 @@ static uint32_t network;
 static int64_t direct_after;
 static atomic_uint opened, api_tls, vm_tls, direct_failures, sent, received, external_allocations;
 static atomic_int last_http, last_error, route;
+static atomic_bool control_seen;
 
 bool sw_muse_egress_target(const char *host, int length, int port) {
   if (!host || length < 1 || length > 253 || port != 443) return false;
@@ -180,7 +180,18 @@ static int tunnel_recv(void *ctx,unsigned char *data,size_t size) {
   if(!ready) return MBEDTLS_ERR_SSL_WANT_READ;
   if(ready<0) return MBEDTLS_ERR_NET_RECV_FAILED;
   int count=esp_transport_read(c->ws,(char *)data,(int)size,100);
-  if(count<0) return (errno==EAGAIN || errno==EWOULDBLOCK || errno==ETIMEDOUT)?MBEDTLS_ERR_SSL_WANT_READ:MBEDTLS_ERR_NET_RECV_FAILED;
+  // IDF's transport returns zero for timeout and a negative value for FIN or
+  // failure. errno may belong to an earlier call and must not hide a dead link.
+  if(count<0) return MBEDTLS_ERR_NET_RECV_FAILED;
+  // IDF consumes PING/PONG internally and returns zero, also on a read timeout.
+  // TCP FIN is already an error from the parent SSL transport. Only a WS CLOSE
+  // frame is an orderly inner TLS EOF; other zero reads must keep the session.
+  if(!count) {
+    ws_transport_opcodes_t opcode=esp_transport_ws_get_read_opcode(c->ws);
+    if(opcode==WS_TRANSPORT_OPCODES_PING || opcode==WS_TRANSPORT_OPCODES_PONG)
+      atomic_store(&control_seen,true);
+    if(opcode!=WS_TRANSPORT_OPCODES_CLOSE) return MBEDTLS_ERR_SSL_WANT_READ;
+  }
   if(count>0) atomic_fetch_add(&received,count);
   return count;
 }
@@ -212,9 +223,9 @@ void sw_muse_egress_status(int id) {
   portEXIT_CRITICAL(&lock);
   printf("@sw {\"id\":%d,\"ok\":true,\"configured\":%s,\"route\":\"%s\",\"active\":%u,"
          "\"opened\":%u,\"apiTls\":%u,\"vmTls\":%u,\"directFailures\":%u,"
-         "\"sent\":%u,\"received\":%u,\"lastHttp\":%d,\"lastError\":%d,\"externalAllocations\":%u}\n",
+         "\"sent\":%u,\"received\":%u,\"lastHttp\":%d,\"lastError\":%d,\"externalAllocations\":%u,\"controlSeen\":%s}\n",
          id,sw_muse_egress_ready()?"true":"false",atomic_load(&route)==2?"vps":atomic_load(&route)==1?"direct":"pending",active,
          atomic_load(&opened),atomic_load(&api_tls),atomic_load(&vm_tls),atomic_load(&direct_failures),
-         atomic_load(&sent),atomic_load(&received),atomic_load(&last_http),atomic_load(&last_error),atomic_load(&external_allocations));
+         atomic_load(&sent),atomic_load(&received),atomic_load(&last_http),atomic_load(&last_error),atomic_load(&external_allocations),atomic_load(&control_seen)?"true":"false");
   fflush(stdout);
 }

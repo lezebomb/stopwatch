@@ -91,6 +91,7 @@ export function createMuseEgress({
             stream.pipe(upstream).pipe(stream);
             check = setInterval(() => {
               if (!authorized()) finish();
+              else if (ws.readyState === 1) ws.ping();
             }, checkInterval).unref();
           });
         });
