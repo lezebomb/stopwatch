@@ -13,11 +13,11 @@ import {serveUpdate} from "../server/update-files.mjs";
 const key=generateKeyPairSync("rsa",{modulusLength:3072});
 const origin=config.productionOrigin;
 function fixture(version="0.2.1"){
-  const data=new Map(),assets=[],tag="v"+version;
+  const data=new Map(),assets=[],tag="v"+version,publishedAt=new Date(Date.now()-60000).toISOString();
   for(const [kind,[name,manifest]] of Object.entries(releaseComponents)){
-    const bytes=Buffer.from(kind+version),publishedAt=new Date().toISOString();
+    const bytes=Buffer.from(kind+version);
     const compatibility=kind==="firmware"?{partitionLayout:config.partitionLayout,dataSchema:1,idf:"6.0.3"}:kind==="miao"?{dataSchema:1,encoding:"MIA1",layoutSha256:"b".repeat(64)}:kind==="bridge"?{protocol:1,nodeMajor:24}:{dataSchema:1,nodeMajor:24,origin};
-    const payload={schema:1,kind,channel:"stable",version,sequence:100+Number(version.split(".")[2]),buildId:"a".repeat(40),size:bytes.length,sha256:sha256(bytes),publishedAt:"2026-11-14T00:00:00.000Z",hardware:kind==="bridge"?"windows-x64":kind==="portal"?"linux-x64":config.hardware,compatibility,url:releaseAssetUrl(config,"lezebomb/stopwatch",tag,name)};
+    const payload={schema:1,kind,channel:"stable",version,sequence:100+Number(version.split(".")[2]),buildId:"a".repeat(40),size:bytes.length,sha256:sha256(bytes),publishedAt,hardware:kind==="bridge"?"windows-x64":kind==="portal"?"linux-x64":config.hardware,compatibility,url:releaseAssetUrl(config,"lezebomb/stopwatch",tag,name)};
     data.set(name,bytes);data.set(manifest,Buffer.from(JSON.stringify(signedManifest(payload,key.privateKey))));
     assets.push({name,size:bytes.length,digest:"sha256:"+sha256(bytes)},{name:manifest,size:data.get(manifest).length});
   }
