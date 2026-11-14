@@ -1,8 +1,8 @@
 # StopWatch · 小小挂件，长期陪伴
 
-基于 M5Stack StopWatch C152 和官方 Muse SDK，在 v0.1 上扩展签名 OTA、自动发布、在线演示及 Windows 后台交付。当前发布准备版本 **0.2.4**。
+基于 M5Stack StopWatch C152 和官方 Muse SDK，在 v0.1 上扩展签名 OTA、自动发布、在线演示及 Windows 后台交付。当前正式版本 **[0.2.4](https://github.com/lezebomb/stopwatch/releases/tag/v0.2.4)**。
 
-**实机进展** 已验证照片、配网、授权和无线相册。Codex 已通过公网完成网页下单、双工作区真实执行、追加、中断、按次审批、挂件快捷下单和无线 Miao 联动，用户级 Windows 后台已安装。Muse 云端 Noise 与文字对话已通过，已在国内热点通过受认证的 VPS 加密出口独立连接，手机无需代理共享。挂件持续静音，录音、通话、Windows 真正重启登录及正式签名 OTA 尚待验收。[硬件测试记录](HARDWARE_TEST.md)
+**实机进展** 已验证照片、配网、授权和无线相册。Codex 此前已通过公网完成网页下单、双工作区真实执行、追加、中断、按次审批、挂件快捷下单和无线 Miao 联动；本轮发现本机桥接安装目录缺失，须重新完成图形安装与授权验收。Muse 云端 Noise 与文字对话已通过，国内热点可经受认证的 VPS 加密出口独立连接，手机无需代理共享。生产根可信首次安装、正式签名 OTA 换槽/健康确认、确认前复位回滚及数据保留现已实测通过。挂件持续静音，极端 RAM 低水位仍待改善，生产自动安装保持关闭。[硬件测试记录](HARDWARE_TEST.md)
 
 **[打开在线隔离演示](https://lezebomb.github.io/stopwatch/)**：无需下载仓库、运行 Node 或安装 APK。发布状态以 GitHub Actions 为准。演示任务、配对和更新均为 Mock，图片仅在浏览器内存处理；不连接真实 Codex，不具备公网执行权限。
 
@@ -10,12 +10,12 @@
 
 ## 日常使用与当前边界
 
-- 挂件进入上次照片封面，保留 Wi-Fi、Muse 授权和配置。充电联网且空闲时更新；电池照片页不为更新唤醒 Wi-Fi。
+- 挂件进入上次照片封面，保留 Wi-Fi、Muse 授权和配置。自动安装当前关闭；将来获得明确许可后，才在充电联网且空闲时更新，电池照片页不为更新唤醒 Wi-Fi。
 - [手机控制台](https://fym.lezebomb.top/) 已部署，首次登录可扫码或输入一次性六位码。支持 Edge 和 Chrome，无需 APK。公开 Pages 提供独立的演示入口。
 - Windows 正式包自带 Node，一次图形安装、选择工作区并授权，之后后台启动、主动 WSS、恢复和更新，无需每次 CMD。
 - 授权失效会明确提示重新授权；仅恢复桥接自己创建的 App Server 会话，不接管 Desktop。
 
-**交付待办** 当前公网执行已在工作区授权后启用。本机只授权两个隔离测试目录；日常项目在开始菜单「StopWatch 设置 → 管理授权工作区」明确添加。仍须验收实际重启登录和触屏操作，并配置正式签名、验收生产签名根的首次安装、正式发布和国内下载后，再由本人明确批准启用稳定更新。
+**交付待办** VPS 保留原有授权边界；本机旧自启快捷方式的目标脚本已不存在，不能当作后台在线。使用正式 Windows 安装包恢复安装，并由本人确认 Codex 登录和工作区授权；实际重启登录、收礼人 Muse 账号、家庭 Wi-Fi 及画面/电池体验集中待验收。极端重试内部 RAM 历史最低仍为 3,604 B，生产自动安装须另行明确批准。
 
 Windows 本地安装包可用 `node scripts/package-windows.mjs --local-install` 生成，双击包内 `Install-StopWatch.vbs`，选择工作区并输入控制台设置页的电脑授权码。它自带 Node、使用当前用户 DPAPI，并注册无窗口登录启动，不要求 Desktop 前台运行。此包明确没有正式更新信任根，不会尝试未签名更新。普通开发演示包继续禁止正式安装；正式签名包的验证要求保留。
 
@@ -25,7 +25,7 @@ Windows 本地安装包可用 `node scripts/package-windows.mjs --local-install`
 
 main push → Windows 测试 + ESP-IDF v6.0.3 构建 → 成功后部署 Pages 隔离演示。
 
-同一提交通过 `main` CI 后，推送与 `release/config.json` 匹配的附注标签 `vX.Y.Z`。Actions 在草稿中备齐固件、Miao、Windows 桥接和门户，验签及核对上传后一次发布。正式域名和签名配置完成后，设备、Windows 和门户各自验证并拉取新版。公开 Pages 继续提供隔离演示。[交付配置](docs/DELIVERY.md)。
+同一提交通过 `main` CI 后，推送与 `release/config.json` 匹配的附注标签 `vX.Y.Z`。Actions 在草稿中备齐固件、Miao、Windows 桥接和门户，验签及核对上传后一次发布。正式域名、生产签名与国内制品镜像已运行，设备与 VPS 已真实验证签名安装；镜像与安装定时器当前关闭，自动放行须另行授权。公开 Pages 继续提供隔离演示。[交付配置](docs/DELIVERY.md)。
 
 ## OTA 与数据保留
 

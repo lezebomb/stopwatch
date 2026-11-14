@@ -1,6 +1,6 @@
 # 维护者发布与恢复
 
-手机控制台、无线相册与国内热点下的 Muse 独立 VPS 出口已实测；正式生产根的 OTA 验收见 PROGRESS。Windows 后台已安装，真实重启登录仍待许可。收礼人操作见 DELIVERY.md。
+手机控制台、无线相册与国内热点下的 Muse 独立 VPS 出口已实测；正式生产根首次安装、v0.2.3 回滚和 v0.2.4 正常升级已通过。VPS 已经签名更新至 0.2.4，安装和镜像自动定时器未启用。本机原 Windows 安装目录与启动脚本已不存在，须重新图形安装、确认授权；真正重启登录仍待许可。收礼人操作见 DELIVERY.md。
 
 ## 维护者一次性配置
 
@@ -28,7 +28,7 @@ Actions 从同一个提交生成固件、Miao、Windows 桥接和门户。门户
 
 GitHub 是不可变制品的上游归档；VPS 镜像校验四份签名和 SHA 后原子切换。四个国内入口为 `https://fym.lezebomb.top/updates/stable/` 下的 `firmware-manifest.json`、`miao-manifest.json`、`bridge-manifest.json` 和 `portal-manifest.json`。客户端验签后才下载并验证对应二进制。
 
-门户由 VPS 用户级 timer 拉取签名版本。候选在临时数据库上启动成功后切换 `current.json`，重启 StopWatch 用户服务并检查确切构建。失败或上次切换未确认时恢复旧版本，失败序号隔离。自动下载的版本保留当前版和回滚版。网页在同域收到新构建号后刷新，保留登录状态，输入或上传时延后。GitHub 流水线无需 SSH 凭据。
+门户更新器可由 VPS 用户级 timer 拉取签名版本；当前只有按需运行的 service，自动安装 timer 尚未启用。候选在临时数据库上启动成功后切换 `current.json`，重启 StopWatch 用户服务并检查确切构建。失败或上次切换未确认时恢复旧版本，失败序号隔离。自动下载的版本保留当前版和回滚版。网页在同域收到新构建号后刷新，保留登录状态，输入或上传时延后。GitHub 流水线无需 SSH 凭据。
 
 ## 信任与清单
 
