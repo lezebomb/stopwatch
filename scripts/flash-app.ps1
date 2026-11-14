@@ -1,4 +1,4 @@
-param([string]$Port = '-', [switch]$CaptureBoot, [switch]$Release, [switch]$Realtime, [switch]$MemoryProfile)
+param([string]$Port = '-', [switch]$CaptureBoot, [switch]$Release, [switch]$Realtime, [switch]$MemoryProfile, [string]$BuildDirectory='')
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 $python = (Resolve-Path '.tools/espressif/python_env/idf6.0_py3.12_env/Scripts/python.exe').Path
@@ -12,6 +12,10 @@ $plan = Get-Content -LiteralPath $session.firstInstallPlan -Raw | ConvertFrom-Js
 $partition = $plan | Where-Object file -EQ 'partition_table/partition-table.bin'
 $build = if ($Release) { 'firmware/build-release' } else { 'firmware/build' }
 if ($Realtime) { $build += '-realtime' }
+if ($BuildDirectory) {
+    $build = [IO.Path]::GetFullPath((Join-Path (Get-Location) $BuildDirectory))
+    if (-not $build.StartsWith(((Get-Location).Path + '\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'Build directory must stay in workspace' }
+}
 $table = Join-Path $build 'partition_table/partition-table.bin'
 if ((Get-FileHash -LiteralPath $table -Algorithm SHA256).Hash -ne $partition.sha256) { throw 'Partition layout changed; migration assessment required.' }
 $image = (Resolve-Path (Join-Path $build 'muse-gadget.bin')).Path

@@ -30,6 +30,11 @@ static sw_update_ops_t ops(mock_t *m) {
   return (sw_update_ops_t){m, begin, write_bytes, end, activate, abort_update};
 }
 int main(void) {
+  assert(!sw_update_install_authorized(false, "", "0.2.2"));
+  assert(!sw_update_install_authorized(false, "0.2.1", "0.2.2"));
+  assert(!sw_update_install_authorized(false, "garbage", "garbage"));
+  assert(sw_update_install_authorized(false, "0.2.2", "0.2.2"));
+  assert(sw_update_install_authorized(true, "", "0.2.2"));
   sw_update_policy_t p = sw_update_defaults();
   sw_update_conditions_t c = {.now = 10000,
                               .online = true,

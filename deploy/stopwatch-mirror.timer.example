@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for a signed StopWatch release mirror every five minutes
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Persistent=true
+[Install]
+WantedBy=timers.target
+
+# Prepared only. Do not enable this or installation timers before owner approval.

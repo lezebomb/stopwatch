@@ -1,4 +1,4 @@
-param([switch]$Realtime, [switch]$FactoryAssets, [switch]$Release)
+param([switch]$Realtime, [switch]$FactoryAssets, [switch]$Release, [string]$BuildDirectory='')
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 if ($Release) { $env:SW_PRODUCTION='1' } else { $env:SW_PRODUCTION='0' }
@@ -20,14 +20,22 @@ if ($Realtime) {
     $defaults += ';sdkconfig.realtime'
     $buildRoot += '-realtime'
 }
+if ($BuildDirectory) {
+    $buildRoot = [IO.Path]::GetFullPath((Join-Path (Get-Location) $BuildDirectory))
+    if (-not $buildRoot.StartsWith(((Get-Location).Path + '\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'Build directory must stay in workspace' }
+}
 $cachedConfig = Join-Path $buildRoot 'sdkconfig'
 if (Test-Path -LiteralPath $cachedConfig) {
     $configText = [IO.File]::ReadAllText($cachedConfig)
     $mainStack = [regex]::Match($configText, '(?m)^CONFIG_ESP_MAIN_TASK_STACK_SIZE=(\d+)\r?$')
+    if ($Release) {
+        $keyPath = (Resolve-Path -LiteralPath $env:SW_SIGNING_KEY_PATH).Path.Replace('\','/')
+        $configText = [regex]::Replace($configText, '(?m)^CONFIG_SECURE_BOOT_SIGNING_KEY=.*$', ('CONFIG_SECURE_BOOT_SIGNING_KEY="'+$keyPath+'"'))
+    }
     if ($mainStack.Success -and [int]$mainStack.Groups[1].Value -lt 9216) {
         $configText = [regex]::Replace($configText, '(?m)^CONFIG_ESP_MAIN_TASK_STACK_SIZE=\d+\r?$', 'CONFIG_ESP_MAIN_TASK_STACK_SIZE=9216')
-        [IO.File]::WriteAllText($cachedConfig, $configText)
     }
+    if ($configText -cne [IO.File]::ReadAllText($cachedConfig)) { [IO.File]::WriteAllText($cachedConfig, $configText) }
 }
 Push-Location $sdkRoot
 try {

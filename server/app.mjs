@@ -8,6 +8,7 @@ import QRCode from "qrcode";
 import { Store, secret, digest } from "./store.mjs";
 import { createDeviceSync, deviceHardware } from "./device-sync.mjs";
 import { createMuseEgress } from "./muse-egress.mjs";
+import { serveUpdate } from "./update-files.mjs";
 import {
   validEvent,
   PHOTO_BYTES,
@@ -56,6 +57,7 @@ export async function createRelay({
   publicOrigin = null,
   allowExecution = false,
   allowMuseEgress = false,
+  updatesRoot = null,
 } = {}) {
   if (!["mock", "production"].includes(mode))
     throw new Error("Unknown relay profile");
@@ -157,6 +159,7 @@ export async function createRelay({
     try {
       const url = new URL(req.url, "http://localhost");
       if (!hostAllowed(req)) return json(res, 403, { error: "不允许的 Host" });
+      if (await serveUpdate(req, res, mode === "production" ? updatesRoot : null)) return;
       const origin = req.headers.origin;
       if (origin && origin !== originFor(req))
         return json(res, 403, { error: "不允许的来源" });

@@ -1,15 +1,16 @@
 {
   "schema": 1,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "hardware": "m5stack-stopwatch-c152",
   "partitionLayout": "c152-16m-dual4m-photos7m-v1",
   "dataSchema": 1,
   "channel": "stable",
   "keyId": "stable-v1",
-  "manifestUrl": "https://github.com/lezebomb/stopwatch/releases/latest/download/firmware-manifest.json",
-  "bridgeManifestUrl": "https://github.com/lezebomb/stopwatch/releases/latest/download/bridge-manifest.json",
-  "resourceManifestUrl": "https://github.com/lezebomb/stopwatch/releases/latest/download/miao-manifest.json",
-  "portalManifestUrl": "https://github.com/lezebomb/stopwatch/releases/latest/download/portal-manifest.json",
+  "manifestUrl": "https://fym.lezebomb.top/updates/stable/firmware-manifest.json",
+  "bridgeManifestUrl": "https://fym.lezebomb.top/updates/stable/bridge-manifest.json",
+  "resourceManifestUrl": "https://fym.lezebomb.top/updates/stable/miao-manifest.json",
+  "portalManifestUrl": "https://fym.lezebomb.top/updates/stable/portal-manifest.json",
+  "artifactBaseUrl": "https://fym.lezebomb.top/updates",
   "productionPublicKey": "release/trust/stable-public.pem",
   "productionOrigin": "https://fym.lezebomb.top"
 }

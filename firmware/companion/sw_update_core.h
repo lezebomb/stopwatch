@@ -19,6 +19,8 @@ sw_update_action_t sw_update_decide(sw_update_policy_t p,
 uint32_t sw_update_backoff(sw_update_policy_t p, unsigned failures,
                            unsigned jitter);
 int sw_update_version(const char *a, const char *b); /* -2 invalid, -1/0/1 */
+bool sw_update_install_authorized(bool automatic, const char *requested,
+                                  const char *candidate);
 typedef struct {
   void *ctx;
   int (*begin)(void *, size_t);

@@ -879,6 +879,16 @@ static bool device_console_locked(const char *line) {
     error = NULL;
     goto done;
   }
+  if (!strcmp(op, "update.install")) {
+    cJSON *version = cJSON_GetObjectItemCaseSensitive(request, "version");
+    if (cJSON_IsString(version) && sw_update_request_install(version->valuestring)) error = NULL;
+    goto done;
+  }
+  if (!strcmp(op, "update.automatic.set")) {
+    cJSON *enabled = cJSON_GetObjectItemCaseSensitive(request, "enabled");
+    if (cJSON_IsBool(enabled) && sw_update_set_automatic(cJSON_IsTrue(enabled))) error = NULL;
+    goto done;
+  }
   if (!strcmp(op, "update.status")) {
     sw_update_diagnostics(id);
     cJSON_Delete(request);

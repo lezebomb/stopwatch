@@ -9,6 +9,7 @@ import { mockIdentity } from "../updates/mock-server.mjs";
 import { sha256, signedManifest } from "../updates/security.mjs";
 import { activePortalRelease, PortalUpdateManager } from "../updates/portal.mjs";
 import { verifyReleaseDirectory } from "../scripts/publish-release.mjs";
+import {releaseAssetUrl} from "../updates/release.mjs";
 
 test("stable delivery rejects mixed assets and rolls an unhealthy portal back without replacing private data", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "stopwatch-delivery-"));
@@ -33,7 +34,7 @@ test("stable delivery rejects mixed assets and rolls an unhealthy portal back wi
     ]) {
       await writeFile(path.join(assets, asset), file);
       await writeFile(path.join(assets, `${kind}-manifest.json`), JSON.stringify(signedManifest({
-        ...common, kind, hardware, compatibility, url: `https://github.com/${repository}/releases/download/${tag}/${asset}`,
+        ...common, kind, hardware, compatibility, url: releaseAssetUrl(config,repository,tag,asset),
       }, identity.privateKey)));
     }
     for (const name of ["StopWatch-Windows.zip", "firmware-notices.tar.gz"])

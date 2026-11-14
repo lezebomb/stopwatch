@@ -1,63 +1,43 @@
-# 一次配置，持续交付
+# StopWatch 简明交付清单
 
-手机控制台和设备无线相册已经上线并通过热点实测。正式签名更新、真实 Muse 会话和 Windows 登录自启仍需验收。
+统一入口：[手机控制台](https://fym.lezebomb.top/)；[扫码蓝牙配网](https://fym.lezebomb.top/setup/)。使用支持 Web Bluetooth 的 Android Chrome；Edge 以页面功能检测为准，无需 APK 或下载仓库。
 
-## 维护者一次性配置
+## 第一次设置
 
-1. 受控环境离线创建RSA-3072发布私钥，只提交SPKI PEM公钥到 release/trust/stable-public.pem。设备与Windows信任根必须来自可信首次交付。
-2. GitHub production-signing environment中设置 RELEASE_SIGNING_KEY_PEM secret，限制发布权限并按需审批。缺公钥/secret即失败关闭。
-3. 固定 HTTPS 入口为 `https://fym.lezebomb.top`。首次部署时核对 DNS 和 HTTPS，公开 Pages 继续提供隔离演示。
-4. VPS 获授权后，在独立用户目录放置首个可信门户制品。结构为 `versions/<首版目录>/`、`current.json`（内容为 `{"release":"<首版目录>"}`）、制品自带的 `bootstrap/`、`release-public.pem` 和 `production.env`。门户只监听 127.0.0.1，使用单独的域名入口；部署前确认不会影响已有代理和端口。
-5. 在 `production.env` 中设置绝对 `STOPWATCH_DATA_DIR`，指向发布目录之外的持久目录。安装制品附带的用户级 `stopwatch.service` 和 `stopwatch-update.{service,timer}` 模板。先验证首版、持久数据和回滚，再启用 timer。`STOPWATCH_ENABLE_EXECUTION=0` 保持关闭，直到维护者明确授权。
-6. 首次设备初始化先备份，核对现有分区、启动槽和 rollback Bootloader，再安装正式签名应用与信任根。已在使用的设备保留照片分区和个人配置。用两个递增签名版本依次验证成功升级和失败回滚，再启用稳定渠道。
-7. 收礼人只需配网/Muse官方授权、手机一次配对、Windows一次图形安装和工作区授权，不维护仓库或CI。
+| 步骤 | 用途 | 之后如何恢复 |
+|---|---|---|
+| 扫码蓝牙配网，输入挂件六位码和普通 2.4 GHz Wi-Fi/热点 | 给挂件联网，密码仅在手机填写 | 官方 SDK 保存网络并自动重连；换网络只更新 Wi-Fi |
+| 用控制台六位登录码登录，再在设置绑定挂件 | 授权照片、设置和任务状态同步 | 保留受保护登录和设备凭据，断网后自动恢复 |
+| 在 Muse 官方 App 登录自己的账号并按官方流程添加设备 | 授权官方 Muse 智能体和会话 | 保留账号凭据；直连受限时自动走设备专用加密出口 |
 
-信任根轮换需要双签名过渡和恢复计划，不能只改公钥文件或使用公开开发密钥，更不能盲目烧eFuse。
+这三项授权不能互相替代。控制台登录码与蓝牙配对码不同。Wi-Fi 在线不等于 Internet 或 Muse 会话已就绪；出现网络重试时不必重置账号、清空设备或配置手机代理。
 
-首次手动部署可在 Windows 用 `node scripts/build.mjs --production` 和 `node scripts/package-portal.mjs --without-dependencies` 准备门户包。在独立的 Linux 版本目录用 Node 24 运行 `npm ci --omit=dev` 补齐本机依赖。服务就绪后，维护者在私有 VPS 终端加载 `production.env` 并从当前版本目录运行 `node scripts/pair.mjs` 领取首次配对链接。该链接只在终端显示，两分钟有效。
+当前设备仍保留开发者本人已实测的 Muse 绑定。换成收礼人账号必须由本人按官方流程授权，不能假设不同账号共享设备；交付前集中处理，不自动清除当前绑定。SDK Token 由开发者预置，不要求收礼人运行命令行或粘贴到聊天。
 
-手机控制台可以输入六位数字，也可以扫描二维码。两者共用同一张一次性票据，任意一种成功后另一种立即失效，仍受两分钟过期和服务端尝试次数限制。挂件和电脑授权使用各自独立的令牌。
+Windows 只需一次图形化安装、本人登录 Codex 并选择允许的工作区。后台主动连接中转；远程操作只作用于明确授权的目录和桥接创建的任务，不接管 Desktop。实际重启登录验收仍待所有者允许。
 
-当前 VPS 门户以 `stopwatch` 用户运行，版本和持久数据分别位于 `/srv/stopwatch/versions` 与 `/srv/stopwatch/data`。该用户的 `stopwatch.service` 只监听 `127.0.0.1:8787`。独立系统服务 `stopwatch-tunnel.service` 只为 `fym.lezebomb.top` 提供公网入口；两项服务可分别停止。隧道凭据由 VPS 本机权限保护，门户发布包不携带凭据。正式更新 timer 和远程执行尚未启用。
+## 日常使用与故障提示
 
-## 日常发布
+- 手机照片页上传、裁切和选择封面；联网后同步至挂件，断线时保留旧照片。隐藏照片与日期在设置中管理，删除普通照片不应误删隐藏内容。
+- 本地轮播开启时，重启前后的当前画面可能属于不同轮播位置。文件哈希、默认封面与轮播偏好分别检查，不把换图当成照片丢失。
+- 照片展示、智能省电和续航优先可在手机设置选择。电池时低亮；充电常亮。续航、真实电池插拔和人工观感按现场记录验收，不能用策略单测代替。
+- Miao 跟随真实 Codex 状态；电脑离线显示离线。网页显示“已接收”不代表任务执行成功，最终结果以官方 App Server 事件为准。高风险审批去手机查看完整内容。
+- Muse 已联网但未就绪时等待自动重连；提示授权过期/撤销时才重新登录对应官方账号。当前设备始终静音，音量零、功放关闭；录音和播放不在本轮验收范围。
 
-`main` 自动测试和构建，Pages 继续部署隔离预览。更新 `release/config.json` 的版本，等待同一提交的 `main` CI 成功，再推送匹配的附注标签 `vX.Y.Z`。由 Actions 创建 Release。部分上传失败时，用原 Actions 制品重跑发布作业；已公开版本采用新版本号修复。
+## 更新与恢复
 
-Actions 从同一个提交生成固件、Miao、Windows 桥接和门户。门户先用临时数据启动。发布作业校验四份签名、版本和构建号、所有受签名制品的大小及 SHA-256，再核对草稿上的上传结果。全部通过后一次公开为 `latest`。
+正式更新清单和四端资源来自同域名 `/updates/stable/`，版本文件不可变并校验签名、大小及 SHA-256。照片与私人设置使用独立数据同步，固件 OTA 不重写照片分区、Bootloader 或分区表。
 
-四个入口为仓库 `releases/latest/download/` 下的 `firmware-manifest.json`、`miao-manifest.json`、`bridge-manifest.json` 和 `portal-manifest.json`。客户端验签后才下载并验证对应二进制。
+生产自动安装默认关闭，必须由所有者另行明确批准。手动“检查”不会安装；开发者可通过 USB 单次授权指定版本，授权最多保留 30 分钟且重启即失效。失败保留现有应用并退避，未健康确认的新槽由官方 Bootloader 回滚；失败版本隔离后使用新的递增版本修复，不清空防重放记录。
 
-门户由 VPS 用户级 timer 拉取签名版本。候选在临时数据库上启动成功后切换 `current.json`，重启 StopWatch 用户服务并检查确切构建。失败或上次切换未确认时恢复旧版本，失败序号隔离。自动下载的版本保留当前版和回滚版。网页在同域收到新构建号后刷新，保留登录状态，输入或上传时延后。GitHub 流水线无需 SSH 凭据。
+正式私钥仅在开发者本机受保护目录与 GitHub `production-signing` 加密 Secret，不包含在仓库、安装包或 VPS。开发者应另做离线安全备份。VPS 仅保存公钥和已签名程序资源；镜像与安装服务可以独立停止，安装定时器尚未启用。
 
-## 信任与清单
+## 集中验收
 
-Envelope使用RSA-3072、PSS-SHA256、32字节盐，签名覆盖base64解码的原始JSON字节。固定keyId=stable-v1。
+- [ ] 收礼人普通家庭 Wi-Fi，手机首次配网与本人 Muse 授权。
+- [ ] 人工确认照片色彩、Miao 动画、隐藏彩蛋、低亮观感与充电常亮。
+- [ ] 获得许可后实际 Windows 重启登录恢复。
+- [ ] 正式签名 OTA 真实下载、换槽、健康、回滚、失败恢复和数据保留，结果见 PROGRESS。
+- [ ] 内部 RAM 极端低水位问题有真实测量结论，再明确批准自动生产安装。
 
-Payload含schema/kind/channel/version/sequence、hardware/buildId、完整size/SHA256、HTTPS URL、publishedAt、compatibility。固件只接受固定布局c152-16m-dual4m-photos7m-v1、dataSchema1和IDF6.0.3；Windows限定protocol1/Node major24。
-
-设备同时验证清单签名、完整文件哈希、ESP镜像签名与镜像版本，全部通过才切备用启动槽。不写Bootloader/分区表/NVS/product/photos。
-
-## 数据与资源
-
-程序、系统资源、个人数据生命周期分开。个人照片不进入公开Release。新增sw_updates命名空间只管理更新信息，不重设既有亮度/休眠偏好。
-
-设备在充电、联网、空闲时独立检查 Miao。签名清单需匹配当前播放器帧和动作布局。下载包通过大小、SHA-256 和逐帧解码验证后，才写入照片分区内专用的 `miao0.pack` 或 `miao1.pack`，刷盘并读回校验，最后提交 NVS 指针。旧包在提交前仍可用。相册空间不足时可回收 Miao 缓存；所选包缺失或损坏时回退内置动画。固件内置版本相同或更新时直接使用内置包。变更帧或动作布局需由新版固件提供对应播放器。
-
-授权照片、封面、彩蛋和显示设置继续使用私有 HTTPS 设备同步及现有相册事务。Windows 凭据和 VPS 持久数据库在发布目录之外。OTA 和稳定制品都不承载私人数据。
-
-## Windows 后台
-
-VBS启动WinForms图形安装，包内含Node24。仅当前用户LocalAppData和Startup快捷方式，不提权、不注册SYSTEM。凭据用DPAPI保存，经stdin传入子程序，不放命令行/普通日志。
-
-supervisor与桥接分离，主动WSS，只恢复自身App Server线程映射及授权工作区。审批绑定请求ID、连接代数和TTL；授权失效停止无限重试。中转与Codex均在线才报告在线。
-
-签名更新bundle置于独立版本目录，损坏/缺健康确认/进程退出回退，失败sequence隔离；配置、DPAPI、SQLite不在应用包。稳定bootstrap和Node24运行时的大版本迁移仍需单独迁移版本，不盲装不兼容bundle。
-
-开始菜单提供设置/停止/撤销。当前仅完成打包、语法和PlanOnly验证，未实际安装或测试登录自启；Windows脚本发布策略、交互和真实账号恢复需交付验收，不绕过系统安全提示。
-
-## 本地验证
-
-npm run mock:updates启动127.0.0.1 HTTPS测试源，CA/测试私钥仅在忽略目录。测试显式信任该CA，不关闭TLS校验。npm test覆盖篡改、断线、模拟掉电、回滚、数据保留和C操作顺序。测试CA和开发私钥不能用作生产信任根。
-
-安装/设置及DPAPI辅助进程仅为自己的脚本使用进程级ExecutionPolicy Bypass，不修改用户/系统永久策略；组织组策略仍优先。企业禁用脚本或WSH时须提供经组织认可的签名安装包，不能绕过管理策略。设置支持停止、直接向中转撤销自身授权和卸载程序，离线时移除本机凭据并明确提示补做云端撤销，私人数据保留。
+本轮不修改页面布局、菜单、按钮或触控方式；其体验由所有者后续单独设计。

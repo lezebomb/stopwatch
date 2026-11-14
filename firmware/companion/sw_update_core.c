@@ -1,5 +1,11 @@
 #include "sw_update_core.h"
 #include <string.h>
+
+bool sw_update_install_authorized(bool automatic, const char *requested,
+                                  const char *candidate) {
+  return automatic || (requested && candidate &&
+      sw_update_version(requested, "0.0.0") == 1 && !strcmp(requested, candidate));
+}
 sw_update_policy_t sw_update_defaults(void) {
   return (sw_update_policy_t){21600, 1800, 60, 21600, 60, 30, 40};
 }

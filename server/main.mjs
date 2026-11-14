@@ -31,6 +31,7 @@ const app = await createRelay({
   publicOrigin: process.env.STOPWATCH_PUBLIC_ORIGIN || null,
   allowExecution: process.env.STOPWATCH_ENABLE_EXECUTION === "1",
   allowMuseEgress: process.env.STOPWATCH_MUSE_EGRESS === "1",
+  updatesRoot: process.env.STOPWATCH_UPDATE_DIR || null,
 });
 console.log(`StopWatch ${mode} relay: ${app.url}`);
 if (mode === "mock") {

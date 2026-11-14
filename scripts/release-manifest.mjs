@@ -5,6 +5,7 @@ import {
   validateManifest,
 } from "../updates/security.mjs";
 import config from "../release/config.json" with { type: "json" };
+import {releaseAssetUrl,releaseComponents} from "../updates/release.mjs";
 const args = Object.fromEntries(
   process.argv
     .slice(2)
@@ -19,8 +20,8 @@ const kind = args.kind || "firmware",
   tag = process.env.RELEASE_TAG || `v${version}`;
 if (tag !== `v${version}`)
   throw new Error("Release tag must equal release/config.json version");
-if (!args.binary || !args.url || !args.output)
-  throw new Error("--binary --url --output required");
+if (!args.binary || !args.output) throw new Error("--binary --output required");
+args.url ||= releaseAssetUrl(config, process.env.GITHUB_REPOSITORY || "lezebomb/stopwatch", tag, releaseComponents[kind]?.[0]);
 const bytes = await readFile(args.binary);
 const publishedAt =
   process.env.RELEASE_PUBLISHED_AT || new Date().toISOString();

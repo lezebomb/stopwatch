@@ -1,0 +1,14 @@
+[Unit]
+Description=Verify and mirror StopWatch stable release assets (no installation)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/stopwatch
+ExecStart=/usr/bin/node /srv/stopwatch/release-mirror.mjs
+MemoryMax=160M
+NoNewPrivileges=true
+
+# Install only as stopwatch's user service. The launcher reads current.json and
+# calls the active release's bootstrap/scripts/release-mirror.mjs with the pinned
+# /srv/stopwatch/trust/stable-public.pem and separate /srv/stopwatch/updates root.
+# This service never installs an app, firmware or bridge update.

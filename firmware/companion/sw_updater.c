@@ -49,6 +49,9 @@ extern const unsigned char
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 static sw_update_status_t status;
 static atomic_bool manual, interaction, services;
+static atomic_bool automatic_updates;
+static char requested_version[32];
+static uint64_t request_deadline;
 static atomic_bool boot_ready, ota_worker_started;
 static atomic_bool flash_dispatcher_ready, ota_stack_external;
 static atomic_uint ota_stack_minimum, flash_stack_minimum;
@@ -113,14 +116,15 @@ void sw_update_diagnostics(int id) {
          "\"runningOffset\":%lu,\"bootOffset\":%lu,\"runningState\":%d,"
          "\"otaStackPSRAM\":%s,\"otaStackBytes\":%u,\"otaStackMinimum\":%u,"
          "\"flashStackBytes\":%u,\"flashStackMinimum\":%u,"
-         "\"downloaded\":%u,\"size\":%u}\n",
+         "\"downloaded\":%u,\"size\":%u,\"automatic\":%s}\n",
          id, current.state, current.failures,
          running ? (unsigned long)running->address : 0UL,
          boot ? (unsigned long)boot->address : 0UL, (int)image_state,
          atomic_load(&ota_stack_external) ? "true" : "false",
          SW_UPDATE_RELEASE_STACK_BYTES, atomic_load(&ota_stack_minimum),
          OTA_FLASH_STACK_BYTES, atomic_load(&flash_stack_minimum),
-         atomic_load(&ota_downloaded), atomic_load(&ota_size));
+         atomic_load(&ota_downloaded), atomic_load(&ota_size),
+         atomic_load(&automatic_updates) ? "true" : "false");
   fflush(stdout);
 }
 static void state(const char *phase, const char *detail) {
@@ -156,6 +160,23 @@ void sw_update_request_check(void) {
   if (task)
     xTaskNotifyGive(task);
 }
+bool sw_update_request_install(const char *version) {
+  if (!production_configured || !version || strlen(version) >= sizeof(requested_version) ||
+      sw_update_version(version, SW_UPDATE_VERSION) != 1) return false;
+  portENTER_CRITICAL(&lock);
+  strlcpy(requested_version, version, sizeof(requested_version));
+  request_deadline = seconds() + 1800; /* One bounded authorization, not opt-in. */
+  portEXIT_CRITICAL(&lock);
+  sw_update_request_check();
+  return true;
+}
+bool sw_update_set_automatic(bool enabled) {
+  if (!production_configured || !atomic_load(&boot_ready) ||
+      nvs_set_u8(nvs, "auto_enabled", enabled ? 1 : 0) != ESP_OK ||
+      nvs_commit(nvs) != ESP_OK) return false;
+  atomic_store(&automatic_updates, enabled);
+  return true;
+}
 static bool busy(void) {
   muse_mode_t m = muse_state_mode(NULL);
   return atomic_load(&interaction) || muse_voice_in_call() ||
@@ -172,12 +193,13 @@ static bool tls_headroom(void) {
 }
 void sw_update_boot_memory(const char *phase) {
   if (SW_UPDATE_PRODUCTION)
-    ESP_LOGI(TAG, "boot-memory %s internal=%u largest=%u dma=%u dma_largest=%u psram=%u",
+    ESP_LOGI(TAG, "boot-memory %s internal=%u largest=%u dma=%u dma_largest=%u psram=%u minimum=%u",
              phase, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
 }
 static bool https_url(const char *s) {
   return s && strncmp(s, "https://", 8) == 0 && strlen(s) < 768 &&
@@ -391,7 +413,9 @@ static int fetch_manifest(const char *url, manifest_t *out, bool miao) {
 static bool install_allowed(void) {
   muse_power_t power = muse_state_power();
   return (power.usb || power.charging) &&
-         power.battery_pct >= policy.min_battery && request_allowed();
+         power.battery_pct >= policy.min_battery && request_allowed() &&
+         heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 8192 &&
+         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 2048;
 }
 static bool download_resource(const manifest_t *m, uint8_t *data, size_t *used) {
   esp_http_client_handle_t h = http_open(m->url, m->size);
@@ -650,14 +674,18 @@ static bool install(const manifest_t *m) {
            success, (unsigned)uxTaskGetStackHighWaterMark(NULL));
   sw_update_boot_memory("ota-verified");
 done:
-  if (!success)
+  if (!success) {
+    sw_update_boot_memory("ota-failure-before-free");
     sw_update_stream_abort(&stream);
+  }
   psa_hash_abort(&hash);
   free(buffer);
   free(ctx.flash_buffer);
   if (h)
     esp_http_client_cleanup(h);
   if (owns_http) sw_sync_http_release();
+  sample_ota_stack();
+  sw_update_boot_memory("ota-cleaned");
   return success;
 }
 static bool health(void) {
@@ -744,6 +772,15 @@ static __attribute__((noinline)) void poll_updates(void) {
     was_online = online;
     muse_power_t p = muse_state_power();
     bool user_check = atomic_exchange(&manual, false);
+    char requested[32];
+    portENTER_CRITICAL(&lock);
+    bool expired = requested_version[0] && now >= request_deadline;
+    if (expired) requested_version[0] = 0;
+    strlcpy(requested, requested_version, sizeof(requested));
+    portEXIT_CRITICAL(&lock);
+    if (expired) state("deferred", "本次安装授权已超时，保留现有版本");
+    bool automatic = atomic_load(&automatic_updates);
+    if (!automatic && !user_check && !requested[0]) return;
     sw_update_conditions_t cond = {
         .now = now,
         .last_check = last_check,
@@ -751,21 +788,23 @@ static __attribute__((noinline)) void poll_updates(void) {
         .online = online,
         .charging = p.usb || p.charging,
         .busy = busy(),
-        .manual = user_check,
+        .manual = user_check || (requested[0] && now >= next_attempt),
         .reconnected = reconnect_due,
         .battery = p.battery_pct,
         .stable_s = online_since ? (uint32_t)(now - online_since) : 0,
         .idle_s = (uint32_t)muse_state_idle_secs()};
     sw_update_action_t action = sw_update_decide(policy, cond);
-    if (!last_check && !user_check && utc >= last_wall && last_wall &&
+    if (!automatic && !user_check && (!requested[0] || now < next_attempt)) action = SW_UP_WAIT;
+    if (!last_check && !user_check && !requested[0] && utc >= last_wall && last_wall &&
         utc - last_wall < (reconnect_due ? policy.reconnect_s : policy.check_s))
       action = SW_UP_WAIT;
-    if (have_candidate && cond.online && cond.charging && !cond.busy &&
+    if (have_candidate && sw_update_install_authorized(automatic, requested, candidate.version) &&
+        cond.online && cond.charging && !cond.busy &&
         cond.battery >= policy.min_battery && cond.idle_s >= policy.idle_s &&
         cond.stable_s >= policy.stable_s && now >= next_attempt)
       action = SW_UP_INSTALL;
     bool check_miao =
-        storage_ready && resource_url[0] && cond.stable_s >= policy.stable_s &&
+        automatic && storage_ready && resource_url[0] && cond.stable_s >= policy.stable_s &&
         cond.idle_s >= policy.idle_s && now >= resource_due &&
         install_allowed() &&
         (user_check || resource_due || !resource_wall || utc < resource_wall ||
@@ -795,10 +834,17 @@ static __attribute__((noinline)) void poll_updates(void) {
       int result = fetch_manifest(manifest_url, &candidate, false);
       ok = result >= 0;
       have_candidate = result == 1;
+      if (!have_candidate && requested[0]) ok = false;
       if (!have_candidate && ok)
         state("up-to-date", "已是当前可用版本，或失败版本已隔离");
     }
-    if (ok && have_candidate && action == SW_UP_INSTALL) {
+    if (ok && have_candidate && !automatic && strcmp(requested, candidate.version)) {
+      have_candidate = false;
+      state("available", "仅检查完成，自动更新关闭；安装须另行授权");
+      if (requested[0]) ok = false;
+    }
+    if (ok && have_candidate && action == SW_UP_INSTALL &&
+        sw_update_install_authorized(automatic, requested, candidate.version)) {
       state("downloading", "充电空闲中，下载到备用应用分区");
       ok = install(&candidate);
       if (ok) {
@@ -838,6 +884,7 @@ static __attribute__((noinline)) void poll_updates(void) {
     portENTER_CRITICAL(&lock);
     status.failures = failures;
     portEXIT_CRITICAL(&lock);
+    if (!automatic && !requested[0] && !atomic_load(&manual)) return;
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(have_candidate ? 1000 : 30000));
   }
 }
@@ -857,16 +904,21 @@ static void download_worker(void *arg) {
   atomic_store(&ota_stack_external, esp_ptr_external_ram((const void *)esp_cpu_get_sp()));
   atomic_store(&update_task, xTaskGetCurrentTaskHandle());
   poll_updates();
-  /* poll_updates owns the original retry/candidate state and normally does
-   * not return. Leave the NVS handle alive for the configured manager. */
+  /* Manual check returns and releases its PSRAM stack/TCB. The official
+   * dispatcher stays initialized for subsequent Flash calls. */
   atomic_store(&update_task, NULL);
   atomic_store(&ota_worker_started, false);
+  atomic_store(&ota_stack_external, false);
   vTaskDeleteWithCaps(NULL);
 }
 bool sw_update_boot_ready(void) { return atomic_load(&boot_ready); }
 void sw_update_maintenance(void) {
+  portENTER_CRITICAL(&lock);
+  bool install_requested = requested_version[0] != 0;
+  portEXIT_CRITICAL(&lock);
   if (!production_configured || !manifest_url[0] || !atomic_load(&boot_ready) ||
       atomic_load(&ota_worker_started) || seconds() < ota_retry_after ||
+      (!atomic_load(&automatic_updates) && !atomic_load(&manual) && !install_requested) ||
       !request_allowed()) return;
   /* Let optional Muse boot/auth work settle before retaining the low-priority
    * Flash dispatcher. Health confirmation already has its own internal task. */
@@ -928,6 +980,9 @@ void sw_update_start(bool storage_ok) {
     return;
   }
   nvs_get_u32(nvs, "check_s", &policy.check_s);
+  uint8_t automatic = 0; /* Never opt a recipient in merely by installing a key. */
+  nvs_get_u8(nvs, "auto_enabled", &automatic);
+  atomic_store(&automatic_updates, automatic == 1);
   nvs_get_u32(nvs, "reconnect_s", &policy.reconnect_s);
   nvs_get_u32(nvs, "stable_s", &policy.stable_s);
   uint8_t min = 40;

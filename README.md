@@ -1,8 +1,8 @@
 # StopWatch · 小小挂件，长期陪伴
 
-基于 M5Stack StopWatch C152 和官方 Muse SDK，在 v0.1 上扩展签名 OTA、自动发布、在线演示及 Windows 后台交付。当前版本 **0.2.0**。
+基于 M5Stack StopWatch C152 和官方 Muse SDK，在 v0.1 上扩展签名 OTA、自动发布、在线演示及 Windows 后台交付。当前开发版本 **0.2.1**。
 
-**实机进展** 已验证照片、配网、授权和无线相册。Codex 已通过公网完成网页下单、双工作区真实执行、追加、中断、按次审批、挂件快捷下单和无线 Miao 联动，用户级 Windows 后台已安装。Muse 云端 Noise 与文字对话已通过，当前网络仍依赖可用代理网关。挂件持续静音，录音、通话、Windows 真正重启登录及正式签名 OTA 尚待验收。[硬件测试记录](HARDWARE_TEST.md)
+**实机进展** 已验证照片、配网、授权和无线相册。Codex 已通过公网完成网页下单、双工作区真实执行、追加、中断、按次审批、挂件快捷下单和无线 Miao 联动，用户级 Windows 后台已安装。Muse 云端 Noise 与文字对话已通过，已在国内热点通过受认证的 VPS 加密出口独立连接，手机无需代理共享。挂件持续静音，录音、通话、Windows 真正重启登录及正式签名 OTA 尚待验收。[硬件测试记录](HARDWARE_TEST.md)
 
 **[打开在线隔离演示](https://lezebomb.github.io/stopwatch/)**：无需下载仓库、运行 Node 或安装 APK。发布状态以 GitHub Actions 为准。演示任务、配对和更新均为 Mock，图片仅在浏览器内存处理；不连接真实 Codex，不具备公网执行权限。
 
@@ -15,7 +15,7 @@
 - Windows 正式包自带 Node，一次图形安装、选择工作区并授权，之后后台启动、主动 WSS、恢复和更新，无需每次 CMD。
 - 授权失效会明确提示重新授权；仅恢复桥接自己创建的 App Server 会话，不接管 Desktop。
 
-**交付待办** 当前公网执行已在工作区授权后启用。本机只授权两个隔离测试目录；日常项目在开始菜单「StopWatch 设置 → 管理授权工作区」明确添加。仍须验收实际重启登录和触屏操作，并配置正式签名、验收双槽升级与回滚后启用稳定更新。
+**交付待办** 当前公网执行已在工作区授权后启用。本机只授权两个隔离测试目录；日常项目在开始菜单「StopWatch 设置 → 管理授权工作区」明确添加。仍须验收实际重启登录和触屏操作，并配置正式签名、验收生产签名根的首次安装、正式发布和国内下载后，再由本人明确批准启用稳定更新。
 
 Windows 本地安装包可用 `node scripts/package-windows.mjs --local-install` 生成，双击包内 `Install-StopWatch.vbs`，选择工作区并输入控制台设置页的电脑授权码。它自带 Node、使用当前用户 DPAPI，并注册无窗口登录启动，不要求 Desktop 前台运行。此包明确没有正式更新信任根，不会尝试未签名更新。普通开发演示包继续禁止正式安装；正式签名包的验证要求保留。
 
@@ -101,9 +101,7 @@ Muse 首次授权需要本人从官方账户创建 SDK token。Windows 本机运
 
 当前固件默认静音，并持久保存本地静音开关。静音时功放使能保持关闭，PCM 输出为零，提示音与回环诊断直接返回。`python scripts/device-sync.py --port COM5 --muse-status` 可读取令牌是否配置、账号绑定状态、静音状态和功放寄存器，不返回凭据。后续获准播放时，可通过本地 USB 的 `audio.silent` 命令解除静音，并在官方声音设置中恢复音量。
 
-Muse 网络受限时，可让挂件通过手机或路由器的局域网 HTTP CONNECT 端口使用既有 VPS 出口。手机需同时开启兼容 2.4 GHz 的热点、代理及局域网共享。设备端一次通过本机 USB 配置 `{"id":1,"op":"muse.proxy.set","host":"@gateway","port":7890}`，之后从当前 Wi-Fi 获取网关并自动重连。也支持固定私有 IPv4 地址。设置独立保存在 `sw_muse_proxy` 命名空间，可用 `muse.proxy.status` 查询、`muse.proxy.clear` 撤销。
-
-该入口覆盖官方 Muse API 和 `*.metaaivm.com` 的动态 VM 主机。CONNECT 建立后由 ESP-IDF 按原始主机名执行 TLS 和证书校验，再运行官方 WebSocket/Noise 协议。配置启用而代理不可达时，会话按现有 SDK 策略重试。首次安装默认关闭代理，日常使用需保持所选网关的代理端口可用。`python scripts/muse-diagnostics.py --port COM5 --seconds 90` 在静音条件下记录凭据存在状态、HTTP 状态码和握手阶段；加 `--observe-ready` 会持续采样内存和连接状态，不在首次就绪时结束。报告留在 Git 忽略目录。SDK 的配对前缀一致不代表完整 Token 相同，远端有效性以真实服务响应为准。
+挂件优先直连 Muse，受限时自动通过 `fym.lezebomb.top` 的设备专用 WSS 出口传输官方 TLS 密文，覆盖 API 和动态 VM。保留原始 TLS 证书、SNI 和 Noise；手机无需安装或分享代理，也不需要更改电脑网络。出口使用独立设备授权，不替换 Muse 账号绑定。Wi-Fi 在线、控制台已授权与 Muse 会话就绪分别显示和验收。
 
 日常配网使用普通 2.4 GHz Wi-Fi 或手机热点，由 Muse SDK 管理。旧版 PEAP 测试凭据可经 USB 执行 `device-sync.py --pipe`，发送 `{"id":1,"op":"wifi.enterprise.clear"}`。命令只删除现存的 PEAP 凭据键，并清除同命名空间中已删除条目的残留数据。可用 `wifi.enterprise.status` 查询凭据是否仍在。若旧校园网名称仍在 Wi-Fi 列表，只需在设置中忘记对应网络。
 
@@ -114,3 +112,5 @@ Muse 网络受限时，可让挂件通过手机或路由器的局域网 HTTP CON
 照片页低亮常显是默认模式。在手机设置可切换智能省电或续航优先，也可选择一张已上传照片作为隐藏彩蛋。隐藏照从封面和轮播中移出，照片页连点五次或到指定日期会打开。充电时封面保持常亮。
 
 Codex 页的妙妙来自固定的 [Miao 源版本](https://github.com/lezebomb/Miao/tree/e96c93f471b9beb68b538b17b8eeecd6daa6fce4)。`node scripts/miao-assets.mjs` 生成内置动画包、网页 WebP 和布局摘要。正式设备可独立验证并切换兼容的签名 Miao 包，离线或外部包不可用时仍能播放内置动画。
+
+正式 OTA 默认关闭自动安装；设置中的检查只显示版本，不授予安装权限。USB 定向安装只授权指定版本，最多重试 30 分钟；重启后不保留这项临时授权。启用自动更新必须由所有者另行确认。正式资源与固件走同域名签名镜像，照片与个人设置继续使用独立同步。详见 [交付清单](docs/DELIVERY.md)。

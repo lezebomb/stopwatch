@@ -11,6 +11,9 @@ void sw_update_health_tick(bool photo_ready);
 void sw_update_services_ready(void);
 void sw_update_interaction(bool busy);
 void sw_update_request_check(void);
+/* USB maintenance only. Checking never grants installation permission. */
+bool sw_update_request_install(const char *version);
+bool sw_update_set_automatic(bool enabled);
 void sw_update_status(sw_update_status_t *out);
 bool sw_update_boot_ready(void);
 void sw_update_maintenance(void);

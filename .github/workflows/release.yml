@@ -71,9 +71,8 @@ jobs:
           mkdir -p release-output/assets
           cp firmware/build/muse-gadget.bin release-output/assets/stopwatch-firmware.bin
           cp .deps/miao-pack/miao.pack release-output/assets/miao.pack
-          BASE="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"
-          node scripts/release-manifest.mjs --kind firmware --binary release-output/assets/stopwatch-firmware.bin --url "$BASE/stopwatch-firmware.bin" --output release-output/assets/firmware-manifest.json
-          node scripts/release-manifest.mjs --kind miao --binary release-output/assets/miao.pack --url "$BASE/miao.pack" --output release-output/assets/miao-manifest.json
+          node scripts/release-manifest.mjs --kind firmware --binary release-output/assets/stopwatch-firmware.bin --output release-output/assets/firmware-manifest.json
+          node scripts/release-manifest.mjs --kind miao --binary release-output/assets/miao.pack --output release-output/assets/miao-manifest.json
           node scripts/package-firmware-notices.mjs
           tar -czf release-output/assets/firmware-notices.tar.gz -C release-output firmware-notices
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -111,7 +110,7 @@ jobs:
           New-Item -ItemType Directory -Force release-output/assets | Out-Null
           Compress-Archive -Path windows/package/* -DestinationPath release-output/assets/StopWatch-Windows.zip
           Copy-Item windows/package/app/bridge.mjs release-output/assets/stopwatch-bridge.mjs
-          node scripts/release-manifest.mjs --kind bridge --binary release-output/assets/stopwatch-bridge.mjs --url "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:RELEASE_TAG/stopwatch-bridge.mjs" --output release-output/assets/bridge-manifest.json
+          node scripts/release-manifest.mjs --kind bridge --binary release-output/assets/stopwatch-bridge.mjs --output release-output/assets/bridge-manifest.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: stable-windows
@@ -148,7 +147,7 @@ jobs:
         run: |
           mkdir -p release-output/assets
           tar -czf release-output/assets/stopwatch-portal.tar.gz -C release-output/portal .
-          node scripts/release-manifest.mjs --kind portal --binary release-output/assets/stopwatch-portal.tar.gz --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/stopwatch-portal.tar.gz" --output release-output/assets/portal-manifest.json
+          node scripts/release-manifest.mjs --kind portal --binary release-output/assets/stopwatch-portal.tar.gz --output release-output/assets/portal-manifest.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: stable-portal

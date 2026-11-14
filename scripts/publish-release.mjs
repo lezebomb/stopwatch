@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import config from "../release/config.json" with { type: "json" };
 import { compareVersion, verifyManifest } from "../updates/security.mjs";
+import {releaseAssetUrl} from "../updates/release.mjs";
 
 const components = {
   firmware: ["stopwatch-firmware.bin", "firmware-manifest.json"],
@@ -35,7 +36,7 @@ export async function verifyReleaseDirectory(directory, { repository, tag, build
     const item = local.get(asset);
     const signed = verifyManifest(JSON.parse(await readFile(local.get(manifest).file, "utf8")), key, { kind, portalOrigin });
     if (signed.version !== config.version || signed.buildId !== build ||
-        signed.url !== `https://github.com/${repository}/releases/download/${tag}/${asset}` ||
+        signed.url !== releaseAssetUrl(config, repository, tag, asset) ||
         item.size !== signed.size || item.digest !== `sha256:${signed.sha256}`)
       throw new Error(`Stable ${kind} package does not match its manifest`);
     const releaseIdentity = `${signed.sequence}/${signed.publishedAt}`;
