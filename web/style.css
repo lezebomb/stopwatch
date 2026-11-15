@@ -1,3 +1,8 @@
+.cover-preview { display: block; width: min(100%, 280px); aspect-ratio: 1; object-fit: cover; border-radius: 50%; margin: 20px auto; }
+.connection-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+.connection-grid strong { display: block; font-size: 14px; margin-top: 6px; }
+.home-actions { display: grid; gap: 12px; }
+a.button { display: inline-block; padding: 12px 18px; border-radius: 12px; background: #244b3e; color: white; text-decoration: none; }
 :root {
   font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
   color: #253d35;

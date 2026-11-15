@@ -84,6 +84,13 @@ const setupCss = await readFile("web/setup/style.css");
 const setupCssName = `style.${createHash("sha256").update(setupCss).digest("hex").slice(0, 12)}.css`;
 await writeFile(`${output}/setup/${setupCssName}`, setupCss);
 await writeFile(`${output}/setup/index.html`, (await readFile("web/setup/index.html", "utf8")).replace("./app.js", `./${setupName}`).replace("./style.css", `./${setupCssName}`));
+if (!preview) {
+  await mkdir(`${output}/pair`, { recursive: true });
+  await build({ entryPoints: ["web/pair/app.mjs"], bundle: true, format: "esm", outfile: `${output}/pair/app.js`, minify: true, target: "es2022" });
+  await writeFile(`${output}/pair/index.html`, (await readFile("web/pair/index.html", "utf8")).replace("/setup/style.css", `/setup/${setupCssName}`));
+  await cp("web/guide", `${output}/guide`, { recursive: true });
+  await writeFile(`${output}/guide/index.html`, (await readFile("web/guide/index.html", "utf8")).replace("/setup/style.css", `/setup/${setupCssName}`));
+}
 console.log(
   `Web build complete: ${output}/ (${mode})`,
 );

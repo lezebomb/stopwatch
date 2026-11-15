@@ -2,6 +2,8 @@
 
 基于 M5Stack StopWatch C152 和官方 Muse SDK，在 v0.1 上扩展签名 OTA、自动发布、在线演示及 Windows 后台交付。当前正式版本 **[0.2.4](https://github.com/lezebomb/stopwatch/releases/tag/v0.2.4)**。
 
+**0.2.5 交互候选版**：黄键短按进入 AI、长按进入 Muse，蓝键打开设置，红键短按熄屏/唤醒、长按确认后由官方 PMIC 关机；子页右滑返回。手机扫挂件二维码、输入设备验证码后直接进入控制台，网络单独配置。保留原控制端授权；新管理手机只管理照片/设置，额外手机默认只读。候选版已生产验签并只更新本机应用槽，静音、账户与照片保留；热点暂未恢复和真实手机/手指验收的状态见 PROGRESS。不会自动安装或冒充已发布稳定版本。
+
 **实机进展** 已验证照片、配网、授权和无线相册。Codex 此前已通过公网完成网页下单、双工作区真实执行、追加、中断、按次审批、挂件快捷下单和无线 Miao 联动；本轮发现本机桥接安装目录缺失，须重新完成图形安装与授权验收。Muse 云端 Noise 与文字对话已通过，国内热点可经受认证的 VPS 加密出口独立连接，手机无需代理共享。生产根可信首次安装、正式签名 OTA 换槽/健康确认、确认前复位回滚及数据保留现已实测通过。挂件持续静音，极端 RAM 低水位仍待改善，生产自动安装保持关闭。[硬件测试记录](HARDWARE_TEST.md)
 
 **[打开在线隔离演示](https://lezebomb.github.io/stopwatch/)**：无需下载仓库、运行 Node 或安装 APK。发布状态以 GitHub Actions 为准。演示任务、配对和更新均为 Mock，图片仅在浏览器内存处理；不连接真实 Codex，不具备公网执行权限。
@@ -89,13 +91,13 @@ npm.cmd audit
 
 ## 手机扫码配网
 
-挂件照片页左上角「手机配网」显示二维码，用 Android Chrome 打开 [蓝牙配网页](https://fym.lezebomb.top/setup/)，选择 MuseGadget 并输入挂件显示的六位配对码，然后在手机输入已有 Wi-Fi 或手机热点的名称、密码。无需电脑或 APK；网络由官方 Muse SDK 保存（最多8个）并按范围自动重连。手机热点可以保持开启，必须兼容2.4GHz。手机网页不能替设备连接5GHz热点。
+交互候选版用蓝键 → 网络 → 手机扫码设置网络，用 Android Chrome 打开 [蓝牙配网页](https://fym.lezebomb.top/setup/)，选择 MuseGadget 并按系统安全提示连接，然后填写 Wi-Fi 或手机热点。此页只配置网络，不承担手机登录。无需电脑或 APK；网络由官方 Muse SDK 保存（最多8个）并自动重连，热点需兼容 2.4GHz。
 
 本页仅做本地加密蓝牙配网，与 Pages Mock 控制台分离；不上传/持久保存密码，没有任务执行或账号授权入口。需要支持 Web Bluetooth 的浏览器；优先 Android Chrome，Edge按功能检测提示。进入配网页临时开启挂件端手机配网蓝牙并保持唤醒，返回、5分钟到期或重启即结束。照片页尊重用户的 Wi-Fi 开关，休眠和唤醒后的重连由 Muse SDK 管理；首次 Muse 账号授权仍单独进行。真实手机 BLE 配对与联网以 HARDWARE_TEST 现场结果为准。
 
-## 挂件无线同步
+## 挂件无线同步与交付预置
 
-挂件先扫码连上 Wi-Fi。正式控制台的操作者进入「设置 → 绑定 StopWatch」，再打开挂件的「手机配网」，用手机在蓝牙授权页选择设备并确认。两分钟授权码只用一次，之后通过 HTTPS 自动获取相册、默认封面、轮播、边框和 Codex 摘要。设备使用独立只读授权，可在控制台撤销。离线时继续显示已存照片。
+交付者应保留或可信预置挂件的独立中转授权；已有设备无需重建身份。旧维护者流程「设置 → 绑定 StopWatch」仍兼容：一次性票据通过受保护 BLE 交给联网设备。普通手机改用挂件「手机控制」二维码，设备证明通过后直接进入控制台；手机授权不依赖挂件先连 Wi-Fi。之后继续用原 HTTPS 相册事务获取照片、封面、显示设置和 Codex 摘要，离线保留旧图。详见 [手机配对边界](docs/PHONE_PAIRING.md)。
 
 Muse 首次授权需要本人从官方账户创建 SDK token。Windows 本机运行 `./scripts/set-muse-token.ps1 -Port COM5`，在密码框粘贴并保存。命令行入口为 `python scripts/device-sync.py --port COM5 --set-muse-token`，需要 ESP-IDF Python 环境。已有令牌会跳过写入，更换令牌须显式加 `--replace-muse-token`，再按官方流程重新绑定。令牌通过 USB 保存在设备 NVS，随后在 Muse App 的「设置 → 设备」完成配对。语音便签回复显示为文字，语音播放使用支持实时通话的固件和账号。[Muse SDK 官方说明](https://github.com/facebookincubator/muse-gadget-sdk/blob/463bd2a05380fea4211b0099ad0f70933c108b20/esp32/README.md)
 

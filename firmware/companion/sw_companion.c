@@ -32,6 +32,7 @@
 #include "sw_model.h"
 #include "sw_setup_qr.h"
 #include "sw_sync.h"
+#include "sw_phone_pairing.h"
 #include "sw_update_build.h"
 #include "sw_updater.h"
 #include <dirent.h>
@@ -88,6 +89,18 @@ static unsigned egg_day_seen;
 static nvs_handle_t config;
 static bool nvs_ok;
 static atomic_bool audio_silent = true;
+enum { NAV_COVER, NAV_AI, NAV_SETTINGS, NAV_PHONE, NAV_GUIDE, NAV_NETWORK,
+       NAV_DISPLAY, NAV_SYSTEM, NAV_CODEX, NAV_CODEX_PAIR, NAV_CODEX_CONTROL,
+       NAV_MUSE, NAV_SHUTDOWN, NAV_NATIVE_NETWORK, NAV_CODEX_DETAIL };
+static atomic_int nav_route, nav_requested;
+static atomic_bool manual_display_off, nav_awake;
+static atomic_uint injected_buttons;
+static lv_obj_t *nav_panel, *nav_status, *nav_code;
+static int phone_parent = NAV_AI, shutdown_parent = NAV_COVER;
+static void nav_open(int route);
+static void nav_back(void);
+static void nav_tick(void);
+static void nav_gesture(lv_event_t *event);
 
 /* The legacy PEAP profile shared this namespace with user settings. Purge
  * the one live key and obsolete entries, including any old profile versions. */
@@ -183,7 +196,7 @@ int sw_companion_brightness(int requested) {
                              .charging = power.usb || power.charging,
                              .battery = power.battery_pct,
                              .screen = screen,
-                             .idle_s = atomic_load(&setup_active)
+                             .idle_s = (atomic_load(&setup_active) || sw_phone_active())
                                            ? 0
                                            : (unsigned)muse_state_idle_secs(),
                              .brightness = requested,
@@ -191,12 +204,13 @@ int sw_companion_brightness(int requested) {
                              .sleep_after = display_settings.sleep_after})
       .brightness;
 }
-bool sw_companion_controls_sleep(void) { return root && screen != SW_MUSE; }
+bool sw_companion_controls_sleep(void) { return atomic_load(&manual_display_off) || (root && screen != SW_MUSE); }
 bool sw_companion_keep_awake(void) {
+  if (atomic_load(&manual_display_off)) return false;
   muse_power_t power = muse_state_power();
   /* Bridge the short interval until the UI consumes an unplug edge and
    * resets idle. The input task must not sleep on the old charging idle. */
-  return atomic_load(&setup_active) ||
+  return atomic_load(&setup_active) || sw_phone_active() ||
          (root && screen != SW_MUSE &&
           (power.usb || power.charging ||
            (atomic_load(&external_power_seen) &&
@@ -837,6 +851,31 @@ static bool device_console_locked(const char *line) {
     cJSON_Delete(request);
     return true;
   }
+  if (!strcmp(op, "ui.status")) {
+    printf("@sw {\"id\":%d,\"ok\":true,\"route\":%d,\"asleep\":%s,\"manualOff\":%s,\"silent\":%s}\n", id,
+           atomic_load(&nav_route), muse_state_asleep() ? "true" : "false",
+           atomic_load(&manual_display_off) ? "true" : "false", sw_companion_audio_silent() ? "true" : "false");
+    fflush(stdout); cJSON_Delete(request); return true;
+  }
+  if (!strcmp(op, "ui.input")) {
+    const char *key = cJSON_GetStringValue(cJSON_GetObjectItem(request, "key"));
+    const char *edge = cJSON_GetStringValue(cJSON_GetObjectItem(request, "edge"));
+    if (!key || !edge || (strcmp(edge, "press") && strcmp(edge, "release") && strcmp(edge, "long"))) goto done;
+    bool press = !strcmp(edge, "press"); unsigned ev = 0;
+    if (!strcmp(key, "yellow") && strcmp(edge, "long")) ev = press ? MUSE_BTN_TALK_PRESS : MUSE_BTN_TALK_RELEASE;
+    else if (!strcmp(key, "blue") && strcmp(edge, "long")) ev = press ? MUSE_BTN_SPEAKER_PRESS : MUSE_BTN_SPEAKER_RELEASE;
+    else if (!strcmp(key, "red")) ev = !strcmp(edge, "long") ? MUSE_BTN_POWER_LONG : press ? MUSE_BTN_POWER_PRESS : MUSE_BTN_POWER_RELEASE;
+    if (!ev) goto done; // Never synthesize a power cut.
+    atomic_fetch_or(&injected_buttons, ev); error = NULL; goto done;
+  }
+  if (!strcmp(op, "ui.open")) {
+    const cJSON *route = cJSON_GetObjectItem(request, "route");
+    if (!cJSON_IsNumber(route) || route->valueint < NAV_COVER || route->valueint > NAV_CODEX_DETAIL) goto done;
+    atomic_store(&nav_requested, route->valueint + 1); error = NULL; goto done;
+  }
+  if (!strcmp(op, "ui.back")) {
+    sw_companion_native_back(); error = NULL; goto done;
+  }
 #if !SW_UPDATE_PRODUCTION
   if (!strcmp(op, "memory.dma")) {
     sw_memory_dma_dump();
@@ -1164,14 +1203,7 @@ static void touch(lv_event_t *event) {
   muse_state_poke();
   if (lv_event_get_code(event) == LV_EVENT_GESTURE) {
     lv_dir_t direction = lv_indev_get_gesture_dir(lv_indev_active());
-    if (direction == LV_DIR_LEFT)
-      screen = (screen + 1) % SW_SCREEN_COUNT;
-    else if (direction == LV_DIR_RIGHT)
-      screen = (screen + SW_SCREEN_COUNT - 1) % SW_SCREEN_COUNT;
-    else
-      return;
-    egg = false;
-    show();
+    if (direction == LV_DIR_RIGHT) nav_back();
     return;
   }
   if (lv_event_get_code(event) != LV_EVENT_CLICKED)
@@ -1201,27 +1233,7 @@ static void touch(lv_event_t *event) {
 }
 static void back(lv_event_t *event) {
   (void)event;
-  screen = SW_PHOTOS;
-  show();
-  muse_state_poke();
-}
-static void page(lv_event_t *event) {
-  screen = (sw_screen_t)(uintptr_t)lv_event_get_user_data(event);
-  egg = false;
-  if (screen == SW_MUSE)
-    sw_companion_native_page(false);
-  show();
-  muse_state_poke();
-}
-static void open_settings(lv_event_t *event) {
-  (void)event;
-  if (!sw_companion_native_page(true)) {
-    lv_label_set_text(caption, "设置尚未就绪");
-    return;
-  }
-  screen = SW_MUSE;
-  egg = false;
-  show();
+  nav_back();
   muse_state_poke();
 }
 static void navigation_style(lv_obj_t *button) {
@@ -1318,17 +1330,18 @@ static void codex_close(lv_event_t *event) {
   (void)event;
   if (codex_panel) { lv_obj_delete(codex_panel); codex_panel = NULL; }
 }
+static void codex_back(lv_event_t *event) { (void)event; nav_back(); }
 static void codex_action(lv_event_t *event) {
   const char *action = lv_event_get_user_data(event);
   const char *decision = "";
   if (!strcmp(action, "accept") || !strcmp(action, "decline")) { decision = action; action = "approve"; }
   sw_sync_codex_submit(action, codex_choices.id, codex_choices.approval, decision);
-  codex_close(NULL);
+  nav_open(NAV_CODEX_DETAIL);
 }
 static void codex_select(lv_event_t *event) {
   unsigned index = (unsigned)(uintptr_t)lv_event_get_user_data(event);
   if (index < codex_choices.count) sw_sync_codex_submit("focus", codex_choices.ids[index], NULL, NULL);
-  codex_close(NULL);
+  nav_open(NAV_CODEX_DETAIL);
 }
 static void codex_row(lv_obj_t *parent, const char *text, lv_event_cb_t callback, void *data) {
   lv_obj_t *button = lv_button_create(parent);
@@ -1344,8 +1357,10 @@ static void codex_open(lv_event_t *event) {
   codex_panel = lv_obj_create(lv_screen_active()); lv_obj_set_size(codex_panel, 466, 466); lv_obj_center(codex_panel);
   lv_obj_set_style_bg_color(codex_panel, lv_color_hex(0x122521), 0); lv_obj_set_style_text_font(codex_panel, &companion_font, 0);
   lv_obj_remove_flag(codex_panel, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(codex_panel, nav_gesture, LV_EVENT_GESTURE, NULL);
   lv_obj_t *list = lv_obj_create(codex_panel); lv_obj_set_size(list, 330, 300); lv_obj_center(list);
   lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN); lv_obj_remove_flag(list, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(list, nav_gesture, LV_EVENT_GESTURE, NULL);
   lv_obj_t *label = lv_label_create(list); lv_obj_set_width(label, 292);
   lv_label_set_text(label, codex_choices.detail[0] ? codex_choices.detail : "请先从手机创建任务");
   for (unsigned i = 0; i < codex_choices.count; i++) codex_row(list, codex_choices.titles[i], codex_select, (void *)(uintptr_t)i);
@@ -1360,18 +1375,19 @@ static void codex_open(lv_event_t *event) {
       codex_row(list, "新建只读检查任务", codex_action, "start");
     }
   } else { label = lv_label_create(list); lv_obj_set_width(label, 292); lv_label_set_text(label, "请在手机授权快捷操作\n离线时不发送任务"); }
-  codex_row(list, "返回", codex_close, NULL);
+  codex_row(list, "返回", codex_back, NULL);
 }
+#include "sw_navigation.inc"
 static void show(void) {
   sw_sync_focus(screen == SW_CODEX);
   muse_power_t power = muse_state_power();
-  sw_miao_play(screen == SW_CODEX && !egg && !atomic_load(&setup_active) &&
+  sw_miao_play(screen == SW_CODEX && !egg && !nav_panel && !codex_panel && !atomic_load(&setup_active) &&
                    !muse_state_asleep(),
                power.usb || power.charging);
   lv_obj_set_flag(root, LV_OBJ_FLAG_HIDDEN, screen == SW_MUSE);
   lv_obj_set_flag(menu, LV_OBJ_FLAG_HIDDEN, screen != SW_MUSE);
   lv_obj_set_flag(codex_button, LV_OBJ_FLAG_HIDDEN, screen != SW_CODEX);
-  lv_obj_set_flag(phone_button, LV_OBJ_FLAG_HIDDEN, screen == SW_CODEX);
+  if (phone_button) lv_obj_add_flag(phone_button, LV_OBJ_FLAG_HIDDEN);
   if (screen != SW_CODEX) codex_close(NULL);
   lv_obj_set_height(caption, LV_SIZE_CONTENT);
   lv_label_set_long_mode(caption, LV_LABEL_LONG_WRAP);
@@ -1392,7 +1408,7 @@ static void show(void) {
     if (hidden != UINT32_MAX)
       load_photo();
   } else if (screen == SW_PHOTOS) {
-    lv_label_set_text(caption, "轻点换照片 · 左右滑动切换");
+    lv_label_set_text(caption, "");
     load_photo();
   } else if (screen == SW_CODEX) {
     sw_sync_codex_view(&codex_ui);
@@ -1456,7 +1472,7 @@ static void show(void) {
                screen == SW_GUIDE   ? 0
                : screen == SW_CODEX ? 82
                                     : 130);
-  if (!atomic_load(&setup_active))
+  if (!atomic_load(&setup_active) && !nav_panel && !codex_panel)
     lv_obj_move_foreground(root);
 }
 static void tick(lv_timer_t *timer) {
@@ -1473,6 +1489,7 @@ static void tick(lv_timer_t *timer) {
   uint32_t now = lv_tick_get();
   muse_power_t power = muse_state_power();
   bool external = power.usb || power.charging;
+  nav_tick();
   int setup_request = atomic_exchange(&setup_requested, 0);
   if (setup_request > 0)
     open_phone_setup(NULL);
@@ -1564,7 +1581,7 @@ static void tick(lv_timer_t *timer) {
     } else
       free(result.data);
   }
-  sw_miao_play(screen == SW_CODEX && !egg && !atomic_load(&setup_active) &&
+  sw_miao_play(screen == SW_CODEX && !egg && !nav_panel && !codex_panel && !atomic_load(&setup_active) &&
                    !muse_state_asleep() && !muse_voice_in_call(),
                external);
   sw_power_policy_t policy = sw_power_policy((sw_power_input_t){
@@ -1572,7 +1589,7 @@ static void tick(lv_timer_t *timer) {
       .battery = power.battery_pct,
       .screen = screen,
       .idle_s =
-          atomic_load(&setup_active) ? 0 : (unsigned)muse_state_idle_secs(),
+          (atomic_load(&setup_active) || sw_phone_active()) ? 0 : (unsigned)muse_state_idle_secs(),
       .brightness = muse_settings_brightness(),
       .mode = display_settings.mode,
       .sleep_after = display_settings.sleep_after});
@@ -1580,7 +1597,7 @@ static void tick(lv_timer_t *timer) {
     last_power = now;
     if (screen == SW_CODEX && !egg && !codex_online)
       show();
-    if (screen != SW_MUSE) {
+    if (screen != SW_MUSE && !atomic_load(&manual_display_off)) {
       if (!policy.display && !muse_state_asleep())
         muse_state_set_asleep(true);
     }
@@ -1591,6 +1608,7 @@ static void tick(lv_timer_t *timer) {
       status = codex_online ? "在线" : "离线";
     else if (screen == SW_PHOTOS && !muse_wifi_connected())
       status = "未联网";
+    lv_obj_set_flag(status_label, LV_OBJ_FLAG_HIDDEN, screen == SW_PHOTOS);
     lv_label_set_text_fmt(status_label, "%s  %s  %d%%", names[screen], status,
                           power.battery_pct);
     if (policy.pixel_shift) {
@@ -1603,7 +1621,7 @@ static void tick(lv_timer_t *timer) {
     struct tm local;
     gmtime_r(&wall, &local);
     unsigned day = local.tm_year * 366 + local.tm_yday;
-    if (screen == SW_PHOTOS && !egg && !muse_state_asleep() &&
+    if (screen == SW_PHOTOS && !egg && !nav_panel && !atomic_load(&setup_active) && !muse_state_asleep() &&
         local.tm_year >= 126 && local.tm_mon + 1 == display_settings.month &&
         local.tm_mday == display_settings.day && day != egg_day_seen) {
       egg_day_seen = day;
@@ -1611,7 +1629,7 @@ static void tick(lv_timer_t *timer) {
       show();
     }
   }
-  if (slideshow && screen == SW_PHOTOS &&
+  if (slideshow && screen == SW_PHOTOS && !nav_panel && !atomic_load(&setup_active) &&
       now - last_slide >= slide_seconds * 1000) {
     last_slide = now;
     photo = next_photo(photo);
@@ -1744,35 +1762,8 @@ void sw_companion_init(void) {
   lv_obj_align(menu, LV_ALIGN_BOTTOM_MID, 0, -30);
   lv_obj_add_event_cb(menu, back, LV_EVENT_CLICKED, NULL);
   lv_obj_t *back_label = lv_label_create(menu);
-  lv_label_set_text(back_label, "返回照片");
+  lv_label_set_text(back_label, "返回");
   lv_obj_center(back_label);
-  for (unsigned i = 0; i < SW_SCREEN_COUNT; i++) {
-    lv_obj_t *button = lv_button_create(root);
-    navigation_style(button);
-    lv_obj_set_size(button, 68, 42);
-    lv_obj_align(button, LV_ALIGN_CENTER, ((int)i * 72) - 108, 172);
-    lv_obj_add_event_cb(button, page, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
-    lv_obj_t *label = lv_label_create(button);
-    lv_obj_set_style_text_font(label, &companion_font, 0);
-    lv_label_set_text(label, names[i]);
-    lv_obj_center(label);
-  }
-  lv_obj_t *settings_button = lv_button_create(root);
-  navigation_style(settings_button);
-  lv_obj_set_size(settings_button, 100, 42);
-  lv_obj_align(settings_button, LV_ALIGN_CENTER, 100, -145);
-  lv_obj_add_event_cb(settings_button, open_settings, LV_EVENT_CLICKED, NULL);
-  lv_obj_t *settings_label = lv_label_create(settings_button);
-  lv_label_set_text(settings_label, "设置");
-  lv_obj_center(settings_label);
-  phone_button = lv_button_create(root);
-  navigation_style(phone_button);
-  lv_obj_set_size(phone_button, 128, 42);
-  lv_obj_align(phone_button, LV_ALIGN_CENTER, -80, -145);
-  lv_obj_add_event_cb(phone_button, open_phone_setup, LV_EVENT_CLICKED, NULL);
-  lv_obj_t *phone_label = lv_label_create(phone_button);
-  lv_label_set_text(phone_label, "手机配网");
-  lv_obj_center(phone_label);
   codex_button = lv_button_create(root); navigation_style(codex_button);
   lv_obj_set_size(codex_button, 128, 42); lv_obj_align(codex_button, LV_ALIGN_CENTER, -80, -145);
   lv_obj_add_event_cb(codex_button, codex_open, LV_EVENT_CLICKED, NULL);
@@ -1781,6 +1772,7 @@ void sw_companion_init(void) {
   lv_obj_set_size(setup_panel, 466, 466);
   lv_obj_center(setup_panel);
   lv_obj_remove_flag(setup_panel, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(setup_panel, nav_gesture, LV_EVENT_GESTURE, NULL);
   lv_obj_set_style_radius(setup_panel, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_clip_corner(setup_panel, true, 0);
   lv_obj_set_style_pad_all(setup_panel, 0, 0);

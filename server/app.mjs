@@ -9,6 +9,7 @@ import { Store, secret, digest } from "./store.mjs";
 import { createDeviceSync, deviceHardware } from "./device-sync.mjs";
 import { createMuseEgress } from "./muse-egress.mjs";
 import { serveUpdate } from "./update-files.mjs";
+import { createPhonePairing } from "./phone-pairing.mjs";
 import {
   validEvent,
   PHOTO_BYTES,
@@ -75,9 +76,10 @@ export async function createRelay({
   let bridge = null,
     bridgeLastSeen = 0;
   const attempts = new Map();
+  const phones = createPhonePairing(store);
   const authenticated = (req) => {
     const session = store.session(cookie(req));
-    return ["operator", "viewer"].includes(session?.role) ? session : null;
+    return ["operator", "manager", "viewer"].includes(session?.role) ? session : null;
   };
   const originFor = (req) =>
     mode === "production" ? publicOrigin : `http://${req.headers.host}`;
@@ -122,9 +124,20 @@ export async function createRelay({
     photos: store.photos(),
     photoBudget: PHOTO_BUDGET,
     photoLimit: PHOTO_LIMIT,
-    sessions: store.db.prepare("SELECT id,role,revoked FROM sessions").all().map(s => ({ ...s, deviceControl: s.role === "device" && store.deviceControl(s.id) })),
+    photoBytes: PHOTO_BYTES,
+    sessions: store.db.prepare("SELECT s.id,s.role,s.revoked,p.device_id AS phoneDevice,p.codex_control AS codexControl FROM sessions s LEFT JOIN phone_links p ON p.session_id=s.id").all().map(s => ({ ...s, phone: !!s.phoneDevice, deviceControl: s.role === "device" && store.deviceControl(s.id) })),
     cursor: store.events().at(-1)?.seq || 0,
   });
+  const statusFor = session => {
+    const value = status();
+    value.device = deviceSync.telemetry(session.deviceId);
+    if (session.phone) {
+      value.sessions = phones.list(session.deviceId, session.id);
+      value.deviceOnline = deviceSync.present(session.deviceId);
+      value.executionEnabled = value.executionEnabled && session.codexControl === true;
+    }
+    return value;
+  };
   function enqueue(data, actor, res) {
     if (!allowedCommands.includes(data.action) || !/^[\w-]{8,80}$/.test(data.id || "")) return json(res, 400, { error: "无效命令" });
     if (["start", "continue", "steer"].includes(data.action) && (typeof data.text !== "string" || !data.text.trim() || data.text.length > 8000)) return json(res, 400, { error: "指令不能为空或超过 8000 字" });
@@ -177,6 +190,25 @@ export async function createRelay({
           mode,
           bridgeOnline: online(),
         });
+      if (mode === "production" && url.pathname === "/api/phone/session" && req.method === "GET") {
+        const session = authenticated(req), ref = url.searchParams.get("device");
+        const paired = !!session && (!ref || session.deviceRef === ref || session.role === "operator");
+        if (paired) { store.touch(cookie(req)); res.setHeader("Set-Cookie", sessionCookie(cookie(req))); }
+        return json(res, 200, { paired, role: paired ? session.role : null, deviceRef: paired ? session.deviceRef || ref : null });
+      }
+      if (mode === "production" && ["/api/phone/challenge", "/api/phone/complete"].includes(url.pathname) && req.method === "POST") {
+        const data = JSON.parse((await body(req, 2048)).toString());
+        const nonce = /(?:^|;\s*)sw_pair=([A-Za-z0-9_-]{32})(?:;|$)/.exec(req.headers.cookie || "")?.[1];
+        if (url.pathname.endsWith("challenge")) {
+          const browser = secret(), result = phones.begin(data.deviceRef, browser);
+          res.setHeader("Set-Cookie", `sw_pair=${browser}; HttpOnly; SameSite=Strict; Secure; Path=/api/phone; Max-Age=120`);
+          return json(res, 200, result);
+        }
+        if (!nonce) return json(res, 401, { error: "配对已过期，请重新开始" });
+        const session = phones.complete(data, nonce);
+        res.setHeader("Set-Cookie", [sessionCookie(session.token), "sw_pair=; HttpOnly; SameSite=Strict; Secure; Path=/api/phone; Max-Age=0"]);
+        return json(res, 200, { id: session.id, role: session.role, deviceRef: session.deviceRef, next: `/?device=${session.deviceRef}` });
+      }
       if (url.pathname === "/api/bridge/revoke-self" && req.method === "POST") {
         const token = req.headers.authorization?.replace(/^Bearer /, "") || "";
         const enrolled = store.session(token);
@@ -264,7 +296,11 @@ export async function createRelay({
             const snapshot = await deviceSync.snapshot(device.id);
             if (!store.session(token)) return json(res, 401, { error: "挂件授权已失效" });
             store.touch(token);
-            deviceSync.markSeen(device.id);
+            let telemetry;
+            try { telemetry = JSON.parse(req.headers["x-sw-status"] || "null"); } catch {}
+            deviceSync.markSeen(device.id, telemetry);
+            for (const ws of sockets) if (!ws.phoneDeviceId || ws.phoneDeviceId === device.id)
+              send(ws, { type: "device", online: true, status: deviceSync.telemetry(device.id) });
             return json(res, 200, snapshot);
           }
           const data = await deviceSync.photo(devicePhoto[1]);
@@ -293,8 +329,18 @@ export async function createRelay({
         if (!session) return json(res, 401, { error: "请先配对" });
         store.touch(cookie(req));
         res.setHeader("Set-Cookie", sessionCookie(cookie(req)));
-        if (req.method !== "GET" && session.role !== "operator")
+        const managerWrite = session.role === "manager" && (["/api/photos", "/api/settings", "/api/phone/access"].includes(url.pathname) || /^\/api\/photos\/[a-f0-9-]{36}$/.test(url.pathname));
+        const delegatedControl = session.codexControl === true && ["/api/commands", "/api/bridge/tickets"].includes(url.pathname);
+        if (req.method !== "GET" && session.role !== "operator" && !managerWrite && !delegatedControl && url.pathname !== "/api/phone/access")
           return json(res, 403, { error: "只读设备不可执行操作" });
+        if (url.pathname === "/api/phone/access" && req.method === "POST") {
+          const data = JSON.parse((await body(req, 1024)).toString());
+          const current = authenticated(req);
+          if (!current) return json(res, 401, { error: "手机授权已失效" });
+          phones.change(current, data.id, data.role, data.reviewed === true);
+          for (const ws of sockets) if (ws.sessionId === data.id) ws.close(4001, "authorization changed");
+          return json(res, 200, { ok: true });
+        }
         if (url.pathname === "/api/device/permissions" && req.method === "POST") {
           const data = JSON.parse((await body(req, 1024)).toString());
           if (typeof data.enabled !== "boolean" || !store.db.prepare("SELECT id FROM sessions WHERE id=? AND role='device' AND revoked=0 AND expires>?").get(data.id, Date.now())) return json(res, 400, { error: "有效挂件必需" });
@@ -313,7 +359,7 @@ export async function createRelay({
           return json(res, 200, ticket);
         }
         if (url.pathname === "/api/state" && req.method === "GET")
-          return json(res, 200, { ...status(), session });
+          return json(res, 200, { ...statusFor(session), session });
         if (url.pathname === "/api/events" && req.method === "GET") {
           const after = Number(url.searchParams.get("after") || 0);
           if (!Number.isSafeInteger(after) || after < 0)
@@ -345,7 +391,7 @@ export async function createRelay({
           deviceSync.forget(id);
           if (bridge?.sessionId === id) bridge.close(4001, "revoked");
           for (const ws of sockets)
-            if (ws.sessionId === id) ws.close(4001, "revoked");
+            if (ws.sessionId === id || ws.phoneDeviceId === id) ws.close(4001, "revoked");
           return json(res, 200, { ok: true });
         }
         if (url.pathname === "/api/settings" && req.method === "POST") {
@@ -421,9 +467,15 @@ export async function createRelay({
           if (++rate.count > 40)
             return json(res, 429, { error: "指令过于频繁，请稍后重试" });
           const data = JSON.parse((await body(req)).toString());
+          if (session.phone && !authenticated(req)?.codexControl) return json(res, 403, { error: "Codex 控制授权已撤销" });
           return enqueue(data, session.id, res);
         }
         if (url.pathname === "/api/photos" && req.method === "POST") {
+          if (store.photos().length >= PHOTO_LIMIT) return json(res, 409, { error: "相册数量已满，请先自行选择要删除的照片；旧封面保留" });
+          const report = deviceSync.telemetry(session.deviceId);
+          if (report?.online && Number.isSafeInteger(report.storageTotal) && Number.isSafeInteger(report.storageUsed) &&
+              report.storageUsed + PHOTO_BYTES + 65536 > Math.floor(report.storageTotal * .85))
+            return json(res, 409, { error: "挂件当前可用空间不足，旧照片保留；压缩上传的 JPEG 不会减少固定 RGB565 占用" });
           const input = await body(req, 8 * 1024 * 1024);
           const image = sharp(input, {
             limitInputPixels: 24000000,
@@ -529,6 +581,8 @@ export async function createRelay({
         ? "index.html"
         : ["/setup", "/setup/"].includes(url.pathname)
           ? "setup/index.html"
+          : ["/pair", "/pair/"].includes(url.pathname) ? "pair/index.html"
+          : ["/guide", "/guide/"].includes(url.pathname) ? "guide/index.html"
           : url.pathname.slice(1);
       const root = path.resolve(webRoot),
         file = path.resolve(root, filename);
@@ -654,9 +708,10 @@ export async function createRelay({
       return socket.destroy();
     wss.handleUpgrade(req, socket, head, (ws) => {
       ws.sessionId = session.id;
+      ws.phoneDeviceId = session.deviceId || null;
       sockets.add(ws);
       ws.on("close", () => sockets.delete(ws));
-      send(ws, { type: "snapshot", state: status() });
+      send(ws, { type: "snapshot", state: statusFor(session) });
       const after = Number(
         new URL(req.url, "http://localhost").searchParams.get("after") || 0,
       );
@@ -671,12 +726,12 @@ export async function createRelay({
       if (
         !store.db
           .prepare(
-            "SELECT id FROM sessions WHERE id=? AND revoked=0 AND expires>?",
+            "SELECT s.id FROM sessions s LEFT JOIN phone_links p ON p.session_id=s.id WHERE s.id=? AND s.revoked=0 AND s.expires>? AND (p.device_id IS NULL OR EXISTS(SELECT 1 FROM sessions d WHERE d.id=p.device_id AND d.role='device' AND d.revoked=0 AND d.expires>?))",
           )
-          .get(ws.sessionId, Date.now())
+          .get(ws.sessionId, Date.now(), Date.now())
       )
         ws.close(4001, "expired");
-      else send(ws, { type: "bridge", online: online(), deviceOnline: deviceSync.present() });
+      else send(ws, { type: "bridge", online: online(), deviceOnline: deviceSync.present(ws.phoneDeviceId) });
     }
     if (bridge && !online()) bridge.terminate();
   }, 15000);

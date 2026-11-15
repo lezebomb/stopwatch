@@ -25,6 +25,12 @@ export class Store {
       CREATE TABLE IF NOT EXISTS photos(id TEXT PRIMARY KEY, name TEXT, bytes INTEGER, created INTEGER);
       CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, time INTEGER, actor TEXT, action TEXT);`);
     this.db.exec("CREATE TABLE IF NOT EXISTS device_controls(id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0)");
+    this.db.exec(`CREATE TABLE IF NOT EXISTS phone_links(session_id TEXT PRIMARY KEY, device_id TEXT NOT NULL, ref TEXT NOT NULL, created INTEGER NOT NULL, codex_control INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS phone_owners(device_id TEXT PRIMARY KEY, session_id TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS phone_claims(id TEXT PRIMARY KEY, device_id TEXT NOT NULL, ref TEXT NOT NULL, browser_hash TEXT NOT NULL,
+        expires INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, used INTEGER NOT NULL DEFAULT 0);`);
+    if (!this.db.prepare("PRAGMA table_info(phone_links)").all().some(c => c.name === "codex_control"))
+      this.db.exec("ALTER TABLE phone_links ADD COLUMN codex_control INTEGER NOT NULL DEFAULT 0");
     const columns = this.db.prepare("PRAGMA table_info(commands)").all().map(c => c.name);
     if (!columns.includes("receipt")) this.db.exec("ALTER TABLE commands ADD COLUMN receipt TEXT");
     this.db
@@ -32,6 +38,7 @@ export class Store {
       .run(JSON.stringify(defaultSettings));
   }
   pruneTickets(now = Date.now()) {
+    this.db.prepare("DELETE FROM phone_claims WHERE expires<=?").run(now);
     return this.db.prepare("DELETE FROM tickets WHERE expires <= ?").run(now).changes;
   }
   ticket(role = "operator", now = Date.now()) {
@@ -81,11 +88,16 @@ export class Store {
     return { token, id, role: ticket.role };
   }
   session(token, now = Date.now()) {
-    return this.db
+    const session = this.db
       .prepare(
         "SELECT id,role FROM sessions WHERE hash=? AND expires>? AND revoked=0",
       )
       .get(digest(token), now);
+    if (!session) return session;
+    const phone = this.db.prepare("SELECT device_id AS deviceId,ref AS deviceRef,codex_control AS codexControl FROM phone_links WHERE session_id=?").get(session.id);
+    if (!phone) return session;
+    if (!this.db.prepare("SELECT id FROM sessions WHERE id=? AND role='device' AND revoked=0 AND expires>?").get(phone.deviceId, now)) return undefined;
+    return { ...session, ...phone, codexControl: session.role === "manager" && phone.codexControl === 1, phone: true };
   }
   touch(token, now = Date.now()) {
     this.db
@@ -98,6 +110,7 @@ export class Store {
     this.db.prepare("UPDATE sessions SET revoked=1 WHERE id=?").run(id);
     this.audit(id, "revoked");
     this.db.prepare("DELETE FROM device_controls WHERE id=?").run(id);
+    this.pending(); // Revoke delivery of unacknowledged phone commands as well.
   }
   deviceControl(id, enabled) {
     if (typeof enabled === "boolean") this.db.prepare("INSERT OR REPLACE INTO device_controls VALUES (?,?)").run(id, enabled ? 1 : 0);
@@ -234,7 +247,13 @@ export class Store {
     return this.db
       .prepare("SELECT value FROM commands WHERE done=0")
       .all()
-      .map((row) => JSON.parse(row.value));
+      .map((row) => JSON.parse(row.value)).filter(command => {
+        const phone = this.db.prepare("SELECT s.role,s.revoked,s.expires,p.codex_control,d.revoked AS device_revoked,d.expires AS device_expires FROM phone_links p JOIN sessions s ON s.id=p.session_id JOIN sessions d ON d.id=p.device_id WHERE p.session_id=?").get(command.actor || "");
+        if (!phone || (phone.role === "manager" && phone.codex_control === 1 && !phone.revoked && !phone.device_revoked && phone.expires > Date.now() && phone.device_expires > Date.now())) return true;
+        this.commandStatus({ commandId: command.id, stage: "uncertain", message: "手机权限已撤销，停止重发；若电脑已接收，请核对官方任务状态" });
+        this.ack(command.id);
+        return false;
+      });
   }
   ack(id) {
     this.db.prepare("UPDATE commands SET done=1 WHERE id=?").run(id);

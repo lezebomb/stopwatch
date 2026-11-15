@@ -1,4 +1,5 @@
 #include "sw_sync.h"
+#include "sw_companion.h"
 #include "sw_updater.h"
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
@@ -237,6 +238,10 @@ static esp_http_client_handle_t open_request(const char *path,
   if (body)
     ok = ok && esp_http_client_set_header(client, "Content-Type",
                                           "application/json") == ESP_OK;
+  if (!strcmp(path, "/api/device/sync")) {
+    char status_json[224]; sw_companion_device_status(status_json, sizeof(status_json));
+    ok = ok && esp_http_client_set_header(client, "X-SW-Status", status_json) == ESP_OK;
+  }
   if (offset) {
     char range[24];
     snprintf(range, sizeof(range), "bytes=%u-", (unsigned)offset);

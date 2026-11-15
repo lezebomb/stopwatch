@@ -28,9 +28,12 @@ $cachedConfig = Join-Path $buildRoot 'sdkconfig'
 if (Test-Path -LiteralPath $cachedConfig) {
     $configText = [IO.File]::ReadAllText($cachedConfig)
     $mainStack = [regex]::Match($configText, '(?m)^CONFIG_ESP_MAIN_TASK_STACK_SIZE=(\d+)\r?$')
+    if ($configText -match '(?m)^# CONFIG_LV_USE_QRCODE is not set\r?$') {
+        $configText = [regex]::Replace($configText, '(?m)^# CONFIG_LV_USE_QRCODE is not set\r?$', 'CONFIG_LV_USE_QRCODE=y')
+    }
     if ($Release) {
         $keyPath = (Resolve-Path -LiteralPath $env:SW_SIGNING_KEY_PATH).Path.Replace('\','/')
-        $configText = [regex]::Replace($configText, '(?m)^CONFIG_SECURE_BOOT_SIGNING_KEY=.*$', ('CONFIG_SECURE_BOOT_SIGNING_KEY="'+$keyPath+'"'))
+        $configText = [regex]::Replace($configText, '(?m)^CONFIG_SECURE_BOOT_SIGNING_KEY=[^\r\n]*', ('CONFIG_SECURE_BOOT_SIGNING_KEY="'+$keyPath+'"'))
     }
     if ($mainStack.Success -and [int]$mainStack.Groups[1].Value -lt 9216) {
         $configText = [regex]::Replace($configText, '(?m)^CONFIG_ESP_MAIN_TASK_STACK_SIZE=\d+\r?$', 'CONFIG_ESP_MAIN_TASK_STACK_SIZE=9216')
@@ -41,7 +44,7 @@ Push-Location $sdkRoot
 try {
     $buildArguments = @('-B', $buildRoot)
     $cacheFile = Join-Path $buildRoot 'CMakeCache.txt'
-    $reuseConfiguration = (Test-Path -LiteralPath $cacheFile) -and (Test-Path -LiteralPath (Join-Path $buildRoot 'build.ninja')) -and -not $Release
+    $reuseConfiguration = (Test-Path -LiteralPath $cacheFile) -and (Test-Path -LiteralPath (Join-Path $buildRoot 'build.ninja'))
     if ($reuseConfiguration) {
         $cacheText = [IO.File]::ReadAllText($cacheFile)
         foreach ($entry in @{IDF_TARGET='esp32s3';PROJECT_VER=$version;SW_FACTORY_ASSETS=$factory;SDKCONFIG_DEFAULTS=$defaults}.GetEnumerator()) {

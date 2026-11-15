@@ -123,7 +123,7 @@ test("photo conversion, malformed images, quota, deletion and default fallback",
   });
   assert.equal(bad.status, 400);
   for (let i = 1; i < 12; i++) assert.equal((await upload()).status, 201);
-  assert.equal((await upload()).status, 400);
+  assert.equal((await upload()).status, 409);
   assert.equal((await api(`photos/${photo.id}`, {}, "DELETE")).status, 200);
   assert.equal((await api("state")).body.settings.defaultPhoto, "builtin-0");
 });

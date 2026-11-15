@@ -52,6 +52,9 @@ for (const file of [
   "sw_muse_proxy.h",
   "sw_muse_egress.c",
   "sw_muse_egress.h",
+  "sw_phone_pairing.c",
+  "sw_phone_pairing.h",
+  "sw_navigation.inc",
 ])
   await writeChanged(
     `${component}/${file}`,
@@ -61,7 +64,7 @@ for (const file of [
 let cmake = git(["show", "HEAD:esp32/components/muse/CMakeLists.txt"]);
 cmake = cmake.replace(
   '"muse_app.c"',
-  '"muse_app.c"\n        "sw_companion.c"\n        "sw_model.c"\n        "sw_update_core.c"\n        "sw_updater.c"\n        "sw_updater_ui.c"\n        "sw_sync.c"\n        "sw_miao.c"\n        "sw_memory.c"\n        "sw_muse_proxy.c"\n        "sw_muse_egress.c"',
+  '"muse_app.c"\n        "sw_companion.c"\n        "sw_model.c"\n        "sw_update_core.c"\n        "sw_updater.c"\n        "sw_updater_ui.c"\n        "sw_sync.c"\n        "sw_miao.c"\n        "sw_memory.c"\n        "sw_muse_proxy.c"\n        "sw_muse_egress.c"\n        "sw_phone_pairing.c"',
 );
 cmake = cmake.replace(
   "idf_component_register(",
@@ -126,8 +129,24 @@ ui = ui.replace(
 );
 if (!ui.includes("s_settings = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_LEFT);"))
   throw new Error("Upstream settings tile changed");
-ui +=
-  "\nbool sw_companion_native_page(bool settings) {\n    if (!s_tv || !s_settings || !s_face) return false;\n    lv_tileview_set_tile(s_tv, settings ? s_settings : s_face, LV_ANIM_OFF);\n    update_tileview_swipe();\n    return true;\n}\n";
+ui += `
+static void sw_native_back(lv_event_t *event) {
+    (void)event;
+    if (lv_indev_get_gesture_dir(lv_indev_active()) == LV_DIR_RIGHT) sw_companion_native_back();
+}
+bool sw_companion_native_page(bool settings) {
+    if (!s_tv || !s_settings || !s_face) return false;
+    static bool hooked;
+    if (!hooked) {
+        lv_obj_add_event_cb(s_face, sw_native_back, LV_EVENT_GESTURE, NULL);
+        lv_obj_add_event_cb(s_settings, sw_native_back, LV_EVENT_GESTURE, NULL);
+        hooked = true;
+    }
+    lv_tileview_set_tile(s_tv, settings ? s_settings : s_face, LV_ANIM_OFF);
+    lv_obj_remove_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE);
+    return true;
+}
+`;
 await writeChanged(`${component}/muse_ui.c`, ui);
 let app = git(["show", "HEAD:esp32/components/muse/muse_app.c"]);
 app = '#include "sw_memory.h"\n#include "sw_sync.h"\n#include "sw_updater.h"\n' + app;
@@ -219,6 +238,14 @@ input =
     '    if (sw_companion_keep_awake()) {\n        if (muse_state_asleep()) set_asleep(false, "charging cover");\n        return;\n    }\n    if (sw_companion_controls_sleep()) return;\n' +
       sleepHook,
   );
+const inputPoll = "unsigned ev = muse_board->poll_buttons() | atomic_exchange(&s_touch_talk_events, 0);";
+const directPowerOff = "        if (s_talk_down) talk_button(MUSE_BTN_TALK_RELEASE);\n        power_off();";
+if (!input.includes(inputPoll) || !input.includes(directPowerOff)) throw new Error("Upstream physical input changed");
+input = input.replace(inputPoll, "unsigned ev = sw_companion_buttons(muse_board->poll_buttons()) | atomic_exchange(&s_touch_talk_events, 0);\n        if (sw_companion_audio_silent()) ev &= ~(MUSE_BTN_TALK_PRESS | MUSE_BTN_TALK_RELEASE);")
+  .replace(directPowerOff, "        if (s_talk_down) talk_button(MUSE_BTN_TALK_RELEASE);\n        sw_companion_shutdown_prompt();")
+  .replace('if (!s_power_swallow) set_asleep(true, muse_board->power_button);', 'if (!s_power_swallow) { sw_companion_manual_sleep(true); set_asleep(true, muse_board->power_button); }')
+  .replace('if (s_power_swallow) set_asleep(false, muse_board->power_button);', 'if (s_power_swallow) { sw_companion_manual_sleep(false); set_asleep(false, muse_board->power_button); }');
+input += '\nvoid sw_companion_input_wake(void) { sw_companion_manual_sleep(false); set_asleep(false, "companion button"); }\n';
 await writeChanged(`${component}/muse_input.c`, input);
 // Companion health checks replace the Link-only WS validation on this profile.
 let mainApp = git(["show", "HEAD:esp32/main/app.c"]);
@@ -392,7 +419,7 @@ await writeChanged(`${sdk}/main/link_pairing.c`, linkPairing);
 // Restore the pinned source even when reusing a build with the retired PEAP patch.
 await writeChanged(`${sdk}/main/wifi_mgr.c`, git(["show", "HEAD:esp32/main/wifi_mgr.c"]));
 let settingsUi = git(["show", "HEAD:esp32/components/muse/muse_settings_ui.c"]);
-settingsUi = '#include "sw_updater.h"\n' + settingsUi;
+settingsUi = '#include "sw_updater.h"\n#include "sw_companion.h"\n' + settingsUi;
 const settingsHook =
   '    row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_home_battery, on_nav, (void *)&BATTERY);';
 if (!settingsUi.includes(settingsHook))
@@ -402,6 +429,19 @@ settingsUi = settingsUi.replace(
   settingsHook +
     '\n    row(list, LV_SYMBOL_REFRESH, "Software update", NULL, sw_update_settings_open, NULL);',
 );
+const settingsBack = '        lv_indev_wait_release(lv_indev_active());\n        go_back();';
+if (!settingsUi.includes(settingsBack)) throw new Error("Upstream settings gesture changed");
+settingsUi = settingsUi.replace(settingsBack, '        lv_indev_wait_release(lv_indev_active());\n        sw_companion_native_back();');
+settingsUi += `
+bool sw_companion_official_network(void) {
+    if (!s_tile || !s_home) return false;
+    if (s_current == s_text) close_text();
+    show(s_home);
+    if (!s_wifi) build_wifi_page(s_tile);
+    show(s_wifi);
+    return true;
+}
+`;
 await writeChanged(`${component}/muse_settings_ui.c`, settingsUi);
 let settings = git(["show", "HEAD:esp32/components/muse/muse_settings.c"]);
 const bleSettingHook = "bool muse_settings_ble_on(void) { return s.ble_on; }";
@@ -426,18 +466,34 @@ const bleSecret = 'bool secret = !strcmp(cmd, "wifi.pass") || !strncmp(cmd, "hat
 const bleCommands = '    } else if (!strcmp(cmd, "wifi.forget")) {';
 if (!ble.includes(bleSecret) || !ble.includes(bleCommands))
   throw new Error("Upstream encrypted phone command hook changed");
-ble = '#include "sw_companion.h"\n#include "sw_sync.h"\n' + ble
+ble = '#include "sw_companion.h"\n#include "sw_sync.h"\n#include "sw_phone_pairing.h"\n' + ble
+  .replace('static char s_last[64]', 'static char s_last[96]')
+  .replace('last_e[128]', 'last_e[192]')
+  .replace('    int n;\n    const char *res = "ok";', '    int n;\n    char phone_result[65];\n    const char *res = "ok";')
   .replace(bleCommand, "static void run_command(char *cmd, bool phone)")
   .replace(bleSave, bleSave + "\n            if (phone) sw_companion_phone_network(s_pending_ssid);")
   .replace("    run_command(cmd);\n}", "    run_command(cmd, false);\n}")
   .replace("            run_command(cmd);", "            run_command(cmd, true);")
-  .replace(bleSecret, bleSecret.replace('!strcmp(cmd, "wifi.pass")', '!strcmp(cmd, "sync.enroll") || !strcmp(cmd, "wifi.pass")'))
-  .replace(bleCommands, `    } else if (!strcmp(cmd, "sync.enroll")) {
+  .replace(bleSecret, bleSecret.replace('!strcmp(cmd, "wifi.pass")', '!strncmp(cmd, "phone.", 6) || !strcmp(cmd, "sync.enroll") || !strcmp(cmd, "wifi.pass")'))
+  .replace(bleCommands, `    } else if (!strncmp(cmd, "phone.", 6)) {
+        if (!phone || !sw_phone_active()) res = "closed";
+        else if (!strcmp(cmd, "phone.ref")) res = sw_phone_ref(phone_result) ? phone_result : "unprepared";
+        else if (!strcmp(cmd, "phone.begin")) res = sw_phone_begin(v) ? "ok" : "busy";
+        else if (!strcmp(cmd, "phone.prove")) res = sw_phone_prove(v, phone_result);
+        else res = "unknown";
+        memset(v, 0, strlen(v));
+    } else if (!strcmp(cmd, "sync.enroll")) {
         if (!phone || !sw_sync_enroll(v)) res = "error: setup unavailable";
         memset(v, 0, strlen(v));
     } else if (!strcmp(cmd, "sync.status")) {
         res = sw_sync_pair_state();
 ${bleCommands}`);
+const phoneStatusHook = '    return snprintf(out, len,\n                    "{\\"name\\":';
+if (!ble.includes(phoneStatusHook)) throw new Error("Upstream BLE status changed");
+ble = ble.replace(phoneStatusHook, `    if (!strncmp(s_last, "phone.", 6))
+        return snprintf(out, len, "{\\"name\\":\\"%s\\",\\"fw\\":\\"%s\\",\\"wifi\\":{\\"state\\":\\"%s\\",\\"ssid\\":\\"%s\\"},\\"last\\":\\"%s\\"}",
+            s_name, esp_app_get_description()->version, wifi_state_name(w.state), ssid_e, last_e);
+` + phoneStatusHook);
 await writeChanged(`${component}/muse_ble.c`, ble);
 let board = git([
   "show",

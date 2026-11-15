@@ -20,18 +20,19 @@ function usage(value) {
 export function createDeviceSync(store, directory, bridgeOnline, { allowExecution = false } = {}) {
   const hashes = new Map();
   const seen = new Map();
+  const reports = new Map();
   const photoPath = id => path.join(directory, `${id}.rgb565`);
   async function photoBytes(id) {
     const data = await readFile(photoPath(id));
     if (data.length !== PHOTO_BYTES) throw new Error("Invalid device photo size");
     return data;
   }
-  function present() {
+  function present(deviceId) {
     const now = Date.now();
     for (const [id, last] of seen) {
       if (now - last > 90000) seen.delete(id);
     }
-    return seen.size > 0;
+    return deviceId ? seen.has(deviceId) : seen.size > 0;
   }
   async function snapshot(deviceId) {
     const entries = store.photos();
@@ -89,11 +90,22 @@ export function createDeviceSync(store, directory, bridgeOnline, { allowExecutio
   return {
     present,
     snapshot,
-    markSeen(id) {
+    telemetry(id) {
+      if (!id) id = [...seen.keys()].at(-1);
+      const report = reports.get(id);
+      return report ? { ...report, online: present(id) } : null;
+    },
+    markSeen(id, report) {
       present();
       seen.set(id, Date.now());
+      if (report && typeof report === "object") {
+        const clean = { seenAt: Date.now() };
+        for (const key of ["wifi", "museLinked", "museReady", "silent"]) if (typeof report[key] === "boolean") clean[key] = report[key];
+        for (const key of ["storageTotal", "storageUsed", "photoCount"]) if (Number.isSafeInteger(report[key]) && report[key] >= 0 && report[key] <= 16777216) clean[key] = report[key];
+        reports.set(id, clean);
+      }
     },
-    forget(id) { seen.delete(id); },
+    forget(id) { seen.delete(id); reports.delete(id); },
     async photo(id) {
       if (!store.photos().some(entry => entry.id === id)) return null;
       return photoBytes(id);

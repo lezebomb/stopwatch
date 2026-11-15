@@ -24,3 +24,10 @@ bool sw_companion_native_page(bool settings);
 void sw_companion_phone_ble(bool enabled);
 /* Called after an authenticated phone commits a network through Muse. */
 void sw_companion_phone_network(const char *ssid);
+unsigned sw_companion_buttons(unsigned events);
+void sw_companion_input_wake(void);
+void sw_companion_shutdown_prompt(void);
+void sw_companion_manual_sleep(bool asleep);
+void sw_companion_native_back(void);
+void sw_companion_device_status(char *out, size_t capacity);
+bool sw_companion_official_network(void);

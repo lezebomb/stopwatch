@@ -28,7 +28,7 @@ watchVersion(typeof __SW_BUILD_ID__ === "undefined" ? "local" : __SW_BUILD_ID__,
 const state = {
   paired: false,
   mode: "mock",
-  page: location.pathname === "/simulator" ? "overview" : "overview",
+  page: new URLSearchParams(location.search).get("view") === "settings" ? "settings" : "overview",
   tasks: [],
   workspaces: [],
   projectId: null,
@@ -44,6 +44,10 @@ const state = {
   quota: null,
   session: null,
   sessions: [],
+  device: null,
+  photoBytes: 466 * 466 * 2,
+  photoBudget: 6 * 1024 * 1024,
+  photoLimit: 12,
   screen: "photos",
   photo: 0,
   charging: true,
@@ -140,6 +144,7 @@ function merge(snapshot) {
     "executionEnabled",
     "codex",
     "commandReceipts",
+    "device", "photoBytes", "photoBudget", "photoLimit",
   ])
     if (key in snapshot) state[key] = snapshot[key];
   if (Array.isArray(snapshot.workspaces)) state.workspaces = snapshot.workspaces;
@@ -189,9 +194,11 @@ function renderPair() {
   if (WEB_MODE === "production" || state.mode === "production") {
     const paragraphs = root.querySelectorAll(".pair-card p");
     paragraphs[0].textContent =
-      "输入电脑显示的六位数字，或扫描已授权控制台的二维码。";
+      "在挂件打开「手机控制」扫码，输入挂件验证码后直接进入。Wi-Fi 在网络设置中单独配置。";
     paragraphs[1].textContent =
-      "受保护的正式控制台；长期密钥不会放在二维码中。";
+      "下方登录码保留给维护者，普通手机使用扫码配对即可。";
+    const link = document.createElement("a"); link.href = "/pair/"; link.className = "button"; link.textContent = "开始手机配对";
+    root.querySelector("#pair-form").before(link);
   }
   document.querySelector("#pair-form").onsubmit = async (e) => {
     e.preventDefault();
@@ -221,6 +228,10 @@ function connect() {
         merge(data.state);
         render();
       } else if (data.type === "event") receive(data.event);
+      else if (data.type === "device") {
+        state.deviceOnline = data.online; state.device = data.status;
+        if (!photoUploadActive && ["overview", "network"].includes(state.page)) renderPreservingFocus();
+      }
       else if (data.type === "bridge") {
         const deviceOnline = typeof data.deviceOnline === "boolean" ? data.deviceOnline : state.deviceOnline;
         if (state.bridgeOnline === data.online && state.deviceOnline === deviceOnline) return;
@@ -238,7 +249,7 @@ function connect() {
     state.quota = null;
     if (event.code === 4001) {
       state.paired = false;
-      renderPair();
+      boot();
       return;
     }
     render();
@@ -352,7 +363,21 @@ function quotaCard() {
     })
     .join("")}</div></section>`;
 }
+function connectionCard() {
+  const online = state.deviceOnline, device = state.device;
+  const muse = !online ? "设备离线，状态待更新" : device?.museReady ? "在线" : device?.museLinked ? "已绑定，连接中" : device ? "尚未绑定" : "等待挂件报告";
+  return `<section class="card"><h2>连接状态</h2><div class="connection-grid"><div>设备联网<strong>${online ? "已联网并同步" : "等待联网"}</strong></div><div>手机配对<strong>${state.session?.phone ? state.session.role === "manager" ? "已配对 · 照片管理" : "已配对 · 只读" : "已有控制台授权"}</strong></div><div>Muse<strong>${muse}</strong></div><div>Codex<strong>${state.codex?.online ? "在线" : state.bridgeOnline ? "电脑已连，等待 Codex" : "电脑离线"}</strong></div></div><p class="small muted">联网、手机授权和账号连接分别恢复。设备离线会保留照片，无需重配手机。</p></section>`;
+}
+function productionOverview() {
+  const chosen = state.settings.defaultPhoto;
+  const cover = chosen?.startsWith("builtin-") ? asset(`/photos/${chosen.slice(-1)}.jpg`) : photoUrl(chosen);
+  return `<div class="panel-grid"><div><section class="card"><h2>当前封面</h2><img class="cover-preview" src="${cover}" alt="当前选择的挂件封面"><div class="actions"><button data-page="photos">上传照片与管理相册</button><button class="secondary" data-page="settings">显示与彩蛋设置</button></div><p class="small muted">${state.deviceOnline ? "设备在线，保存后自动无线同步" : "等待挂件联网；云端保存与手机配对会保留"}</p></section>${connectionCard()}</div><div class="right-stack"><section class="card"><h2>日常入口</h2><div class="home-actions"><button data-page="photos">相册管理</button><button data-page="network">网络设置</button><button data-page="tasks">Codex 任务与操作</button><button data-page="settings">设备与手机授权</button><button data-page="guide">使用指南</button></div></section>${quotaCard()}</div></div>`;
+}
+function networkPage() {
+  return `${connectionCard()}<section class="card"><h2>Wi-Fi 是独立设置</h2><p>蓝键 → 网络 → 手机扫码设置网络，或使用官方 Wi-Fi 管理。手机已配对后不再需要控制台登录码。</p><p>使用普通 2.4 GHz Wi-Fi 或兼容热点。密码只通过加密蓝牙提交给挂件，不存到网页或云端。</p><div class="actions"><a class="button" href="/setup/">打开手机网络设置</a><a href="/guide/">查看指南</a></div><p class="small muted">切换网络保留 Muse 和手机授权；国内连接受限时挂件自动使用受认证的加密出口。</p></section>`;
+}
 function overview() {
+  if (state.mode === "production") return productionOverview();
   const connectDevice = state.mode === "production" && state.session?.role === "operator" && !state.deviceOnline
     ? '<section class="card"><h2>连接你的 StopWatch</h2><p>先在挂件上打开「手机配网」。已连上 Wi-Fi 后，用手机 Chrome 点击下方按钮。</p><div class="actions"><button id="device-ticket">绑定 StopWatch</button><a href="/setup/">还没联网？先配网</a></div></section>'
     : "";
@@ -405,7 +430,12 @@ function commandReceiptCard(task) {
 function photos() {
   const bytes = state.photos.reduce((sum, p) => sum + p.bytes, 0);
   const production = state.mode === "production";
-  return `<div class="notice">${production ? "绑定后的挂件联网时自动同步。离线时继续显示已有照片。" : "本地演示相册。"}</div><div class="stat-line"><span>${state.photos.length} / 12 张</span><span>${(bytes / 1024 / 1024).toFixed(2)} / 6 MiB</span></div><div class="upload"><h2>为小小屏幕，留住大大的喜欢。</h2><p class="muted small">${production ? "可预览圆屏并调整裁切" : "自动居中裁切与缩放"} · JPG / PNG / WebP · 单张最多 8 MiB</p><label for="upload">选择照片</label><input type="file" id="upload" accept="image/jpeg,image/png,image/webp" ${production ? "multiple" : ""}></div><div class="photo-grid">${[
+  const perPhoto = state.photoBytes || 466 * 466 * 2;
+  const safeFree = state.deviceOnline && Number.isSafeInteger(state.device?.storageTotal) && Number.isSafeInteger(state.device?.storageUsed)
+    ? Math.max(0, Math.floor(state.device.storageTotal * .85) - state.device.storageUsed - 65536) : null;
+  const remaining = Math.max(0, Math.min(state.photoLimit - state.photos.length, Math.floor((state.photoBudget - bytes) / perPhoto), safeFree === null ? state.photoLimit : Math.floor(safeFree / perPhoto)));
+  const budgetNote = production ? `<p class="small muted" role="status">466×466 RGB565：设备每张 ${perPhoto.toLocaleString()} B，手机压缩不会减少这一占用。${safeFree === null ? "设备未报告实时容量，最终由挂件事务校验。" : `按当前空间约可新增 ${remaining} 张；空间不足会保留旧图并推迟同步。`}</p>` : "";
+  return `<div class="notice">${production ? "挂件联网后自动同步，离线保留已有照片。所有未隐藏照片会加入轮播。" : "本地演示相册。"}</div><div class="stat-line"><span>${state.photos.length} / ${state.photoLimit} 张</span><span>${(bytes / 1024 / 1024).toFixed(2)} / 6 MiB</span></div>${budgetNote}<div class="upload"><h2>为小小屏幕，留住大大的喜欢。</h2><p class="muted small">${production ? "上传前裁切到 466×466，并预览圆屏" : "自动居中裁切与缩放"} · JPG / PNG / WebP · 单张最多 8 MiB</p><label for="upload">选择照片</label><input type="file" id="upload" accept="image/jpeg,image/png,image/webp" ${production ? "multiple" : ""} ${production && remaining === 0 ? "disabled" : ""}></div><div class="photo-grid">${[
     0, 1, 2,
   ]
     .map((i) => ({
@@ -416,14 +446,14 @@ function photos() {
     .concat(state.photos)
     .map(
       (p) =>
-        `<article class="photo-tile">${p.id === state.settings.eggPhoto ? '<p class="small muted">隐藏彩蛋</p>' : `<img src="${p.builtin ? asset(`/photos/${p.id.slice(-1)}.jpg`) : photoUrl(p.id)}" alt="${escape(p.name)}">`}<p>${escape(p.name)} ${state.settings.defaultPhoto === p.id ? "· 当前封面" : ""}</p><div class="actions">${p.id === state.settings.eggPhoto ? "" : `<button class="secondary" data-cover="${p.id}">设为封面</button>`}${!p.builtin ? `<button class="danger" data-delete="${p.id}">删除</button>` : ""}</div></article>`,
+        `<article class="photo-tile">${p.id === state.settings.eggPhoto ? '<p class="small muted">隐藏彩蛋</p>' : `<img src="${p.builtin ? asset(`/photos/${p.id.slice(-1)}.jpg`) : photoUrl(p.id)}" alt="${escape(p.name)}">`}<p>${escape(p.name)} ${state.settings.defaultPhoto === p.id ? "· 当前封面" : ""}</p><div class="actions">${p.id === state.settings.eggPhoto ? "" : `<button class="secondary" data-cover="${p.id}">设为封面</button><button class="quiet" data-rotate="${p.id}">加入轮播</button>`}${!p.builtin ? `<button class="secondary" data-hidden="${p.id}">${p.id === state.settings.eggPhoto ? "取消隐藏" : "设为隐藏"}</button><button class="danger" data-delete="${p.id}">删除</button>` : ""}</div></article>`,
     )
     .join("")}</div>`;
 }
 function settings() {
   const production = state.mode === "production";
   const canPair = production && state.session?.role === "operator";
-  const roleName = { operator: "可控制", viewer: "只读", bridge: "Windows 桥接", device: "StopWatch 挂件" };
+  const roleName = { operator: "可控制", manager: "照片管理", viewer: "只读", bridge: "Windows 桥接", device: "StopWatch 挂件" };
   const displayOptions = `<label for="display-mode">显示模式</label><select id="display-mode">${[
     ["photo", "照片展示 · 低亮常显"], ["smart", "智能省电 · 逐步变暗"], ["endurance", "续航优先 · 尽早熄屏"],
   ].map(([id, title]) => `<option value="${id}" ${state.settings.displayMode === id ? "selected" : ""}>${title}</option>`).join("")}</select>
@@ -455,6 +485,7 @@ function render() {
     ["overview", "◉", "陪伴总览"],
     ["tasks", "⌘", "Codex 任务"],
     ["photos", "▧", "照片时光"],
+    ...(state.mode === "production" ? [["network", "◎", "网络"]] : []),
     ["settings", "⚙", "设备设置"],
     ["guide", "☷", "使用指南"],
   ];
@@ -462,14 +493,43 @@ function render() {
     overview: ["一切都在，慢慢来。", "照片、灵感，还有正在认真工作的小伙伴。"],
     tasks: ["你的灵感，它来接住。", "从一条指令开始，把正在发生的事看得清楚。"],
     photos: ["喜欢的瞬间，随身带着。", "让每一次抬眼，都看见一点喜欢。"],
+    network: ["网络与授权，各自清楚。", "换 Wi-Fi 不需要重新配对手机或 Muse 账号。"],
     settings: [
       "让它，更像你的伙伴。",
       "调整日常偏好，为未来的礼物留一点惊喜。",
     ],
     guide: ["第一次用，也没关系。", "关于这位小伙伴，你需要知道的小事。"],
   };
-  root.innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand"><span class="brandmark"></span>StopWatch</div><div class="brand-note">小小挂件 · 长长陪伴</div><nav class="nav" aria-label="主导航">${nav.map(([key, icon, title]) => `<button data-page="${key}" class="${state.page === key ? "active" : ""}"><span class="nav-icon">${icon}</span>${title}${key === "tasks" && state.unread ? `<span class="unread">${state.unread}</span>` : ""}</button>`).join("")}</nav><div class="side-bottom"><strong>MADE FOR SOMEONE SPECIAL</strong>把日常的一点温柔，<br>装进 466 像素的圆里。<p class="small muted">v${VERSION}</p></div></aside><main class="main"><header class="topbar"><span class="muted">WORKSPACE / 我的小小陪伴</span><div class="top-actions"><span><i class="dot ${state.bridgeOnline ? "" : "off"}"></i> ${state.bridgeOnline ? "Mock 桥接在线" : "桥接离线"}</span><span class="tag">MOCK PREVIEW</span><span class="avatar">S</span></div></header><div class="pagehead"><div><div class="eyebrow">${new Date().toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "long" })} · A LITTLE MOMENT</div><h1>${titles[state.page][0]}</h1><p>${titles[state.page][1]}</p></div><button class="quiet" data-page="guide">快速上手 ↗</button></div>${!state.connected ? '<div class="offline-banner">事件连接已断开，正在自动重连。任务历史仍保留在电脑上。</div>' : ""}${{ overview, tasks, photos, settings, guide: guidePage }[state.page]()}<footer class="footer"><span>StopWatch Companion · 为日常留一点温柔</span><span>本地模拟 · 未连接真实硬件与账号</span></footer></main></div>`;
+  root.innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand"><span class="brandmark"></span>StopWatch</div><div class="brand-note">小小挂件 · 长长陪伴</div><nav class="nav" aria-label="主导航">${nav.map(([key, icon, title]) => `<button data-page="${key}" class="${state.page === key ? "active" : ""}"><span class="nav-icon">${icon}</span>${title}${key === "tasks" && state.unread ? `<span class="unread">${state.unread}</span>` : ""}</button>`).join("")}</nav><div class="side-bottom"><strong>MADE FOR SOMEONE SPECIAL</strong>把日常的一点温柔，<br>装进 466 像素的圆里。<p class="small muted">v${VERSION}</p></div></aside><main class="main"><header class="topbar"><span class="muted">WORKSPACE / 我的小小陪伴</span><div class="top-actions"><span><i class="dot ${state.bridgeOnline ? "" : "off"}"></i> ${state.bridgeOnline ? "Mock 桥接在线" : "桥接离线"}</span><span class="tag">MOCK PREVIEW</span><span class="avatar">S</span></div></header><div class="pagehead"><div><div class="eyebrow">${new Date().toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "long" })} · A LITTLE MOMENT</div><h1>${titles[state.page][0]}</h1><p>${titles[state.page][1]}</p></div><button class="quiet" data-page="guide">快速上手 ↗</button></div>${!state.connected ? '<div class="offline-banner">事件连接已断开，正在自动重连。任务历史仍保留在电脑上。</div>' : ""}${{ overview, tasks, photos, network: networkPage, settings, guide: guidePage }[state.page]()}<footer class="footer"><span>StopWatch Companion · 为日常留一点温柔</span><span>本地模拟 · 未连接真实硬件与账号</span></footer></main></div>`;
   if (state.mode === "production") {
+    if (state.page === "settings" && state.session?.phone) {
+      const card = root.querySelector("#ticket")?.closest(".card");
+      if (card) card.innerHTML = `<h2>已配对的手机</h2><p class="small muted">额外手机默认只读。管理手机可授予照片管理，不会授予 Codex 执行权。</p>${state.sessions.filter(s => !s.revoked).map(s => `<div class="setting-row"><span>${escape(s.id.slice(0, 8))} · ${s.role === "manager" ? "照片管理" : "只读"}${s.id === state.session.id ? "（当前）" : ""}</span><div>${state.session.role === "manager" && s.id !== state.session.id ? `<button class="secondary" data-phone-id="${s.id}" data-phone-role="${s.role === "manager" ? "viewer" : "manager"}">${s.role === "manager" ? "设为只读" : "授予照片管理"}</button>` : ""}${s.id === state.session.id || state.session.role === "manager" ? `<button class="danger" data-phone-id="${s.id}" data-phone-role="revoke">${s.id === state.session.id ? "撤销本机登录" : "撤销"}</button>` : ""}</div></div>`).join("")}`;
+    }
+    if (state.page === "settings" && state.session?.role === "operator") {
+      for (const phone of state.sessions.filter(s => s.phone && !s.revoked)) {
+        const revoke = root.querySelector(`[data-revoke="${phone.id}"]`); if (!revoke) continue;
+        const button = document.createElement("button"); button.className = "secondary";
+        button.dataset.phoneId = phone.id; button.dataset.phoneRole = phone.role === "manager" ? "viewer" : "manager";
+        button.textContent = phone.role === "manager" ? "设为只读" : "授予照片管理";
+        revoke.before(button);
+        if (phone.role === "manager") {
+          const control = document.createElement("button"); control.className = "secondary";
+          control.dataset.phoneId = phone.id; control.dataset.phoneRole = phone.codexControl ? "codex-off" : "codex-on";
+          control.textContent = phone.codexControl ? "撤销 Codex 控制" : "授权 Codex 控制"; revoke.before(control);
+        }
+      }
+    }
+    if (state.session?.role === "viewer") {
+      for (const control of root.querySelectorAll("#upload,#save-settings,[data-cover],[data-delete],[data-hidden],[data-rotate]")) control.disabled = true;
+    }
+    if (state.session?.role !== "operator" && !state.session?.codexControl && state.page === "tasks") {
+      for (const control of root.querySelectorAll("form button,form textarea,[data-approval],#interrupt,#quick-interrupt")) control.disabled = true;
+      const notice = root.querySelector(".notice"); if (notice) notice.textContent = "当前手机可查看任务。Codex 远程执行需要原有控制端明确授权；照片管理不会自动获得执行权。";
+    }
+    if (state.session?.role !== "operator") {
+      for (const control of root.querySelectorAll("#ticket,#viewer-ticket,#device-ticket")) control.hidden = true;
+    }
     root.querySelectorAll(".tag").forEach((el) => {
       if (el.textContent.startsWith("MOCK")) el.textContent = "远程控制";
     });
@@ -509,7 +569,7 @@ function render() {
         prompt.before(modeLabel, mode);
       }
     }
-    if (state.page === "settings") {
+    if (state.page === "settings" && (state.session?.role === "operator" || state.session?.codexControl)) {
       const button = document.createElement("button");
       button.className = "secondary";
       button.textContent = "生成电脑一次性授权码";
@@ -575,6 +635,28 @@ async function command(action, extra = {}) {
   }
 }
 function bind() {
+  document.querySelectorAll("[data-phone-id]").forEach(button => {
+    button.onclick = async () => {
+      try {
+        const enabling = button.dataset.phoneRole === "codex-on";
+        if (enabling && !confirm("允许此管理手机新建、继续、中断 Codex 任务、按次审批，以及生成 Windows 绑定码？执行仍受电脑工作区授权和官方沙箱限制。照片配对本身不包含这些权限。")) return;
+        await api("phone/access", { id: button.dataset.phoneId, role: button.dataset.phoneRole, reviewed: enabling });
+        if (button.dataset.phoneId === state.session.id) { state.paired = false; ws?.close(); renderPair(); }
+        else { merge(await api("state")); render(); }
+      } catch (error) { toast(error.message); }
+    };
+  });
+  document.querySelectorAll("[data-hidden],[data-rotate]").forEach(button => {
+    button.onclick = async () => {
+      try {
+        const id = button.dataset.hidden || button.dataset.rotate;
+        const patch = button.dataset.hidden ? { eggPhoto: state.settings.eggPhoto === id ? null : id }
+          : { defaultPhoto: id, slideshow: true, ...(state.settings.eggPhoto === id ? { eggPhoto: null } : {}) };
+        state.settings = await api("settings", patch); render();
+        toast(state.deviceOnline ? "已保存，正在同步至挂件" : "已保存，等待挂件联网同步");
+      } catch (error) { toast(error.message); }
+    };
+  });
   const on = (id, event, handler) => {
     const el = document.getElementById(id);
     if (el) el.addEventListener(event, handler);
