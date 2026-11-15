@@ -318,3 +318,8 @@
 - 最终生产签名镜像仍为 3,936,256 B，槽余 252 KiB，已仅写实际 ota_0 并正常启动；照片逐文件 SHA、轮播、亮度、显示模式、SDK Token/账号绑定及静音均保留，automatic=false。最终黄键静音长按和返回定向复核通过。私有完整结果仅存 .data/interaction-v025/final.json；未写 Bootloader/分区表/eFuse，未清空 NVS，未重启 Windows。
 - 联网验收仍未通过：当前 SDK on / not_nearby，原热点不可见，Muse sessionReady=false；不能将此时内部空闲约 37 KiB、历史最低 7,708 B、DMA 连续块 17,408 B 当作 TLS 在线峰值改善。已绑定账号未丢失，原直连/VPS 回退协议未改，等待原热点恢复再验收。
 - 已为 USB 华为准备 Edge 手机配对页，但手机锁屏，尚未完成真实 BLE/HMAC 验证及手机新授权后的无线照片；浏览器夹具和已有旧版无线相册成功记录不替代本轮验收。本人最少操作：解锁华为、打开原 2.4GHz 热点，按新流程完成一次屏幕验证码/手指交互；真正关机/长按开机与 LCD 观感另集中确认。保持正式 Release/稳定镜像 0.2.4、所有自动安装关闭，不把未完成现场验收的候选版推到收礼设备。
+
+### 联网恢复最终确认
+
+- 本人解锁 USB 华为并重新开启 Miao 2.4GHz 热点后，0.2.5 候选版自动重连成功：SDK `wifi=true`、`accountLinked=true`、`sessionReady=true`；VPS `relayState=online`；原绑定/Token/照片/静音/显示设置全部保留。内部空闲约 20-24 KiB、历史最低 3,604 B 未因联网回归。生产签名镜像 `c4425d9a...`（3,936,256 B）继续仅写入 ota_0，无 Bootloader/eFuse/NVS 改动。
+- `.data/interaction-v025/final.json` 已更新实际配对/联网结论（不进 Git）；候选版门户 https://fym.lezebomb.top 已在 build `6611865...` 上线。本轮结论补记至 PROGRESS.md，作为 2026-11-15 按键导航与手机配对重构任务的联网验收通过证据；正式 Release/稳定镜像仍为 0.2.4，生产自动安装保持关闭。
