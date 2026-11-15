@@ -241,7 +241,7 @@ input =
 const inputPoll = "unsigned ev = muse_board->poll_buttons() | atomic_exchange(&s_touch_talk_events, 0);";
 const directPowerOff = "        if (s_talk_down) talk_button(MUSE_BTN_TALK_RELEASE);\n        power_off();";
 if (!input.includes(inputPoll) || !input.includes(directPowerOff)) throw new Error("Upstream physical input changed");
-input = input.replace(inputPoll, "unsigned ev = sw_companion_buttons(muse_board->poll_buttons()) | atomic_exchange(&s_touch_talk_events, 0);\n        if (sw_companion_audio_silent()) ev &= ~(MUSE_BTN_TALK_PRESS | MUSE_BTN_TALK_RELEASE);")
+input = input.replace(inputPoll, "unsigned ev = sw_companion_buttons(muse_board->poll_buttons()) | atomic_exchange(&s_touch_talk_events, 0);\n        if (sw_companion_audio_silent()) ev &= ~MUSE_BTN_TALK_PRESS;")
   .replace(directPowerOff, "        if (s_talk_down) talk_button(MUSE_BTN_TALK_RELEASE);\n        sw_companion_shutdown_prompt();")
   .replace('if (!s_power_swallow) set_asleep(true, muse_board->power_button);', 'if (!s_power_swallow) { sw_companion_manual_sleep(true); set_asleep(true, muse_board->power_button); }')
   .replace('if (s_power_swallow) set_asleep(false, muse_board->power_button);', 'if (s_power_swallow) { sw_companion_manual_sleep(false); set_asleep(false, muse_board->power_button); }');

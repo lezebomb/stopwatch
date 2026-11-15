@@ -2,6 +2,8 @@
 .connection-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
 .connection-grid strong { display: block; font-size: 14px; margin-top: 6px; }
 .home-actions { display: grid; gap: 12px; }
+.setting-row { flex-wrap: wrap; }
+.setting-row > div { display: flex; flex-wrap: wrap; gap: 8px; max-width: 100%; }
 a.button { display: inline-block; padding: 12px 18px; border-radius: 12px; background: #244b3e; color: white; text-decoration: none; }
 :root {
   font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;

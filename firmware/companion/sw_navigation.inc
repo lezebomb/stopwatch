@@ -106,7 +106,7 @@ static void nav_open(int route) {
     char url[216], ref[65];
     if (sw_phone_ref(ref)) snprintf(url, sizeof(url), "%.*s/pair/?device=%s&view=settings", (int)(strlen(SW_SETUP_URL) - strlen("/setup/")), SW_SETUP_URL, ref);
     else snprintf(url, sizeof(url), "%.*s/pair/", (int)(strlen(SW_SETUP_URL) - strlen("/setup/")), SW_SETUP_URL);
-    nav_qr(url); nav_status = nav_text(nav_panel, "手机设置 → 电脑授权\n需原控制端授予 Codex 控制", 125); nav_code = nav_text(nav_panel, "", 172);
+    nav_qr(url); nav_status = nav_text(nav_panel, "手机设置 / 电脑授权\n需原控制端授予 Codex 控制", 125); nav_code = nav_text(nav_panel, "", 172);
   } else if (route == NAV_SHUTDOWN) {
     nav_text(nav_panel, "确认关机？", -90); nav_row(nav_panel, "取消", shutdown_parent, 20);
     lv_obj_t *button = lv_button_create(nav_panel); navigation_style(button); lv_obj_set_size(button, 286, 48); lv_obj_align(button, LV_ALIGN_CENTER, 0, 80);
@@ -135,7 +135,7 @@ static void nav_tick(void) {
   if (request < 0) nav_back(); else if (request) nav_open(request - 1);
   if ((nav_route == NAV_PHONE || nav_route == NAV_CODEX_PAIR) && nav_status && nav_code) {
     char code[7]; bool pending = sw_phone_display(code);
-    const char *hint = pending ? "在手机输入以下验证码" : sw_phone_active() ? nav_route == NAV_PHONE ? "扫码后点开始配对" : "手机设置 → 电脑授权\n需原控制端授予 Codex 控制" : "配对已过期，请重新进入";
+    const char *hint = pending ? "在手机输入以下验证码" : sw_phone_active() ? nav_route == NAV_PHONE ? "扫码后点开始配对" : "手机设置 / 电脑授权\n需原控制端授予 Codex 控制" : "配对已过期，请重新进入";
     if (strcmp(lv_label_get_text(nav_status), hint)) lv_label_set_text(nav_status, hint);
     if (strcmp(lv_label_get_text(nav_code), pending ? code : "")) lv_label_set_text(nav_code, pending ? code : "");
     if (!sw_phone_active() && !atomic_load(&setup_active)) sw_companion_phone_ble(false);
@@ -170,6 +170,9 @@ unsigned sw_companion_buttons(unsigned events) {
     if (!pairing_press) sw_companion_input_wake();
   }
   unsigned forwarded = events & ~(MUSE_BTN_TALK_PRESS | MUSE_BTN_TALK_RELEASE | MUSE_BTN_SPEAKER_PRESS | MUSE_BTN_SPEAKER_RELEASE);
+  // Never swallow the release of an already-authorized hold if mute changes.
+  // A release alone cannot start recording; it safely closes an existing PTT.
+  if (voice_sent && sw_companion_audio_silent()) { forwarded |= MUSE_BTN_TALK_RELEASE; voice_sent = false; }
   if (events & MUSE_BTN_SPEAKER_PRESS) { sw_companion_input_wake(); atomic_store(&nav_requested, NAV_SETTINGS + 1); }
   if (down && !pairing_press && !long_sent && now - pressed_at >= 600 && !released) {
     long_sent = true; atomic_store(&nav_requested, NAV_MUSE + 1);

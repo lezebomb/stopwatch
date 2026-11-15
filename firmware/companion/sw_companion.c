@@ -1367,7 +1367,7 @@ static void codex_open(lv_event_t *event) {
   if (codex_choices.online && codex_choices.can_control) {
     if (codex_choices.approval[0]) {
       label = lv_label_create(list); lv_obj_set_width(label, 292);
-      lv_label_set_text(label, "此处仅为摘要，不可批准\n手机打开 fym.lezebomb.top\nCodex 任务 → 待审批任务");
+      lv_label_set_text(label, "此处仅为摘要，不可批准\n手机打开 fym.lezebomb.top\nCodex 任务 / 待审批任务");
       codex_row(list, "拒绝本次操作", codex_action, "decline");
     } else {
       if (codex_choices.running) codex_row(list, "中断当前任务", codex_action, "interrupt");
@@ -1446,7 +1446,7 @@ static void show(void) {
       snprintf(connection, sizeof(connection), "上次同步 %lu 秒前",
                (unsigned long)((lv_tick_get() - seen) / 1000));
     else
-      strlcpy(connection, online ? quota_text : "尚未同步 · 额度不可用",
+      strlcpy(connection, online ? quota_text : "尚未同步 / 额度不可用",
               sizeof(connection));
     const char *command_state = sw_sync_codex_command_state();
     if (!strcmp(command_state, "sending")) strlcpy(connection, "正在提交指令", sizeof(connection));
@@ -1459,7 +1459,7 @@ static void show(void) {
     else if (!strcmp(command_state, "failed")) strlcpy(connection, "指令失败，请在手机查看原因", sizeof(connection));
     lv_label_set_text_fmt(
         caption, "%s\n%s%s%s%s%s\n%s\n%.180s", online ? phases[p] : "Codex 离线",
-        project, *project ? " · " : "", title, p == 6 && *error ? "\n" : "",
+        project, *project ? " / " : "", title, p == 6 && *error ? "\n" : "",
         p == 6 ? error : "", connection, codex_ui.detail);
     lv_obj_set_height(caption, 105); lv_label_set_long_mode(caption, LV_LABEL_LONG_DOT);
   } else

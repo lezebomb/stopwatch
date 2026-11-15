@@ -41,7 +41,7 @@ test("offline device proof creates a bounded photo manager; repeat pairing is re
 }));
 test("bad code/proof attempts persist, expiry and device revocation invalidate browser sessions", () => fixture((store, device, phones) => {
   const ref = phoneRef(digest(device.token)), claim = phones.begin(ref, "browser");
-  for (let n = 0; n < 5; n++) assert.throws(() => phones.complete({ challenge: claim.challenge, code: "123456", proof: "0".repeat(64) }, "browser"), /无效/);
+  for (let n = 0; n < 5; n++) assert.throws(() => phones.complete({ challenge: claim.challenge, code: "123456", proof: n === 0 ? ["0".repeat(64)] : "0".repeat(64) }, "browser"), /无效/);
   assert.throws(() => phones.complete({ challenge: claim.challenge, code: "123456", proof: phoneProof(digest(device.token), claim.challenge, "123456") }, "browser"), /过期/);
   const expired = phones.begin(ref, "browser");
   assert.throws(() => phones.complete({ challenge: expired.challenge }, "browser", expired.expires), /过期/);

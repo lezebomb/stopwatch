@@ -35,7 +35,7 @@ export function createPhonePairing(store) {
           fail(401, "配对已过期或已使用，请在挂件重新开始");
         db.prepare("UPDATE phone_claims SET attempts=attempts+1 WHERE id=?").run(challenge);
         const target = db.prepare("SELECT hash FROM sessions WHERE id=? AND role='device' AND revoked=0 AND expires>?").get(claim.device_id, now);
-        const valid = target && /^\d{6}$/.test(code || "") && /^[a-f0-9]{64}$/.test(proof || "") &&
+        const valid = target && typeof code === "string" && typeof proof === "string" && /^\d{6}$/.test(code) && /^[a-f0-9]{64}$/.test(proof) &&
           timingSafeEqual(Buffer.from(phoneProof(target.hash, challenge, code), "hex"), Buffer.from(proof, "hex"));
         if (!valid) {
           db.exec("COMMIT"); // Wrong attempts must survive the rejected request.
