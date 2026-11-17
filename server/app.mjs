@@ -483,7 +483,7 @@ export async function createRelay({
             failOn: "warning",
           })
             .rotate()
-            .resize(466, 466, { fit: "cover" })
+            .resize(466, 466, { fit: "contain", background: { r: 18, g: 37, b: 33, alpha: 1 } })
             .removeAlpha()
             .toColourspace("srgb");
           const raw = await image

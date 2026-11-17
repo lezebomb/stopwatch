@@ -128,7 +128,9 @@ static void nav_back(void) {
   nav_open(parent);
 }
 static void nav_gesture(lv_event_t *event) {
-  (void)event; if (lv_indev_get_gesture_dir(lv_indev_active()) == LV_DIR_RIGHT) nav_back();
+  (void)event;
+  lv_dir_t direction = lv_indev_get_gesture_dir(lv_indev_active());
+  if (direction == LV_DIR_RIGHT || direction == LV_DIR_LEFT) nav_back();
 }
 static void nav_tick(void) {
   int request = atomic_exchange(&nav_requested, 0);
@@ -182,6 +184,15 @@ unsigned sw_companion_buttons(unsigned events) {
     if (!pairing_press && !long_sent) atomic_store(&nav_requested, NAV_AI + 1);
     if (voice_sent) forwarded |= MUSE_BTN_TALK_RELEASE;
     down = voice_sent = pairing_press = false;
+  }
+  /* Hidden egg: blue pressed while yellow is already down on the cover page.
+   * The blue press alone would open settings; the combo replaces that with
+   * the egg and cancels the queued settings navigation. */
+  if ((events & MUSE_BTN_SPEAKER_PRESS) && down && pairing_press == false) {
+    if (sw_companion_egg_trigger(true, true)) {
+      forwarded &= ~MUSE_BTN_SPEAKER_PRESS;
+      atomic_store(&nav_requested, 0);
+    }
   }
   return forwarded;
 }

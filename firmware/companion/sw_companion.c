@@ -188,6 +188,21 @@ static const char *phases[] = {"休息一下", "正在思考", "认真工作", "
                                "等待确认", "任务完成", "任务失败", "已中断"};
 static void show(void);
 static void load_photo(void);
+bool sw_companion_egg_trigger(bool yellow, bool blue) {
+  static bool armed;
+  if (yellow && blue && screen == SW_PHOTOS && !nav_panel && !egg &&
+      !atomic_load(&setup_active) && display_settings.has_egg) {
+    armed = true;
+  } else if (armed && (!yellow || !blue)) {
+    armed = false;
+    if (screen == SW_PHOTOS && !nav_panel && !egg) {
+      egg = true;
+      show();
+      return true;
+    }
+  }
+  return false;
+}
 int sw_companion_brightness(int requested) {
   if (!root || screen == SW_MUSE)
     return requested;
@@ -1203,7 +1218,7 @@ static void touch(lv_event_t *event) {
   muse_state_poke();
   if (lv_event_get_code(event) == LV_EVENT_GESTURE) {
     lv_dir_t direction = lv_indev_get_gesture_dir(lv_indev_active());
-    if (direction == LV_DIR_RIGHT) nav_back();
+    if (direction == LV_DIR_RIGHT || direction == LV_DIR_LEFT) nav_back();
     return;
   }
   if (lv_event_get_code(event) != LV_EVENT_CLICKED)
@@ -1217,6 +1232,8 @@ static void touch(lv_event_t *event) {
     uint32_t now = lv_tick_get();
     taps = now - last_tap < 600 ? taps + 1 : 1;
     last_tap = now;
+    /* The five-tap path predates the physical combo; it remains as a
+     * fallback so recipients who learn it from a friend can still use it. */
     if (taps >= 5) {
       taps = 0;
       egg = true;
@@ -1379,7 +1396,9 @@ static void codex_open(lv_event_t *event) {
 }
 #include "sw_navigation.inc"
 static void show(void) {
-  sw_sync_focus(screen == SW_CODEX);
+  /* Photo pushes arrive from any phone upload; keep the device polling fast
+   * on every page so a save lands within one sync tick. */
+  sw_sync_focus(true);
   muse_power_t power = muse_state_power();
   sw_miao_play(screen == SW_CODEX && !egg && !nav_panel && !codex_panel && !atomic_load(&setup_active) &&
                    !muse_state_asleep(),

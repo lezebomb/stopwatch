@@ -20,10 +20,17 @@ export async function cropPhoto(file) {
   }
   const { horizontal, vertical, zoom } = form.elements;
   function draw() {
-    const side = Math.min(bitmap.width, bitmap.height) * 100 / zoom.valueAsNumber;
-    const x = (bitmap.width - side) * horizontal.valueAsNumber / 100;
-    const y = (bitmap.height - side) * vertical.valueAsNumber / 100;
-    context.drawImage(bitmap, x, y, side, side, 0, 0, canvas.width, canvas.height);
+    // Contain-fit with letterbox padding: the whole photo stays visible, the
+    // sliders fine-tune which part the round screen centers on.
+    const scale = Math.min(canvas.width / bitmap.width, canvas.height / bitmap.height) *
+                  zoom.valueAsNumber / 100;
+    const width = bitmap.width * scale;
+    const height = bitmap.height * scale;
+    const x = (canvas.width - width) * horizontal.valueAsNumber / 100;
+    const y = (canvas.height - height) * vertical.valueAsNumber / 100;
+    context.fillStyle = "#122521";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(bitmap, x, y, width, height);
   }
   form.addEventListener("input", draw);
   dialog.querySelector("[data-cancel]").onclick = () => dialog.close();

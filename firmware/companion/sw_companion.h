@@ -29,5 +29,6 @@ void sw_companion_input_wake(void);
 void sw_companion_shutdown_prompt(void);
 void sw_companion_manual_sleep(bool asleep);
 void sw_companion_native_back(void);
+bool sw_companion_egg_trigger(bool yellow, bool blue);
 void sw_companion_device_status(char *out, size_t capacity);
 bool sw_companion_official_network(void);
