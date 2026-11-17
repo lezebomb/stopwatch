@@ -970,6 +970,20 @@ void sw_update_start(bool storage_ok) {
   storage_ready = storage_ok;
   policy = sw_update_defaults();
   psa_crypto_init();
+  /* NVS writes (Muse pairing, settings) route through the flash dispatcher's
+   * --wrap hooks; the dispatcher must exist before any provisioning, so init
+   * it here. Only the OTA download worker stays behind the memory gate. */
+  const esp_flash_dispatcher_config_t cfg = {
+      .task_stack_size = OTA_FLASH_STACK_BYTES,
+      .task_priority = 10,
+      .task_core_id = tskNO_AFFINITY,
+      .queue_size = 1};
+  if (esp_flash_dispatcher_init(&cfg) == ESP_OK) {
+    flash_dispatcher_ready = true;
+    sw_update_boot_memory("flash-dispatcher-ready");
+  } else {
+    ESP_LOGW(TAG, "flash dispatcher unavailable; NVS writes will fail");
+  }
   snprintf(status.current, sizeof(status.current), "%s", SW_UPDATE_VERSION);
   ESP_LOGI(TAG, "Updater started; production trust configured: %d",
            SW_UPDATE_PRODUCTION);
