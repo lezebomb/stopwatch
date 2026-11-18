@@ -1437,9 +1437,7 @@ static void show(void) {
   lv_obj_set_style_bg_opa(caption, egg ? LV_OPA_70 : LV_OPA_TRANSP, 0);
   if (egg) {
     sw_miao_still();
-    lv_label_set_text(caption, display_settings.message[0]
-                                   ? display_settings.message
-                                   : "今天也要记得给自己放个小假。");
+    lv_label_set_text(caption, display_settings.message);
     if (hidden != UINT32_MAX)
       load_photo();
   } else if (screen == SW_PHOTOS) {
