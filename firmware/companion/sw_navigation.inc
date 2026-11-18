@@ -169,42 +169,41 @@ void sw_companion_device_status(char *out, size_t capacity) {
     sw_companion_audio_silent() ? "true" : "false", (unsigned)total, (unsigned)used, count);
 }
 unsigned sw_companion_buttons(unsigned events) {
-  static bool down, long_sent, voice_sent, pairing_press;
-  static int64_t pressed_at;
+  static bool down, blue_down, long_sent, voice_sent, pairing_press, egg_combo;
+  static int64_t pressed_at, blue_at;
   events |= atomic_exchange(&injected_buttons, 0);
-  /* Red-key safety: a lost release while the panel powered down can leave the
-   * upstream power state stuck "down", which makes every later press look like
-   * a held key. Any press while asleep re-arms wake-up and clears the screen. */
-  if ((events & MUSE_BTN_POWER_PRESS) && muse_state_asleep())
-    sw_companion_input_wake();
   int64_t now = esp_timer_get_time() / 1000;
   bool released = events & MUSE_BTN_TALK_RELEASE;
   if (events & MUSE_BTN_TALK_PRESS) {
     pairing_press = muse_link_talk_press(); down = true; pressed_at = now; long_sent = voice_sent = false;
     if (!pairing_press) sw_companion_input_wake();
+    if (blue_down && now - blue_at < 900) egg_combo = true;
   }
   unsigned forwarded = events & ~(MUSE_BTN_TALK_PRESS | MUSE_BTN_TALK_RELEASE | MUSE_BTN_SPEAKER_PRESS | MUSE_BTN_SPEAKER_RELEASE);
   // Never swallow the release of an already-authorized hold if mute changes.
   // A release alone cannot start recording; it safely closes an existing PTT.
   if (voice_sent && sw_companion_audio_silent()) { forwarded |= MUSE_BTN_TALK_RELEASE; voice_sent = false; }
-  if (events & MUSE_BTN_SPEAKER_PRESS) { sw_companion_input_wake(); atomic_store(&nav_requested, NAV_SETTINGS + 1); }
-  if (down && !pairing_press && !long_sent && now - pressed_at >= 600 && !released) {
+  if (events & MUSE_BTN_SPEAKER_PRESS) {
+    blue_down = true; blue_at = now; sw_companion_input_wake();
+    if (down) egg_combo = true;
+    if (!egg_combo) atomic_store(&nav_requested, NAV_SETTINGS + 1);
+  }
+  if (events & MUSE_BTN_SPEAKER_RELEASE) blue_down = false;
+  if (down && !egg_combo && !pairing_press && !long_sent && now - pressed_at >= 600 && !released) {
     long_sent = true; atomic_store(&nav_requested, NAV_MUSE + 1);
     if (!sw_companion_audio_silent()) { voice_sent = true; forwarded |= MUSE_BTN_TALK_PRESS; }
   }
   if (released && down) {
-    if (!pairing_press && !long_sent) atomic_store(&nav_requested, NAV_AI + 1);
+    if (!egg_combo && !pairing_press && !long_sent) atomic_store(&nav_requested, NAV_AI + 1);
     if (voice_sent) forwarded |= MUSE_BTN_TALK_RELEASE;
     down = voice_sent = pairing_press = false;
   }
-  /* Hidden egg: blue pressed while yellow is already down on the cover page.
-   * The blue press alone would open settings; the combo replaces that with
-   * the egg and cancels the queued settings navigation. */
-  if ((events & MUSE_BTN_SPEAKER_PRESS) && down && pairing_press == false) {
-    if (sw_companion_egg_trigger(true, true)) {
-      forwarded &= ~MUSE_BTN_SPEAKER_PRESS;
-      atomic_store(&nav_requested, 0);
-    }
+  /* Hidden egg: both rim keys held on the cover. The trigger fires on the
+   * release of either key once both were down and cancels queued navigation. */
+  if (sw_companion_egg_trigger(down, blue_down)) {
+    forwarded &= ~(MUSE_BTN_SPEAKER_PRESS | MUSE_BTN_TALK_PRESS);
+    atomic_store(&nav_requested, 0);
+    egg_combo = false;
   }
   return forwarded;
 }
