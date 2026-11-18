@@ -1079,17 +1079,17 @@ function draw() {
       state.photo = (state.photo + 1) % photos.length;
       lastSlide = Date.now();
     }
-    const photo = photos[(state.photo + photos.length) % photos.length];
-    const img = cachedPhoto(photo.url);
-    if (img.complete && img.naturalWidth) ctx.drawImage(img, 0, 0, 466, 466);
+    const photo = photos.length ? photos[(state.photo + photos.length) % photos.length] : null;
+    const img = photo ? cachedPhoto(photo.url) : null;
+    if (img?.complete && img.naturalWidth) ctx.drawImage(img, 0, 0, 466, 466);
     const shade = ctx.createLinearGradient(0, 250, 0, 466);
     shade.addColorStop(0, "#0000");
     shade.addColorStop(1, "#071d21d9");
     ctx.fillStyle = shade;
     ctx.fillRect(0, 250, 466, 216);
-    text(photo.name || "", 233, 371, 28, "#eff2de");
+    text(photo?.name || "", 233, 371, 28, "#eff2de");
     text(
-      `${(state.photo % photos.length) + 1} / ${photos.length}`,
+      photos.length ? `${(state.photo % photos.length) + 1} / ${photos.length}` : "",
       233,
       402,
       13,

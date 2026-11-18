@@ -29,7 +29,7 @@ try {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(`${relay.url}/#pair=${relay.store.ticket().code}`);
-  await page.getByRole("heading", { name: "一切都在，慢慢来。" }).waitFor();
+  await page.locator('.nav button[data-page="overview"]').waitFor();
   await page.locator("canvas").waitFor();
   await page.waitForTimeout(300);
   await mkdir("artifacts", { recursive: true });
@@ -63,7 +63,7 @@ try {
       ?.getAttribute("aria-label")
       ?.includes("MOCK 回复"),
   );
-  await page.getByRole("button", { name: "Codex 任务", exact: false }).click();
+  await page.locator('.nav button[data-page="tasks"]').click();
   await page.locator("#prompt").fill("浏览器测试并申请审批");
   await page.getByRole("button", { name: "创建 Mock 任务" }).click();
   await page.getByRole("button", { name: "批准本次" }).waitFor();
@@ -72,7 +72,7 @@ try {
   await page.locator("#continuation").fill("模拟失败");
   await page.getByRole("button", { name: "继续任务", exact: true }).click();
   await page.locator(".result").filter({ hasText: "演示失败" }).waitFor();
-  await page.getByRole("button", { name: "照片时光", exact: false }).click();
+  await page.locator('.nav button[data-page="photos"]').click();
   await page
     .locator("#upload")
     .setInputFiles(path.resolve("assets/photos/0.jpg"));
@@ -82,7 +82,7 @@ try {
     .filter({ hasText: "0.jpg" })
     .getByRole("button", { name: "设为封面" })
     .click();
-  await page.getByRole("button", { name: "设备设置", exact: false }).click();
+  await page.locator('.nav button[data-page="settings"]').click();
   await page.locator("#egg-message").fill("浏览器测试彩蛋留言");
   await page.getByRole("button", { name: "保存设置", exact: true }).click();
   await page.getByRole("button", { name: "新建只读端" }).click();
@@ -92,7 +92,7 @@ try {
   assert(
     (await page.getByText("中转服务：在线", { exact: false }).count()) > 0,
   );
-  await page.getByRole("button", { name: "陪伴总览", exact: false }).click();
+  await page.locator('.nav button[data-page="overview"]').click();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: "artifacts/mobile.png", fullPage: true });
   assert.equal(
@@ -115,8 +115,8 @@ try {
       document.querySelector("canvas")?.getAttribute("aria-label") !==
       "屏幕已休眠",
   );
-  await page.getByRole("button", { name: "指南", exact: true }).click();
-  await page.getByRole("button", { name: "照片", exact: true }).click();
+  await page.locator('.nav button[data-page="guide"]').click();
+  await page.locator('.nav button[data-page="photos"]').click();
   assert.deepEqual(errors, [], "browser runtime errors");
   await remoteControlUiChecks(browser);
   console.log(
