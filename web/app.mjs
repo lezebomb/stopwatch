@@ -423,7 +423,7 @@ function approvalCard(task) {
   return `<div class="approval"><strong>核对完整操作</strong><pre class="approval-details">${escape(a.command)}</pre><p>${escape(a.reason)}</p>${production ? `<pre class="approval-details">${escape(a.details || "完整内容不可用，不能远程批准。请拒绝本次，再要求 Codex 拆分操作。")}</pre>${a.complete ? `<label class="approval-review"><input id="approval-reviewed" type="checkbox" ${reviewed ? "checked" : ""}>我已核对完整操作和请求权限</label>` : ""}` : ""}<div class="actions"><button data-decision="accept" ${production && (!a.complete || !reviewed) ? "disabled" : ""}>批准本次</button><button class="danger" data-decision="decline">拒绝</button></div></div>`;
 }
 function commandReceiptCard(task) {
-  const receipts = state.commandReceipts.filter(r => r.taskId === (state.selected || task?.id)).slice(0, 3);
+  const receipts = state.commandReceipts.filter(r => r.taskId === (state.selected || task?.id)).slice(0, 1);
   const actions = { start: "新任务", continue: "继续", steer: "追加", interrupt: "中断", approve: "审批" };
   return receipts.map(r => `<p class="small command-receipt" role="status">${escape(r.action === "approve" ? (r.decision === "decline" ? "拒绝审批" : "批准审批") : actions[r.action] || "指令")} · ${escape(receiptLabels[r.stage] || r.stage)}${r.updated ? ` · ${time(r.updated)}` : ""}${r.message ? ` · ${escape(r.message)}` : ""}</p>`).join("");
 }
