@@ -52,7 +52,7 @@ try {
       network.push(r.url());
   });
   await page.goto(`http://127.0.0.1:${server.address().port}/stopwatch/`);
-  await page.getByRole("heading", { name: "一切都在，慢慢来。" }).waitFor();
+  await page.locator('.nav button[data-page="overview"]').waitFor();
   await page.locator("canvas").waitFor();
   const still = page.waitForResponse(r => /\/miao\/[^/]+\/0\.webp$/.test(r.url()) && r.ok());
   await page.getByRole("button", { name: "Codex", exact: true }).click();
@@ -61,11 +61,11 @@ try {
   const screen = await page.locator("canvas").boundingBox();
   await page.locator("canvas").click({ position: { x: screen.width / 2, y: screen.height * 0.48 } });
   await moving;
-  await page.getByRole("button", { name: "Codex 任务", exact: false }).click();
+  await page.locator('.nav button[data-page="tasks"]').click();
   await page.locator("#prompt").fill("在线隔离演示");
   await page.getByRole("button", { name: "创建 Mock 任务" }).click();
   await page.locator(".result").filter({ hasText: "模拟结果" }).waitFor();
-  await page.getByRole("button", { name: "照片时光", exact: false }).click();
+  await page.locator('.nav button[data-page="photos"]').click();
   await page.locator("#upload").setInputFiles("assets/photos/1.jpg");
   await page.locator(".photo-tile").filter({ hasText: "1.jpg" }).waitFor();
   assert.deepEqual(
