@@ -51,7 +51,13 @@ export function createDeviceSync(store, directory, bridgeOnline, { allowExecutio
       }
       photos.push({ id: photo.id, sha256, size: PHOTO_BYTES });
     }
-    const tasks = store.tasks().filter(item => item.mode === "production");
+    let tasks = store.tasks().filter(item => item.mode === "production");
+    /* Demo bridge tasks are only a fallback example; real workspaces win. */
+    const demo = tasks.filter(item => item.project === "StopWatch / Mock");
+    if (demo.length) {
+      const real = tasks.filter(item => item.project !== "StopWatch / Mock");
+      tasks = real.length ? real : demo.slice(0, 1);
+    }
     tasks.sort((a, b) => (b.updated || b.created || 0) - (a.updated || a.created || 0));
     const task = tasks.find(item => item.id === store.settings().codexTaskId) || tasks.find(item => ["thinking", "working", "testing", "approval"].includes(item.state)) || tasks[0];
     const bridge = store.snapshot("bridgeStatus");

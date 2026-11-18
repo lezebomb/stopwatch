@@ -366,7 +366,7 @@ function quotaCard() {
 function connectionCard() {
   const online = state.deviceOnline, device = state.device;
   const muse = !online ? "设备离线，状态待更新" : device?.museReady ? "在线" : device?.museLinked ? "已绑定，连接中" : device ? "尚未绑定" : "等待挂件报告";
-  return `<section class="card"><h2>连接状态</h2><div class="connection-grid"><div>设备联网<strong>${online ? "已联网并同步" : "等待联网"}</strong></div><div>手机配对<strong>${state.session?.phone ? state.session.role === "manager" ? "已配对 · 照片管理" : "已配对 · 只读" : "已有控制台授权"}</strong></div><div>Muse<strong>${muse}</strong></div><div>Codex<strong>${state.codex?.online ? "在线" : state.bridgeOnline ? "电脑已连，等待 Codex" : "电脑离线"}</strong></div></div><p class="small muted">联网、手机授权和账号连接分别恢复。设备离线会保留照片，无需重配手机。</p></section>`;
+  return `<section class="card"><h2>连接状态</h2><div class="connection-grid"><div>设备联网<strong>${online ? "已联网并同步" : "等待联网"}</strong></div><div>手机配对<strong>${state.session?.phone ? state.session.role === "manager" ? "已配对 · 照片管理" : "已配对 · 只读" : "已有控制台授权"}</strong></div><div>Muse<strong>${muse}</strong></div><div>Codex<strong>${state.codex?.online ? "在线" : "离线"}</strong></div></div></section>`;
 }
 function productionOverview() {
   const chosen = state.settings.defaultPhoto;
@@ -394,7 +394,7 @@ function overview() {
 function tasks() {
   const task = active(),
     running = task && ["thinking", "working", "testing"].includes(task.state);
-  return `<div class="notice">MOCK 演示：任务不会调用真实 Codex。输入“审批”体验确认流程，输入“失败”体验异常。</div><div class="panel-grid"><div><section class="card"><div class="card-head"><h2>新指令</h2><span class="tag">MOCK</span></div><form id="task-form"><label for="prompt">任务内容</label><textarea id="prompt" required maxlength="8000" placeholder="例如：检查照片上传，运行测试并申请审批"></textarea><p class="muted small">可使用手机输入法语音转文字。</p><button>创建 Mock 任务 ↗</button></form></section><h2 class="list-heading">会话与项目</h2><div class="task-list">${
+  return `<div class="notice">MOCK 演示：任务不会调用真实 Codex。</div><div class="panel-grid"><div><section class="card"><div class="card-head"><h2>新指令</h2><span class="tag">MOCK</span></div><form id="task-form"><label for="prompt">任务内容</label><textarea id="prompt" required maxlength="8000" placeholder="例如：检查照片上传，运行测试并申请审批"></textarea><button>创建 Mock 任务 ↗</button></form></section><h2 class="list-heading">会话</h2><div class="task-list">${
     [...state.tasks]
       .reverse()
       .map(
@@ -435,14 +435,7 @@ function photos() {
     ? Math.max(0, Math.floor(state.device.storageTotal * .85) - state.device.storageUsed - 65536) : null;
   const remaining = Math.max(0, Math.min(state.photoLimit - state.photos.length, Math.floor((state.photoBudget - bytes) / perPhoto), safeFree === null ? state.photoLimit : Math.floor(safeFree / perPhoto)));
   const budgetNote = production && safeFree !== null ? `<p class="small muted" role="status">还可新增约 ${remaining} 张。</p>` : "";
-  return `<div class="notice">${production ? "挂件联网后自动同步，离线保留已有照片。所有未隐藏照片会加入轮播。" : "本地演示相册。"}</div><div class="stat-line"><span>${state.photos.length} / ${state.photoLimit} 张</span><span>${(bytes / 1024 / 1024).toFixed(2)} / 6 MiB</span></div>${budgetNote}<div class="upload"><h2>为小小屏幕，留住大大的喜欢。</h2><p class="muted small">${production ? "上传前裁切到 466×466，并预览圆屏" : "自动居中裁切与缩放"} · JPG / PNG / WebP · 单张最多 8 MiB</p><label for="upload">选择照片</label><input type="file" id="upload" accept="image/jpeg,image/png,image/webp" ${production ? "multiple" : ""} ${production && remaining === 0 ? "disabled" : ""}></div><div class="photo-grid">${[
-    0, 1, 2,
-  ]
-    .map((i) => ({
-      id: `builtin-${i}`,
-      builtin: true,
-    }))
-    .concat(state.photos)
+  return `<div class="notice">${production ? "上传后自动同步到挂件。" : "本地演示相册。"}</div><div class="stat-line"><span>${state.photos.length} / ${state.photoLimit} 张</span></div>${budgetNote}<div class="upload"><p class="muted small">${production ? "等比缩放预览圆屏" : "自动居中缩放"} · JPG / PNG / WebP · 单张最多 8 MiB</p><label for="upload">选择照片</label><input type="file" id="upload" accept="image/jpeg,image/png,image/webp" ${production ? "multiple" : ""} ${production && remaining === 0 ? "disabled" : ""}></div><div class="photo-grid">${state.photos
     .map(
       (p) =>
         `<article class="photo-tile">${p.id === state.settings.eggPhoto ? '<p class="small muted">隐藏彩蛋</p>' : `<img src="${p.builtin ? asset(`/photos/${p.id.slice(-1)}.jpg`) : photoUrl(p.id)}" alt="${escape(p.name)}">`}<p>${escape(p.name)} ${state.settings.defaultPhoto === p.id ? "· 当前封面" : ""}</p><div class="actions">${p.id === state.settings.eggPhoto ? "" : `<button class="secondary" data-cover="${p.id}">设为封面</button><button class="quiet" data-rotate="${p.id}">加入轮播</button>`}${!p.builtin ? `<button class="secondary" data-hidden="${p.id}">${p.id === state.settings.eggPhoto ? "取消隐藏" : "设为隐藏"}</button><button class="danger" data-delete="${p.id}">删除</button>` : ""}</div></article>`,
@@ -461,7 +454,7 @@ function settings() {
   <label for="egg-photo">隐藏彩蛋照片</label><select id="egg-photo"><option value="">仅显示留言</option>${state.photos.map(p =>
     `<option value="${escape(p.id)}" ${p.id === state.settings.eggPhoto ? "selected" : ""}>${escape(p.name)}</option>`).join("")}</select>
   <p class="small muted">彩蛋照片会从日常轮播隐藏，可用五次轻点或指定日期打开。</p>`;
-  return `<div class="panel-grid"><section class="card"><h2>设备设置</h2><div class="setting-row"><span>${production ? "挂件亮度" : "模拟屏幕亮度"} <strong id="brightness-value">${state.settings.brightness}%</strong></span><input id="brightness" type="range" min="10" max="80" step="5" value="${state.settings.brightness}" aria-label="亮度"></div><div class="setting-row"><span>扬声器静音</span><input id="audio-silent" type="checkbox" ${state.settings.audioSilent ? "checked" : ""}></div><div class="setting-row"><span>音量 <strong id="volume-value">${state.settings.volume ?? 50}%</strong></span><input id="volume" type="range" min="0" max="100" step="5" value="${state.settings.volume ?? 50}" aria-label="音量"></div><div class="setting-row"><span>照片自动轮播</span><input id="slideshow" type="checkbox" ${state.settings.slideshow ? "checked" : ""}></div><label for="slide-seconds">轮播间隔（秒）</label><input id="slide-seconds" type="number" min="5" max="300" value="${state.settings.slideSeconds}"><label for="border">封面装饰边框</label><select id="border"><option value="mint" ${state.settings.border === "mint" ? "selected" : ""}>薄荷绿</option><option value="gold" ${state.settings.border === "gold" ? "selected" : ""}>暖金色</option><option value="none" ${state.settings.border === "none" ? "selected" : ""}>无边框</option></select>${displayOptions}<label for="egg-message">彩蛋留言</label><textarea id="egg-message" maxlength="150">${escape(state.settings.eggMessage)}</textarea><label for="egg-date">纪念日（MM-DD）</label><input id="egg-date" value="${escape(state.settings.eggDate)}" maxlength="5"><button id="save-settings">保存设置</button></section><div class="right-stack"><section class="card"><h2>配对与设备授权</h2><p class="small muted">授权链接两分钟有效，使用一次后失效。</p><div class="actions"><button id="ticket">新建控制端二维码</button><button class="secondary" id="viewer-ticket">新建只读端</button>${canPair ? '<button class="secondary" id="device-ticket">绑定 StopWatch</button>' : ""}</div><div id="ticket-result"></div><h3 class="list-heading">已授权设备与浏览器</h3>${state.sessions
+  return `<div class="panel-grid"><div><section class="card"><h2>音量</h2><div class="setting-row"><button id="volume-down" class="secondary" aria-label="减小音量">−</button><strong id="volume-value">${state.settings.volume ?? 50}%</strong><button id="volume-up" class="secondary" aria-label="增大音量">＋</button></div></section><section class="card"><h2>设备设置</h2><div class="setting-row"><span>${production ? "挂件亮度" : "模拟屏幕亮度"} <strong id="brightness-value">${state.settings.brightness}%</strong></span><input id="brightness" type="range" min="10" max="80" step="5" value="${state.settings.brightness}" aria-label="亮度"></div><div class="setting-row"><span>扬声器静音</span><input id="audio-silent" type="checkbox" ${state.settings.audioSilent ? "checked" : ""}></div><div class="setting-row"><span>照片自动轮播</span><input id="slideshow" type="checkbox" ${state.settings.slideshow ? "checked" : ""}></div><label for="slide-seconds">轮播间隔（秒）</label><input id="slide-seconds" type="number" min="5" max="300" value="${state.settings.slideSeconds}"><label for="border">封面装饰边框</label><select id="border"><option value="mint" ${state.settings.border === "mint" ? "selected" : ""}>薄荷绿</option><option value="gold" ${state.settings.border === "gold" ? "selected" : ""}>暖金色</option><option value="none" ${state.settings.border === "none" ? "selected" : ""}>无边框</option></select>${displayOptions}<label for="egg-message">彩蛋留言</label><textarea id="egg-message" maxlength="150">${escape(state.settings.eggMessage)}</textarea><label for="egg-date">纪念日（MM-DD）</label><input id="egg-date" value="${escape(state.settings.eggDate)}" maxlength="5"><button id="save-settings">保存设置</button></section></div><div class="right-stack"><section class="card"><h2>配对与设备授权</h2><p class="small muted">授权链接两分钟有效，使用一次后失效。</p><div class="actions"><button id="ticket">新建控制端二维码</button><button class="secondary" id="viewer-ticket">新建只读端</button>${canPair ? '<button class="secondary" id="device-ticket">绑定 StopWatch</button>' : ""}</div><div id="ticket-result"></div><h3 class="list-heading">已授权设备与浏览器</h3>${state.sessions
     .filter((s) => !s.revoked)
     .map(
       (s) =>
@@ -488,15 +481,8 @@ function render() {
     ["settings", "⚙", "设备设置"],
     ["guide", "☷", "使用指南"],
   ];
-  const titles = {
-    overview: ["设备概览", "封面、任务与额度状态。"],
-    tasks: ["Codex 任务", "查看与操作正在运行的任务。"],
-    photos: ["相册", "上传、设封面、轮播与隐藏彩蛋。"],
-    network: ["网络与授权，各自清楚。", "换 Wi-Fi 不需要重新配对手机或 Muse 账号。"],
-    settings: ["设备设置", "亮度、显示模式、静音与彩蛋。"],
-    guide: ["使用指南", "按键、配对与常见问题。"],
-  };
-  root.innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand"><span class="brandmark"></span>StopWatch</div><nav class="nav" aria-label="主导航">${nav.map(([key, icon, title]) => `<button data-page="${key}" class="${state.page === key ? "active" : ""}"><span class="nav-icon">${icon}</span>${title}${key === "tasks" && state.unread ? `<span class="unread">${state.unread}</span>` : ""}</button>`).join("")}</nav><div class="side-bottom"><p class="small muted">v${VERSION}</p></div></aside><main class="main"><header class="topbar"><div class="top-actions"><span><i class="dot ${state.bridgeOnline ? "" : "off"}"></i> ${state.bridgeOnline ? "桥接在线" : "桥接离线"}</span><span class="tag">MOCK PREVIEW</span></div></header><div class="pagehead"><h1>${titles[state.page][0]}</h1><p>${titles[state.page][1]}</p></div>${!state.connected ? '<div class="offline-banner">事件连接已断开，正在自动重连。</div>' : ""}${{ overview, tasks, photos, network: networkPage, settings, guide: guidePage }[state.page]()}<footer class="footer"><span>StopWatch Companion</span></footer></main></div>`;
+  root.innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand"><span class="brandmark"></span>StopWatch</div><nav class="nav" aria-label="主导航">${nav.map(([key, icon, title]) => `<button data-page="${key}" class="${state.page === key ? "active" : ""}"><span class="nav-icon">${icon}</span>${title}${key === "tasks" && state.unread ? `<span class="unread">${state.unread}</span>` : ""}</button>`).join("")}</nav><div class="side-bottom"><p class="small muted">v${VERSION}</p></div></aside><main class="main">${!state.connected ? '<div class="offline-banner">连接已断开，正在自动重连。</div>' : ""}${{ overview, tasks, photos, network: networkPage, settings, guide: guidePage }[state.page]()}<footer class="footer"><span>StopWatch Companion</span></footer></main></div>`;
+  root.querySelector(".nav .active")?.scrollIntoView({ block: "nearest", inline: "center" });
   if (state.mode === "production") {
     if (state.page === "settings" && state.session?.phone) {
       const card = root.querySelector("#ticket")?.closest(".card");
@@ -791,16 +777,12 @@ function bind() {
     document.querySelector("#brightness-value").textContent =
       e.target.value + "%";
   });
-  on("volume", "input", (e) => {
-    document.querySelector("#volume-value").textContent =
-      e.target.value + "%";
-  });
   on("save-settings", "click", async () => {
     try {
       state.settings = await api("settings", {
         brightness: Number(document.querySelector("#brightness").value),
         audioSilent: document.querySelector("#audio-silent").checked,
-        volume: Number(document.querySelector("#volume").value),
+        volume: state.settings.volume ?? 50,
         slideshow: document.querySelector("#slideshow").checked,
         slideSeconds: Number(document.querySelector("#slide-seconds").value),
         border: document.querySelector("#border").value,
@@ -817,6 +799,14 @@ function bind() {
       toast(e.message);
     }
   });
+  for (const [id, delta] of [["volume-down", -10], ["volume-up", 10]]) {
+    on(id, "click", async () => {
+      try {
+        state.settings = await api("settings", { volume: Math.max(0, Math.min(100, (state.settings.volume ?? 50) + delta)) });
+        render();
+      } catch (e) { toast(e.message); }
+    });
+  }
   const ticket = async (role) => {
     try {
       const result = await api("tickets", { role });
@@ -877,9 +867,7 @@ function bind() {
   });
 }
 function allPhotos() {
-  return [0, 1, 2]
-    .map((i) => ({ id: `builtin-${i}`, url: asset(`/photos/${i}.jpg`) }))
-    .concat(state.photos.filter(p => p.id !== state.settings.eggPhoto).map((p) => ({ ...p, url: photoUrl(p.id) })));
+  return state.photos.filter(p => p.id !== state.settings.eggPhoto).map((p) => ({ ...p, url: photoUrl(p.id) }));
 }
 function revealEgg() {
   state.egg = true;
@@ -1116,7 +1104,7 @@ function draw() {
     miao.draw(ctx, 131, 106, 204, status, task?.id, state.charging, now);
     text(labels[status], 233, 365, 25);
     text(
-      task?.title.slice(0, 18) || "随时准备接住你的灵感",
+      task?.title.slice(0, 18) || "待命",
       233,
       402,
       14,
