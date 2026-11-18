@@ -1631,6 +1631,13 @@ static void tick(lv_timer_t *timer) {
       .sleep_after = display_settings.sleep_after});
   if (now - last_power >= 1000) {
     last_power = now;
+    /* Keep the speaker amplifier off while idle so charger ripple cannot be
+     * amplified into a constant buzz; playback turns it back on in
+     * muse_audio_write. */
+    if (!sw_companion_audio_silent() && !muse_voice_in_call() &&
+        muse_state_mode(NULL) != MUSE_MODE_SPEAKING &&
+        sw_companion_amp_state() == 1)
+      sw_companion_amp_set(false);
     if (screen == SW_CODEX && !egg && !codex_online)
       show();
     if (screen != SW_MUSE && !atomic_load(&manual_display_off)) {

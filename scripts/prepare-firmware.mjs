@@ -516,6 +516,10 @@ static atomic_bool sw_amp_requested;
 bool sw_companion_amp_refresh(void) {
     return s_ioe && s_ioe_lock && ioe_set(IOE_SPK, atomic_load(&sw_amp_requested)) == ESP_OK;
 }
+void sw_companion_amp_set(bool on) {
+    atomic_store(&sw_amp_requested, on);
+    sw_companion_amp_refresh();
+}
 int sw_companion_amp_state(void) {
     if (!s_ioe || !s_ioe_lock) return -1;
     uint8_t output[2];
@@ -570,6 +574,11 @@ for (const signature of ["void muse_audio_chirp(int rising)", "void muse_audio_l
 const pcmMute = "bool mute = !muse_settings_speaker_on();";
 if (!audio.includes(pcmMute)) throw new Error("Upstream PCM mute hook changed");
 audio = audio.replace(pcmMute, "bool mute = sw_companion_audio_silent() || !muse_settings_speaker_on();");
+const pcmWrite = "esp_err_t muse_audio_write(const int16_t *mono, size_t frames)\n{";
+if (!audio.includes(pcmWrite)) throw new Error("Upstream audio write hook changed");
+audio = audio.replace(pcmWrite,
+  pcmWrite + "\n    if (!sw_companion_audio_silent() && muse_settings_speaker_on())\n" +
+  "        sw_companion_amp_set(true);");
 // The muted chirp's 2,880-byte CPU buffer must not reserve internal RAM.
 // muse_audio_write copies synchronously into the driver's own DMA buffers.
 if (audio.split("    static int16_t buf[N];").length !== 2 ||

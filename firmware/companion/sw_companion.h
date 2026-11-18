@@ -15,6 +15,7 @@ bool sw_companion_audio_silent(void);
 void sw_companion_toggle_silent(void);
 /* Board expander operations. State is -1 if readback failed. */
 bool sw_companion_amp_refresh(void);
+void sw_companion_amp_set(bool on);
 int sw_companion_amp_state(void);
 int sw_companion_brightness(int requested);
 bool sw_companion_keep_awake(void);
