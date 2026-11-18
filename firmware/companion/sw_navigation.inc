@@ -169,7 +169,7 @@ void sw_companion_device_status(char *out, size_t capacity) {
     sw_companion_audio_silent() ? "true" : "false", (unsigned)total, (unsigned)used, count);
 }
 unsigned sw_companion_buttons(unsigned events) {
-  static bool down, blue_down, long_sent, voice_sent, pairing_press, egg_combo;
+  static bool down, blue_down, long_sent, voice_sent, pairing_press, egg_combo, silent_visual;
   static int64_t pressed_at, blue_at;
   events |= atomic_exchange(&injected_buttons, 0);
   int64_t now = esp_timer_get_time() / 1000;
@@ -186,20 +186,36 @@ unsigned sw_companion_buttons(unsigned events) {
   if (events & MUSE_BTN_SPEAKER_PRESS) {
     blue_down = true; blue_at = now; sw_companion_input_wake();
     if (down) egg_combo = true;
+  }
+  if (events & MUSE_BTN_SPEAKER_RELEASE) {
+    blue_down = false;
+    /* A lone blue tap opens settings on release, so a yellow press that is on
+     * its way can still turn the same gesture into the egg combo. */
     if (!egg_combo) atomic_store(&nav_requested, NAV_SETTINGS + 1);
   }
-  if (events & MUSE_BTN_SPEAKER_RELEASE) blue_down = false;
   if (down && !egg_combo && !pairing_press && !long_sent && now - pressed_at >= 600 && !released) {
     long_sent = true; atomic_store(&nav_requested, NAV_MUSE + 1);
     if (!sw_companion_audio_silent()) { voice_sent = true; forwarded |= MUSE_BTN_TALK_PRESS; }
+    else {
+      silent_visual = true;
+      muse_state_set_asleep(false);
+      muse_state_set_mode(MUSE_MODE_LISTENING);
+      muse_state_set_caption("静音中 / 长按说话需先开声音");
+    }
   }
   if (released && down) {
     if (!egg_combo && !pairing_press && !long_sent) atomic_store(&nav_requested, NAV_AI + 1);
     if (voice_sent) forwarded |= MUSE_BTN_TALK_RELEASE;
+    if (silent_visual) {
+      silent_visual = false;
+      muse_state_set_mode(MUSE_MODE_IDLE);
+      muse_state_set_caption("%s", "");
+    }
     down = voice_sent = pairing_press = false;
   }
   /* Hidden egg: both rim keys held on the cover. The trigger fires on the
    * release of either key once both were down and cancels queued navigation. */
+  if (down && blue_down && !egg_combo) egg_combo = true;
   if (sw_companion_egg_trigger(down, blue_down)) {
     forwarded &= ~(MUSE_BTN_SPEAKER_PRESS | MUSE_BTN_TALK_PRESS);
     atomic_store(&nav_requested, 0);

@@ -193,18 +193,23 @@ static void show(void);
 static void load_photo(void);
 bool sw_companion_egg_trigger(bool yellow, bool blue) {
   static bool armed;
-  if (yellow && blue && screen == SW_PHOTOS && !nav_panel && !egg &&
-      !atomic_load(&setup_active) && display_settings.has_egg) {
+  if (yellow && blue && !egg && !atomic_load(&setup_active) && display_settings.has_egg) {
     armed = true;
-  } else if (armed && (!yellow || !blue)) {
-    armed = false;
-    if (screen == SW_PHOTOS && !nav_panel && !egg) {
-      egg = true;
-      show();
-      return true;
-    }
   }
-  return false;
+  if (!armed || egg || atomic_load(&setup_active) || !display_settings.has_egg)
+    return false;
+  /* Fire as soon as both keys were seen down, independent of which page a
+   * single-key shortcut queued a moment earlier. */
+  armed = false;
+  if (nav_panel) {
+    lv_obj_delete(nav_panel);
+    nav_panel = nav_status = nav_code = NULL;
+  }
+  nav_route = NAV_COVER;
+  screen = SW_PHOTOS;
+  egg = true;
+  show();
+  return true;
 }
 int sw_companion_brightness(int requested) {
   if (!root || screen == SW_MUSE)
