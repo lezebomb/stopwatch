@@ -421,6 +421,9 @@ export async function createRelay({
             patch.border = data.border;
           if (["photo", "smart", "endurance"].includes(data.displayMode))
             patch.displayMode = data.displayMode;
+          if (typeof data.audioSilent === "boolean") patch.audioSilent = data.audioSilent;
+          if (Number.isFinite(data.volume) && data.volume >= 0 && data.volume <= 100)
+            patch.volume = Math.round(data.volume);
           if (Number.isInteger(data.sleepAfter) && (data.sleepAfter === 0 || (data.sleepAfter >= 30 && data.sleepAfter <= 3600)))
             patch.sleepAfter = data.sleepAfter;
           if (Number.isInteger(data.utcOffset) && data.utcOffset >= -720 && data.utcOffset <= 840)

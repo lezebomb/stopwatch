@@ -12,6 +12,7 @@ void sw_companion_init(void);
 bool sw_companion_console(const char *line);
 /* Persistent local audio permission. Default is silent on an existing device. */
 bool sw_companion_audio_silent(void);
+void sw_companion_toggle_silent(void);
 /* Board expander operations. State is -1 if readback failed. */
 bool sw_companion_amp_refresh(void);
 int sw_companion_amp_state(void);

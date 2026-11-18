@@ -27,6 +27,8 @@ typedef struct {
   bool has_display;
   unsigned slide_seconds, brightness;
   bool slideshow;
+  bool audio_silent;
+  uint8_t volume;
   uint8_t border; /* 0: none, 1: mint, 2: gold */
 } sw_sync_album_t;
 

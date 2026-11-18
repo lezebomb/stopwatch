@@ -25,6 +25,11 @@ static void nav_display_change(lv_event_t *e) {
   } else if (nvs_ok && value >= 0 && value <= 2) {
     sw_display_settings_t next = display_settings; next.mode = value;
     if (nvs_set_blob(config, "display_cfg", &next, sizeof(next)) == ESP_OK && nvs_commit(config) == ESP_OK) display_settings = next;
+  } else if (value == 20) {
+    sw_companion_toggle_silent();
+  } else if (value == 21) {
+    int level = muse_settings_volume() + 25;
+    muse_settings_set_volume(level > 100 ? 0 : level);
   }
   nav_open(NAV_DISPLAY);
 }
@@ -89,8 +94,10 @@ static void nav_open(int route) {
     nav_text(nav_panel, "与手机配对、Muse 账号相互独立", 118);
   } else if (route == NAV_DISPLAY) {
     char label[64]; snprintf(label, sizeof(label), "亮度 %d", muse_settings_brightness()); nav_text(nav_panel, label, -167);
-    nav_display_row("亮度 -", 10, -112, false); nav_display_row("亮度 +", 11, -62, false);
-    nav_display_row("照片展示", 0, -6, display_settings.mode == 0); nav_display_row("智能省电", 1, 46, display_settings.mode == 1); nav_display_row("续航优先", 2, 98, display_settings.mode == 2);
+    nav_display_row("亮度 -", 10, -167, false); nav_display_row("亮度 +", 11, -124, false);
+    snprintf(label, sizeof(label), "静音 %s / 音量 %d", sw_companion_audio_silent() ? "开" : "关", muse_settings_volume());
+    nav_display_row(label, 20, -81, false); nav_display_row("音量 +25", 21, -38, false);
+    nav_display_row("照片展示", 0, 5, display_settings.mode == 0); nav_display_row("智能省电", 1, 48, display_settings.mode == 1); nav_display_row("续航优先", 2, 91, display_settings.mode == 2);
   } else if (route == NAV_SYSTEM) {
     sw_update_status_t update; sw_update_status(&update);
     char text[240]; snprintf(text, sizeof(text), "StopWatch C152\n版本 %s\n最新 %s\n%s\n当前静音", SW_UPDATE_VERSION, update.latest[0] ? update.latest : "尚未检查", update.state);

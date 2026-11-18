@@ -413,6 +413,10 @@ static bool parse_album(cJSON *root, sw_sync_album_t *out) {
       !integer(cover, "slideSeconds", 5, 300, &out->slide_seconds) ||
       !integer(cover, "brightness", 10, 80, &out->brightness))
     return false;
+  cJSON *silent = cJSON_GetObjectItemCaseSensitive(cover, "audioSilent");
+  unsigned volume;
+  if (!cJSON_IsBool(silent) || !integer(cover, "volume", 0, 100, &volume))
+    return false;
   bool found = !strcmp(selected, "builtin-0") ||
                !strcmp(selected, "builtin-1") || !strcmp(selected, "builtin-2");
   for (unsigned i = 0; i < out->count && !found; i++)
@@ -421,6 +425,8 @@ static bool parse_album(cJSON *root, sw_sync_album_t *out) {
     return false;
   strlcpy(out->cover, selected, sizeof(out->cover));
   out->slideshow = cJSON_IsTrue(slideshow);
+  out->audio_silent = cJSON_IsTrue(silent);
+  out->volume = (uint8_t)volume;
   out->border = !strcmp(border, "gold") ? 2 : !strcmp(border, "mint") ? 1 : 0;
   return parse_display(root, out);
 }

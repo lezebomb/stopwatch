@@ -36,7 +36,7 @@ export function createDeviceSync(store, directory, bridgeOnline, { allowExecutio
   }
   async function snapshot(deviceId) {
     const entries = store.photos();
-    const { defaultPhoto, slideshow, slideSeconds, border, brightness, displayMode,
+    const { defaultPhoto, slideshow, slideSeconds, border, brightness, audioSilent, volume, displayMode,
       sleepAfter, utcOffset, eggDate, eggMessage, eggPhoto } = store.settings();
     const ids = new Set(entries.map(photo => photo.id));
     for (const cached of hashes.keys()) {
@@ -63,7 +63,7 @@ export function createDeviceSync(store, directory, bridgeOnline, { allowExecutio
       hardware: deviceHardware,
       syncedAt: Date.now(),
       photos,
-      cover: { defaultPhoto, slideshow, slideSeconds, border, brightness },
+      cover: { defaultPhoto, slideshow, slideSeconds, border, brightness, audioSilent, volume },
       display: { mode: displayMode, sleepAfter, utcOffset, eggDate, eggMessage, eggPhoto },
       codex: {
         online,

@@ -27,6 +27,8 @@ export const labels = {
 };
 export const defaultSettings = {
   brightness: 30,
+  audioSilent: true,
+  volume: 50,
   slideshow: false,
   slideSeconds: 20,
   border: "mint",

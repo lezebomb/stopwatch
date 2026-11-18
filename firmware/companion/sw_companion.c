@@ -73,6 +73,7 @@ static unsigned slide_seconds = 20;
 typedef struct {
   char id[37];
   uint8_t brightness, border, slideshow;
+  uint8_t audio_silent, volume;
   uint16_t seconds;
 } cover_settings_t;
 typedef struct {
@@ -149,6 +150,8 @@ static bool set_audio_silent(bool silent) {
   persist_audio_silent(true);
   return false;
 }
+
+void sw_companion_toggle_silent(void) { set_audio_silent(!atomic_load(&audio_silent)); }
 static atomic_bool external_power_seen, previous_external_power;
 #define PHOTO_BYTES SW_SYNC_PHOTO_BYTES
 #define USER_SLOTS SW_SYNC_PHOTO_LIMIT
@@ -561,6 +564,8 @@ sw_sync_album_result_t sw_companion_sync_album(const sw_sync_album_t *desired,
   cover.settings.border = desired->border;
   cover.settings.seconds = desired->slide_seconds;
   cover.settings.slideshow = desired->slideshow;
+  cover.settings.audio_silent = desired->audio_silent;
+  cover.settings.volume = desired->volume;
   if (!strncmp(desired->cover, "builtin-", 8))
     cover.index = desired->cover[8] - '0';
   for (unsigned i = 0; i < desired->count; i++) {
@@ -1123,7 +1128,9 @@ static void apply_synced_cover(const cover_sync_t *sync) {
   bool changed = select || last_cover.slideshow != prefs->slideshow ||
                  last_cover.seconds != prefs->seconds ||
                  last_cover.brightness != prefs->brightness ||
-                 last_cover.border != prefs->border;
+                 last_cover.border != prefs->border ||
+                 last_cover.audio_silent != prefs->audio_silent ||
+                 last_cover.volume != prefs->volume;
   bool display_changed =
       sync->has_display &&
       memcmp(&display_settings, &sync->display, sizeof(display_settings)) != 0;
@@ -1148,6 +1155,10 @@ static void apply_synced_cover(const cover_sync_t *sync) {
     muse_settings_set_brightness(prefs->brightness);
   if (first || last_cover.border != prefs->border)
     set_frame(prefs->border);
+  if (first || last_cover.audio_silent != prefs->audio_silent)
+    set_audio_silent(prefs->audio_silent);
+  if (first || last_cover.volume != prefs->volume)
+    muse_settings_set_volume(prefs->volume);
   if (changed && nvs_ok)
     nvs_set_blob(config, "relay_cover", prefs, sizeof(*prefs));
   if (changed || reselect || display_changed)
