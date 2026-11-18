@@ -172,6 +172,11 @@ unsigned sw_companion_buttons(unsigned events) {
   static bool down, long_sent, voice_sent, pairing_press;
   static int64_t pressed_at;
   events |= atomic_exchange(&injected_buttons, 0);
+  /* Red-key safety: a lost release while the panel powered down can leave the
+   * upstream power state stuck "down", which makes every later press look like
+   * a held key. Any press while asleep re-arms wake-up and clears the screen. */
+  if ((events & MUSE_BTN_POWER_PRESS) && muse_state_asleep())
+    sw_companion_input_wake();
   int64_t now = esp_timer_get_time() / 1000;
   bool released = events & MUSE_BTN_TALK_RELEASE;
   if (events & MUSE_BTN_TALK_PRESS) {

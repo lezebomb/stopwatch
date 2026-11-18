@@ -241,6 +241,12 @@ input =
 const inputPoll = "unsigned ev = muse_board->poll_buttons() | atomic_exchange(&s_touch_talk_events, 0);";
 const directPowerOff = "        if (s_talk_down) talk_button(MUSE_BTN_TALK_RELEASE);\n        power_off();";
 if (!input.includes(inputPoll) || !input.includes(directPowerOff)) throw new Error("Upstream physical input changed");
+const dedicatedHook = "static void dedicated_buttons(unsigned ev)\n{\n    bool release = (ev & MUSE_BTN_POWER_RELEASE) != 0;";
+if (!input.includes(dedicatedHook)) throw new Error("Upstream power key handler changed");
+input = input.replace(dedicatedHook,
+  dedicatedHook + "\n    /* A lost release during panel power-down must not latch the red key. */\n" +
+  "    if (muse_state_asleep() && (ev & MUSE_BTN_POWER_PRESS)) {\n" +
+  "        s_power_down = false;\n        s_power_swallow = false;\n    }");
 input = input.replace(inputPoll, "unsigned ev = sw_companion_buttons(muse_board->poll_buttons()) | atomic_exchange(&s_touch_talk_events, 0);\n        if (sw_companion_audio_silent()) ev &= ~MUSE_BTN_TALK_PRESS;")
   .replace(directPowerOff, "        if (s_talk_down) talk_button(MUSE_BTN_TALK_RELEASE);\n        sw_companion_shutdown_prompt();")
   .replace('if (!s_power_swallow) set_asleep(true, muse_board->power_button);', 'if (!s_power_swallow) { sw_companion_manual_sleep(true); set_asleep(true, muse_board->power_button); }')
