@@ -1434,7 +1434,7 @@ static void show(void) {
   lv_obj_set_flag(cover_frame, LV_OBJ_FLAG_HIDDEN, screen != SW_PHOTOS || egg);
   lv_obj_set_flag(pet_face, LV_OBJ_FLAG_HIDDEN,
                   screen != SW_CODEX && (!egg || hidden != UINT32_MAX));
-  lv_obj_set_style_bg_opa(caption, egg ? LV_OPA_70 : LV_OPA_TRANSP, 0);
+  lv_obj_set_style_bg_opa(caption, LV_OPA_TRANSP, 0);
   if (egg) {
     sw_miao_still();
     lv_label_set_text(caption, display_settings.message);
