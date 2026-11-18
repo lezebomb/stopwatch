@@ -474,7 +474,7 @@ function render() {
   if (!state.paired) return;
   if (state.page === "tasks") markRead();
   const nav = [
-    ["overview", "◉", "陪伴总览"],
+    ["overview", "◉", "概览"],
     ["tasks", "⌘", "Codex 任务"],
     ["photos", "▧", "照片时光"],
     ...(state.mode === "production" ? [["network", "◎", "网络"]] : []),

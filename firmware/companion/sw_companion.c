@@ -143,6 +143,9 @@ static bool set_audio_silent(bool silent) {
   if (!persist_audio_silent(false))
     return false;
   atomic_store(&audio_silent, false);
+  /* The official voice path also checks its own speaker switch; a previous
+   * "speaker off" would otherwise leave replies silent after unmuting. */
+  muse_settings_set_speaker_on(true);
   if (sw_companion_amp_refresh())
     return true;
   atomic_store(&audio_silent, true);
