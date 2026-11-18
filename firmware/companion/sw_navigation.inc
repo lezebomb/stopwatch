@@ -189,8 +189,7 @@ unsigned sw_companion_buttons(unsigned events) {
   if (events & MUSE_BTN_SPEAKER_RELEASE) blue_down = false;
   /* Egg: both rim keys are held within a short window. This only adds one
    * action; single-key behaviour below is unchanged. */
-  if (down && blue_down && (blue_at > pressed_at ? blue_at - pressed_at : pressed_at - blue_at) < 900 &&
-      sw_companion_egg_trigger(true, true)) {
+  if (down && blue_down && sw_companion_egg_trigger(true, true)) {
     forwarded &= ~(MUSE_BTN_SPEAKER_PRESS | MUSE_BTN_TALK_PRESS);
     atomic_store(&nav_requested, 0);
     egg_shown = true;
