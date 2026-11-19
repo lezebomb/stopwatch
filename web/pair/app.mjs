@@ -57,7 +57,18 @@ $("verify").onsubmit = async event => {
 try {
   const status = await request(`session${expected ? `?device=${encodeURIComponent(expected)}` : ""}`);
   if (status.paired) enter(status.deviceRef);
-  else if (!isSecureContext || !navigator.bluetooth) say("请在华为/Android Chrome 或支持网页蓝牙的 Edge 中打开。无需安装 APK。");
+  else if (!isSecureContext || !navigator.bluetooth) {
+    say("当前浏览器不支持网页蓝牙。请用 Chrome 打开本页（下面有一键打开按钮）。");
+    $("chrome-open").hidden = false;
+    $("open-chrome").onclick = () => {
+      const u = new URL(location.href);
+      location.href = `intent://${u.host}${u.pathname}${u.search}#Intent;scheme=https;package=com.android.chrome;S.browser_fallback_url=${encodeURIComponent(u.href)};end`;
+    };
+    $("copy-link").onclick = async () => {
+      try { await navigator.clipboard.writeText(location.href); say("链接已复制，请粘贴到 Chrome 打开。"); $("chrome-open").hidden = false; }
+      catch { say("复制失败，请手动选择浏览器地址栏链接。"); }
+    };
+  }
   else { say("请保持挂件的手机配对页打开。Wi-Fi 设置与本次手机授权相互独立。"); $("start").disabled = false; }
 } catch { say("暂时无法连接服务，请检查手机网络后刷新；不会清除已有配对。"); }
 addEventListener("pagehide", () => { $("code").value = ""; challenge = ""; client.disconnect(); });

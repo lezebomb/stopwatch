@@ -3,4 +3,5 @@
 <p id="message" role="status" aria-live="polite">正在检查这台手机的授权…</p>
 <button id="start" disabled>开始配对</button><form id="verify" hidden><label for="code">挂件上刚显示的六位验证码</label><input id="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required><button id="submit">验证并进入控制台</button></form>
 <p id="device"></p><p class="note">不要求挂件先连 Wi-Fi。手机需能打开本页；配对后挂件未联网会显示「等待联网」，无需重新配对。</p><p class="note">Android 首次可能要求系统蓝牙安全配对，请按提示操作。这里不会再要求另一组控制台登录码。</p>
+<div id="chrome-open" hidden><p>此浏览器不支持网页蓝牙。请用 Chrome 打开本页：</p><div class="actions"><button id="open-chrome" type="button">用 Chrome 打开</button><button id="copy-link" type="button" class="secondary">复制链接</button></div></div>
 <p><a href="/setup/">单独设置 Wi-Fi</a> · <a href="/guide/">使用指南</a></p></main><script type="module" src="./app.js"></script></body></html>

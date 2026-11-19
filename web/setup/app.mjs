@@ -61,7 +61,10 @@ $("connect").onclick = async () => {
     if (!enrollment && !$("wifi-status").textContent.includes("已连接")) say("蓝牙安全连接已建立，可以在下面输入 Wi-Fi 或手机热点。");
     await authorizeWhenOnline(status);
   } catch {
-    say("未能完成连接。请打开手机蓝牙及浏览器的附近设备权限，确认挂件处于手机配网页，重试并输入屏幕配对码。没有完成配对不会发送密码。");
+    const name = error?.name;
+    say(name === "NotFoundError"
+      ? "设备列表里没有找到挂件：请先在挂件上打开「手机配对/手机配网」页，确认挂件屏幕显示验证码，再点连接挂件。"
+      : "未能完成连接。请打开手机蓝牙、允许“附近设备”权限，确认挂件处于手机配网页，重试并输入屏幕配对码。没有完成配对不会发送密码。");
     $("connect").disabled = false;
   } finally { busy = false; }
 };
@@ -143,5 +146,14 @@ setInterval(async () => {
 addEventListener("pagehide", () => { ticket = ""; $("password").value = ""; client.disconnect(); });
 if (!isSecureContext || !navigator.bluetooth) {
   $("connect").disabled = true;
-  say("请用 Android Chrome 或支持网页蓝牙的 Edge 打开。如果手机无法使用网页蓝牙，可在挂件的「设置 → Wi-Fi」直接联网。");
+  say("当前浏览器不支持网页蓝牙。请用 Chrome 打开本页（下面有一键打开按钮），或在挂件的「设置 → Wi-Fi」直接联网。");
+  $("chrome-open").hidden = false;
+  $("open-chrome").onclick = () => {
+    const u = new URL(location.href);
+    location.href = `intent://${u.host}${u.pathname}${u.search}#Intent;scheme=https;package=com.android.chrome;S.browser_fallback_url=${encodeURIComponent(u.href)};end`;
+  };
+  $("copy-link").onclick = async () => {
+    try { await navigator.clipboard.writeText(location.href); say("链接已复制，请粘贴到 Chrome 打开。"); }
+    catch { say("复制失败，请手动选择浏览器地址栏链接。"); }
+  };
 }
