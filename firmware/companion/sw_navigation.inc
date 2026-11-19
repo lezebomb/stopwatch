@@ -76,7 +76,7 @@ static void nav_open(int route) {
     nav_text(nav_panel, "AI", -153); nav_row(nav_panel, "Muse", NAV_MUSE, -65); nav_row(nav_panel, "Codex", NAV_CODEX, 0); nav_row(nav_panel, "手机控制", NAV_PHONE, 65);
   } else if (route == NAV_SETTINGS) {
     nav_text(nav_panel, "设置", -174); nav_row(nav_panel, "网络", NAV_NETWORK, -112); nav_row(nav_panel, "手机配对与管理", NAV_PHONE, -56);
-    nav_row(nav_panel, "亮度与显示", NAV_DISPLAY, 0); nav_row(nav_panel, "指南", NAV_GUIDE, 56); nav_row(nav_panel, "系统与更新", NAV_SYSTEM, 112);
+    nav_row(nav_panel, "音量与显示", NAV_DISPLAY, 0); nav_row(nav_panel, "指南", NAV_GUIDE, 56); nav_row(nav_panel, "系统与更新", NAV_SYSTEM, 112);
   } else if (route == NAV_PHONE) {
     sw_phone_open(); sw_companion_phone_ble(true);
     char ref[65], url[192];

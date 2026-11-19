@@ -18,8 +18,8 @@ sw_power_policy_t sw_power_policy(sw_power_input_t in) {
     if (brightness > cap)
       brightness = cap;
   }
-  if (!in.charging && in.mode == SW_POWER_ENDURANCE && brightness > 12)
-    brightness = 12;
+  if (in.mode == SW_POWER_ENDURANCE && brightness > (in.charging ? 30 : 12))
+    brightness = in.charging ? 30 : 12;
   return (sw_power_policy_t){
       .display = !asleep,
       .wifi = !asleep && (in.screen == SW_MUSE || in.screen == SW_CODEX),
