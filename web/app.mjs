@@ -346,6 +346,8 @@ function taskCard() {
   return `<section class="card"><div class="card-head"><h2>Codex 任务</h2><span class="tag">MOCK</span></div>${task ? `<div class="task-project">${escape(task.project)}</div><h3 class="task-title">${escape(task.title)}</h3><span class="task-status"><i class="dot"></i>${labels[task.state] || task.state}</span><p class="task-operation">${escape(task.operation)}</p><div class="progress-path" aria-label="任务阶段，不表示百分比">${[0, 1, 2, 3].map((i) => `<i class="${i <= stage ? "on" : ""}"></i>`).join("")}</div><div class="actions"><button data-page="tasks">任务详情 ↗</button>${["thinking", "working", "testing", "approval"].includes(task.state) ? '<button class="quiet" id="quick-interrupt">中断</button>' : ""}</div>` : `<h3 class="task-title">暂无任务</h3><p class="task-operation">创建一个任务开始执行。</p><div class="actions"><button data-page="tasks">新建任务 ↗</button><span class="task-status">${state.bridgeOnline ? (state.mode === "production" ? "电脑已连接" : "Mock 桥接在线") : "等待桥接连接"}</span></div>`}</section>`;
 }
 function quotaCard() {
+  const updated = state.codex?.updated;
+  const fresh = state.bridgeOnline && updated && Date.now() - updated < 90_000;
   return `<section class="card"><div class="card-head"><h2>额度小看板</h2><span class="tag">${state.mode === "production" ? "账户额度" : "模拟额度"}</span></div><div class="quota-row">${[
     ["primary", "5 小时窗口"],
     ["secondary", "每周窗口"],
@@ -361,7 +363,7 @@ function quotaCard() {
           : title;
       return `<div><div class="quota-name">${escape(displayTitle)}</div><div class="quota-number">${q ? 100 - q.usedPercent + "%" : "—"}<span>剩余</span></div><div class="quota-track"><div class="quota-fill" data-width="${q ? 100 - q.usedPercent : 0}"></div></div><div class="quota-reset">${q ? date(q.resetsAt) + " 重置" : "等待桥接返回"}</div></div>`;
     })
-    .join("")}</div></section>`;
+    .join("")}</div><p class="small muted">${fresh ? "实时同步 · " + time(updated) : "等待电脑同步"}</p></section>`;
 }
 function connectionCard() {
   const online = state.deviceOnline, device = state.device;
@@ -394,8 +396,9 @@ function overview() {
 function tasks() {
   const task = active(),
     running = task && ["thinking", "working", "testing"].includes(task.state);
-  return `<div class="notice">MOCK 演示：任务不会调用真实 Codex。</div><div class="panel-grid"><div><section class="card"><div class="card-head"><h2>新指令</h2><span class="tag">MOCK</span></div><form id="task-form"><label for="prompt">任务内容</label><textarea id="prompt" required maxlength="8000" placeholder="例如：检查照片上传，运行测试并申请审批"></textarea><button>创建 Mock 任务 ↗</button></form></section><h2 class="list-heading">会话</h2><div class="task-list">${
-    [...state.tasks]
+  const mock = state.mode !== "production";
+  return `${mock ? '<div class="notice">MOCK 演示：任务不会调用真实 Codex。</div>' : ""}<div class="panel-grid"><div><section class="card"><div class="card-head"><h2>新指令</h2>${mock ? '<span class="tag">MOCK</span>' : ""}</div><form id="task-form"><label for="prompt">任务内容</label><textarea id="prompt" required maxlength="8000" placeholder="例如：检查照片上传，运行测试并申请审批"></textarea><button>创建任务 ↗</button></form></section><h2 class="list-heading">会话</h2><div class="task-list">${
+    [...state.tasks].filter(t => t.mode === (mock ? "mock" : "production"))
       .reverse()
       .map(
         (t) =>
@@ -545,7 +548,7 @@ function render() {
         const modeLabel = document.createElement("label"), mode = document.createElement("select");
         modeLabel.textContent = "任务权限";
         mode.id = "task-sandbox";
-        mode.innerHTML = '<option value="workspace-write">允许修改此工作区 · 敏感操作审批</option><option value="read-only">只读沙箱 · 禁止写入与网络</option>';
+        mode.innerHTML = '<option value="workspace-write">请求批准 · 可修改工作区，敏感操作逐次审批</option><option value="auto">自动审查 · 可修改工作区，不再逐次询问</option><option value="danger-full-access">完全访问 · 可访问全盘与网络，不做限制</option>';
         mode.value = state.sandbox;
         mode.onchange = () => { state.sandbox = mode.value; };
         prompt.before(modeLabel, mode);

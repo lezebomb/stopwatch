@@ -65,7 +65,7 @@ try {
   );
   await page.locator('.nav button[data-page="tasks"]').click();
   await page.locator("#prompt").fill("浏览器测试并申请审批");
-  await page.getByRole("button", { name: "创建 Mock 任务" }).click();
+  await page.getByRole("button", { name: "创建任务" }).click();
   await page.getByRole("button", { name: "批准本次" }).waitFor();
   await page.getByRole("button", { name: "批准本次" }).click();
   await page.locator(".result").filter({ hasText: "模拟结果" }).waitFor();

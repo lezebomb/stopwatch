@@ -263,6 +263,32 @@ mainApp = mainApp.replace(
   healthHook +
     "\n#if CONFIG_MUSE_BOARD_M5STACK_STOPWATCH\n    stack_monitor_record(NULL);\n    vTaskDelete(NULL);\n    return; /* sw_updater owns storage/UI/services health, including offline operation. */\n#endif",
 );
+const vmConnectLog = '    ESP_LOGI(TAG, "connecting to VM %s", vm_id);';
+if (!mainApp.includes(vmConnectLog)) throw new Error("Upstream VM connect hook changed");
+mainApp = mainApp.replace(vmConnectLog,
+  vmConnectLog +
+  "\n    /* Remember the last reachable VM so chat turns skip api.muse.ai. */" +
+  "\n    if (ctrl_started) {" +
+  "\n        config_set_str(\"vm_cache_id\", vm_id);" +
+  "\n        config_set_str(\"vm_cache_token\", auth_token);" +
+  "\n    }");
+const vmFetch = "        int count = fetch_vms_with_refresh_with_gate_held(vms, VM_API_MAX_VMS);";
+if (mainApp.split(vmFetch).length !== 2) throw new Error("Upstream VM fetch hook changed");
+mainApp = mainApp.replace(vmFetch,
+  vmFetch + "\n        if (count <= 0) {" +
+  "\n            /* api.muse.ai may be blocked while the VM host is reachable. */" +
+  "\n            char cached_id[128] = {0};" +
+  "\n            char *cached_token = load_token(\"vm_cache_token\");" +
+  "\n            if (config_get_str(\"vm_cache_id\", cached_id, sizeof(cached_id)) && cached_id[0] &&" +
+  "\n                cached_token && cached_token[0]) {" +
+  "\n                strlcpy(req->vm_id, cached_id, req->id_cap);" +
+  "\n                req->vm_token = cached_token;" +
+  "\n                strlcpy(req->vm_name, \"preferred VM\", req->name_cap);" +
+  "\n                req->ok = true;" +
+  "\n            } else if (cached_token) {" +
+  "\n                free(cached_token);" +
+  "\n            }" +
+  "\n        }");
 mainApp = mainApp.replace(
   'ESP_LOGI(TAG, "  SDK token:  %.12s", identity_sdk_token() ? identity_sdk_token() : "(none)");',
   'ESP_LOGI(TAG, "  SDK token configured: %s", identity_sdk_token() ? "yes" : "no");',

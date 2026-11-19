@@ -141,7 +141,7 @@ export async function createRelay({
   function enqueue(data, actor, res) {
     if (!allowedCommands.includes(data.action) || !/^[\w-]{8,80}$/.test(data.id || "")) return json(res, 400, { error: "无效命令" });
     if (["start", "continue", "steer"].includes(data.action) && (typeof data.text !== "string" || !data.text.trim() || data.text.length > 8000)) return json(res, 400, { error: "指令不能为空或超过 8000 字" });
-    if (data.sandbox !== undefined && !["read-only", "workspace-write"].includes(data.sandbox)) return json(res, 400, { error: "不支持的沙箱模式" });
+    if (data.sandbox !== undefined && !["read-only", "workspace-write", "auto", "danger-full-access"].includes(data.sandbox)) return json(res, 400, { error: "不支持的沙箱模式" });
     const command = { v: 1, id: data.id, action: data.action, text: data.text, taskId: data.taskId, approvalId: data.approvalId, decision: data.decision, actor,
       projectId: typeof data.projectId === "string" ? data.projectId : undefined,
       sandbox: data.action === "start" ? data.sandbox || "workspace-write" : undefined,

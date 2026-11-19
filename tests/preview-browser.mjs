@@ -63,7 +63,7 @@ try {
   await moving;
   await page.locator('.nav button[data-page="tasks"]').click();
   await page.locator("#prompt").fill("在线隔离演示");
-  await page.getByRole("button", { name: "创建 Mock 任务" }).click();
+  await page.getByRole("button", { name: "创建任务" }).click();
   await page.locator(".result").filter({ hasText: "模拟结果" }).waitFor();
   await page.locator('.nav button[data-page="photos"]').click();
   await page.locator("#upload").setInputFiles("assets/photos/1.jpg");
