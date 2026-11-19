@@ -27,9 +27,13 @@ static void nav_display_change(lv_event_t *e) {
     if (nvs_set_blob(config, "display_cfg", &next, sizeof(next)) == ESP_OK && nvs_commit(config) == ESP_OK) display_settings = next;
   } else if (value == 20) {
     sw_companion_toggle_silent();
-  } else if (value == 21) {
-    int level = muse_settings_volume() + 25;
-    muse_settings_set_volume(level > 100 ? 0 : level);
+  } else if (value == 21 || value == 22) {
+    int level = muse_settings_volume() + (value == 21 ? -5 : 5);
+    muse_settings_set_volume(level < 0 ? 0 : level > 100 ? 100 : level);
+  } else if (value == 23 && nvs_ok) {
+    sw_display_settings_t next = display_settings;
+    next.mode = (next.mode + 1) % 3;
+    if (nvs_set_blob(config, "display_cfg", &next, sizeof(next)) == ESP_OK && nvs_commit(config) == ESP_OK) display_settings = next;
   }
   nav_open(NAV_DISPLAY);
 }
@@ -93,11 +97,13 @@ static void nav_open(int route) {
     nav_row(nav_panel, "官方 Wi-Fi 管理", NAV_NATIVE_NETWORK, 35);
     nav_text(nav_panel, "与手机配对、Muse 账号相互独立", 118);
   } else if (route == NAV_DISPLAY) {
-    char label[64]; snprintf(label, sizeof(label), "亮度 %d", muse_settings_brightness()); nav_text(nav_panel, label, -167);
-    nav_display_row("亮度 -", 10, -167, false); nav_display_row("亮度 +", 11, -124, false);
-    snprintf(label, sizeof(label), "静音 %s / 音量 %d", sw_companion_audio_silent() ? "开" : "关", muse_settings_volume());
-    nav_display_row(label, 20, -81, false); nav_display_row("音量 +25", 21, -38, false);
-    nav_display_row("照片展示", 0, 5, display_settings.mode == 0); nav_display_row("智能省电", 1, 48, display_settings.mode == 1); nav_display_row("续航优先", 2, 91, display_settings.mode == 2);
+    char label[64]; snprintf(label, sizeof(label), "亮度 %d", muse_settings_brightness()); nav_text(nav_panel, label, -195);
+    nav_display_row("亮度 -", 10, -150, false); nav_display_row("亮度 +", 11, -95, false);
+    snprintf(label, sizeof(label), "音量 %d", muse_settings_volume()); nav_text(nav_panel, label, -50);
+    nav_display_row("音量 -", 21, 5, false); nav_display_row("音量 +", 22, 60, false);
+    snprintf(label, sizeof(label), "静音：%s", sw_companion_audio_silent() ? "开" : "关"); nav_text(nav_panel, label, 115);
+    static const char *const mode_names[] = {"显示模式：照片", "显示模式：智能省电", "显示模式：续航优先"};
+    nav_display_row(mode_names[display_settings.mode], 23, 170, false);
   } else if (route == NAV_SYSTEM) {
     sw_update_status_t update; sw_update_status(&update);
     char text[240]; snprintf(text, sizeof(text), "StopWatch C152\n版本 %s\n最新 %s\n%s\n当前静音", SW_UPDATE_VERSION, update.latest[0] ? update.latest : "尚未检查", update.state);

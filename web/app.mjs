@@ -780,6 +780,14 @@ function bind() {
     document.querySelector("#brightness-value").textContent =
       e.target.value + "%";
   });
+  on("brightness", "change", async (e) => {
+    try { state.settings = await api("settings", { brightness: Number(e.target.value) }); }
+    catch (err) { toast(err.message); }
+  });
+  on("audio-silent", "change", async (e) => {
+    try { state.settings = await api("settings", { audioSilent: e.target.checked }); }
+    catch (err) { toast(err.message); }
+  });
   on("save-settings", "click", async () => {
     try {
       state.settings = await api("settings", {
